@@ -25,3 +25,7 @@ Environment: macOS arm64; Rust/Cargo 1.97.0; Tauri 2.12.5; Trunk 0.22.1; install
 - Forgetting excludes notes and dependent summaries from recall. It does not securely erase conversation history or underlying historical versions.
 - App-server remains an experimental external runtime dependency. Host approval/elicitation and desktop-only tools unsupported by notdot are rejected.
 - Local bundles are development artifacts; signing/notarization, public distribution, cross-platform packaging and full third-party notice generation are not release-validated.
+
+## Remote CI
+
+At implementation commit `569e989`, GitHub Actions run [40415491777](https://github.com/kabudu/notdot/actions/runs/40415491777) failed before executing any steps. Its check annotation states: “The job was not started because recent account payments have failed or your spending limit needs to be increased.” No runner logs exist because the job did not start. Local checks and the optimized bundle build passed; this does not substitute for remote CI. PR remains draft/unmerged pending account remediation and a successful run.
