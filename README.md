@@ -12,7 +12,7 @@ Tested against the Codex runtime bundled with ChatGPT Desktop, `codex-cli 0.164.
 | Persistent conversation | PASS: terminate client/server, launch a fresh process, resume the same thread, recall a random marker |
 | Connected tools | PASS: model invoked codex_apps / github.search_installed_repositories_v2 and received private repository metadata |
 | Desktop reads same conversation | PASS: desktop read_thread returned the probe messages and response; navigate_to_codex_page opened the same thread |
-| Desktop UI → companion continuation | BLOCKED: desktop turn is readable, but companion thread/resume rejects with already has an active writer, even after navigating away and waiting 45 seconds |
+| Desktop UI → companion continuation | PASS with explicit archive/unarchive handoff: companion recalled the desktop-only user message verbatim; desktop read the completed companion turn |
 | Attach to desktop's live server | UNPROVEN: current desktop process uses private stdio; default app-server control socket does not exist |
 | Desktop-only host tools | UNPROVEN: connector access does not establish access to desktop navigation, screenshots, browser control or artifact host services |
 
@@ -54,3 +54,23 @@ References: [app-server](https://learn.chatgpt.com/docs/app-server), [models](ht
 The desktop added a completed turn saying `Can you recall this?` and recalled the original probe marker. No fresh marker was present in that turn. The companion could read that desktop history via the desktop read API, but three independent resume attempts failed with JSON-RPC -32600: `thread … already has an active writer`. The last attempt followed navigation to another chat and a 45-second wait. No lock files, database state or desktop processes were modified to bypass ownership.
 
 Conclusion: shared history and desktop consumption are proven; a live bidirectional companion/desktop bridge is not. Next investigate a documented shared-runtime attachment or explicit unload/release operation. A separate companion-owned thread remains viable, with desktop used for review rather than concurrent ownership.
+
+## Successful explicit handoff
+
+A supported lifecycle workaround completed the desktop → companion → desktop round trip on 26 October 2026:
+
+1. Archive the idle proof chat using the desktop `set_thread_archived` operation. This released ownership in the tested runtime.
+2. Run `codex unarchive THREAD_ID`.
+3. Resume through the companion app-server process using Terra Medium.
+4. Complete the turn and close the companion process.
+5. Read and reopen the same conversation in the desktop.
+
+Repeated this handoff twice. First, the companion recalled the original marker. For stronger proof of desktop-origin history, a second prompt asked it to quote the earlier desktop user message without including that text. It returned `Can you recall this?` exactly. Desktop read_thread then returned that completed companion turn, and desktop navigation reopened the same thread. Raw evidence remains in ignored `.local/desktop-continuation.json` and `.local/desktop-history-recall.json`.
+
+This is an explicit archive/unarchive handoff, not simultaneous shared-runtime control or an invisible UX. The desktop archive operation was invoked through its first-party tool in this investigation; a standalone third-party companion has not yet been shown to have a supported way to invoke that desktop operation. A user can archive the idle conversation manually before companion takeover. Do not archive an active task for handoff.
+
+The official app-server documentation clarifies that thread/unsubscribe affects only the requesting connection and unloads after **30 minutes** with no subscribers or activity. Our earlier 45-second wait was insufficient to test expiry, and navigating away does not prove the desktop unsubscribed. Calling unsubscribe on a separate companion server cannot release desktop ownership. No documented immediate force-release method was found in the installed protocol schema.
+
+Shared app-server transports (stdio, Unix socket and experimental WebSocket) support custom clients, but the current desktop process exposes no default control socket. `codex app-server proxy` cannot attach here. `codex queue` is documented, but its shared-daemon/remote route is not evidence of access to the current private desktop stdio server. No daemon was started, no remote control enabled, and no private IPC or lock files modified.
+
+Updated conclusion: sequential bidirectional history handoff is proven through archive/unarchive. Seamless live shared-runtime attachment remains unproven. For an initial companion, use a companion-owned thread and an explicit desktop handoff action, with manual desktop archive required to hand control back until a supported desktop attachment endpoint exists.
