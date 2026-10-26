@@ -12,11 +12,11 @@ Tested against the Codex runtime bundled with ChatGPT Desktop, `codex-cli 0.164.
 | Persistent conversation | PASS: terminate client/server, launch a fresh process, resume the same thread, recall a random marker |
 | Connected tools | PASS: model invoked codex_apps / github.search_installed_repositories_v2 and received private repository metadata |
 | Desktop reads same conversation | PASS: desktop read_thread returned the probe messages and response; navigate_to_codex_page opened the same thread |
-| Desktop UI → companion continuation | PENDING: native computer-use tool rejects com.openai.codex; needs manual UI turn followed by probe resume |
+| Desktop UI → companion continuation | BLOCKED: desktop turn is readable, but companion thread/resume rejects with already has an active writer, even after navigating away and waiting 45 seconds |
 | Attach to desktop's live server | UNPROVEN: current desktop process uses private stdio; default app-server control socket does not exist |
 | Desktop-only host tools | UNPROVEN: connector access does not establish access to desktop navigation, screenshots, browser control or artifact host services |
 
-The evidence supports a companion using its own app-server process with shared persistent history and connected account tools. It does not yet prove safe simultaneous turn ownership between desktop and companion. Use sequential handoff until concurrency is tested. Desktop history reads can describe an externally running turn as interrupted/not loaded: don't use that field as the companion's authoritative live status.
+The evidence supports a companion using its own app-server process with shared persistent history and connected account tools. It does not yet prove safe simultaneous turn ownership between desktop and companion. Sequential handoff also needs an explicit writer-release mechanism; navigating away did not release ownership in this test. Desktop history reads can describe an externally running turn as interrupted/not loaded: don't use that field as the companion's authoritative live status.
 
 ## Run
 
@@ -48,3 +48,9 @@ Proceed with a local, replaceable app-server adapter, persistent thread IDs, str
 OpenAI documents app-server for custom clients, but labels the command and WebSocket transport experimental and unsupported for production workloads. Pin and revalidate the installed runtime before release.
 
 References: [app-server](https://learn.chatgpt.com/docs/app-server), [models](https://learn.chatgpt.com/docs/models).
+
+## Desktop handoff follow-up
+
+The desktop added a completed turn saying `Can you recall this?` and recalled the original probe marker. No fresh marker was present in that turn. The companion could read that desktop history via the desktop read API, but three independent resume attempts failed with JSON-RPC -32600: `thread … already has an active writer`. The last attempt followed navigation to another chat and a 45-second wait. No lock files, database state or desktop processes were modified to bypass ownership.
+
+Conclusion: shared history and desktop consumption are proven; a live bidirectional companion/desktop bridge is not. Next investigate a documented shared-runtime attachment or explicit unload/release operation. A separate companion-owned thread remains viable, with desktop used for review rather than concurrent ownership.
