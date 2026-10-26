@@ -1,0 +1,19 @@
+[package]
+publish = false
+name = "notdot-orb"
+version.workspace = true
+edition.workspace = true
+[lib]
+crate-type = ["cdylib", "rlib"]
+[dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+serde.workspace = true
+serde_json.workspace = true
+serde-wasm-bindgen = "0.6"
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "CanvasRenderingContext2d", "CanvasGradient", "EventTarget", "MouseEvent", "KeyboardEvent", "HtmlInputElement", "HtmlTextAreaElement", "HtmlDialogElement", "HtmlButtonElement", "HtmlSelectElement", "Performance", "MediaQueryList", "MediaDevices", "Navigator", "MediaStream", "MediaStreamConstraints", "MediaStreamTrack", "MediaRecorder", "MediaRecorderOptions", "RecordingState", "BlobEvent", "Blob", "BlobPropertyBag", "Url", "HtmlAudioElement", "HtmlMediaElement", "Node", "Event", "console"] }
+
+[features]
+default = []
+debug-ui = []

@@ -1,3 +1,9 @@
 .local/
 __pycache__/
 .env
+
+/target/
+/dist/
+/ui-dist/
+
+/src-tauri/gen/

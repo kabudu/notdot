@@ -1,0 +1,1109 @@
+#![forbid(unsafe_code)]
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::{cell::RefCell, f64::consts::TAU, rc::Rc};
+use wasm_bindgen::{JsCast, prelude::*};
+use wasm_bindgen_futures::{JsFuture, spawn_local};
+use web_sys::{
+    CanvasRenderingContext2d as Context, Event, HtmlCanvasElement, HtmlDialogElement,
+    HtmlInputElement,
+};
+#[wasm_bindgen(
+    inline_js = "export function invoke(c,a){return window.__TAURI__.core.invoke(c,a)} export function drag(){return window.__TAURI__.window.getCurrentWindow().startDragging()} export function resize(w,h){return window.__TAURI__.window.getCurrentWindow().setSize(new window.__TAURI__.dpi.LogicalSize(w,h))}"
+)]
+extern "C" {
+    fn invoke(c: &str, a: JsValue) -> js_sys::Promise;
+    fn drag() -> js_sys::Promise;
+    fn resize(w: f64, h: f64) -> js_sys::Promise;
+}
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct Settings {
+    name: String,
+    hue: u16,
+    voice_id: String,
+    voice_provider: String,
+    voice_name: String,
+    memory_enabled: bool,
+    onboarding_complete: bool,
+    thread_id: Option<String>,
+}
+#[derive(Clone, Default, Deserialize)]
+struct Snapshot {
+    settings: Settings,
+    phase: String,
+    reply: String,
+    error: Option<String>,
+    key_configured: bool,
+}
+#[derive(Clone, Deserialize)]
+struct VoiceChoice {
+    id: String,
+    name: String,
+    description: String,
+}
+#[derive(Deserialize)]
+struct VoicePage {
+    voices: Vec<VoiceChoice>,
+    next_cursor: Option<String>,
+}
+#[derive(Deserialize)]
+struct EncodedAudio {
+    data: String,
+    mime: String,
+}
+#[derive(Default)]
+struct View {
+    snapshot: Snapshot,
+    recording: Option<web_sys::MediaRecorder>,
+    stream: Option<web_sys::MediaStream>,
+    audio: Option<web_sys::HtmlAudioElement>,
+    audio_url: Option<String>,
+    voice_pending: bool,
+    spoken: String,
+    polling: bool,
+    generation: u64,
+    last_frame: f64,
+    amplitude: f64,
+    local_phase: Option<&'static str>,
+    voices: Vec<VoiceChoice>,
+    next_cursor: Option<String>,
+    catalog_generation: u64,
+    preview_hue: Option<u16>,
+    initialized: bool,
+}
+type Shared = Rc<RefCell<View>>;
+fn window() -> web_sys::Window {
+    web_sys::window().expect("WASM requires a browser window")
+}
+fn document() -> web_sys::Document {
+    window().document().expect("notdot document exists")
+}
+fn element(id: &str) -> web_sys::Element {
+    document()
+        .get_element_by_id(id)
+        .expect("notdot bundled UI element exists")
+}
+fn input(id: &str) -> HtmlInputElement {
+    element(id).unchecked_into()
+}
+fn dialog(id: &str) -> HtmlDialogElement {
+    element(id).unchecked_into()
+}
+fn select(id: &str) -> web_sys::HtmlSelectElement {
+    element(id).unchecked_into()
+}
+fn apply_theme(hue: u16) {
+    if let Some(root) = document().document_element() {
+        let _ = root.set_attribute("style", &format!("--hue:{hue}"));
+    }
+}
+fn render_voice_options(view: &Shared, chosen: &str, saved_name: &str) {
+    let dropdown = element("voice");
+    dropdown.set_text_content(None);
+    let empty = document().create_element("option").expect("voice option");
+    let _ = empty.set_attribute("value", "");
+    empty.set_text_content(Some("Choose a voice"));
+    let _ = dropdown.append_child(&empty);
+    let state = view.borrow();
+    if !chosen.is_empty() && !state.voices.iter().any(|v| v.id == chosen) {
+        let option = document().create_element("option").expect("saved voice");
+        let _ = option.set_attribute("value", chosen);
+        option.set_text_content(Some(if saved_name.is_empty() {
+            "Saved voice"
+        } else {
+            saved_name
+        }));
+        let _ = dropdown.append_child(&option);
+    }
+    for voice in &state.voices {
+        let option = document().create_element("option").expect("voice option");
+        let _ = option.set_attribute("value", &voice.id);
+        option.set_text_content(Some(&voice.name));
+        let _ = dropdown.append_child(&option);
+    }
+    select("voice").set_value(chosen);
+}
+async fn load_catalog(view: Shared, append: bool) -> Result<(), String> {
+    let provider = select("provider").value();
+    let key = input("key").value();
+    if !key.is_empty() {
+        call("save_voice_key", json!({"provider":provider,"key":key})).await?;
+        input("key").set_value("");
+        view.borrow_mut().snapshot.key_configured = true;
+        input("key").set_placeholder("Key saved · leave blank to keep");
+    }
+    let search = input("voice-search").value();
+    let cursor = if append {
+        view.borrow().next_cursor.clone()
+    } else {
+        None
+    };
+    let generation = {
+        let mut v = view.borrow_mut();
+        v.catalog_generation += 1;
+        v.catalog_generation
+    };
+    element("voice-info").set_text_content(Some("Loading voices…"));
+    let result = call(
+        "voice_catalog",
+        json!({"provider":provider,"search":search,"cursor":cursor}),
+    )
+    .await;
+    if view.borrow().catalog_generation != generation {
+        return Ok(());
+    }
+    let page: VoicePage = serde_wasm_bindgen::from_value(result?).map_err(|e| e.to_string())?;
+    let chosen = select("voice").value();
+    let saved_name = view.borrow().snapshot.settings.voice_name.clone();
+    let has_more = page.next_cursor.is_some()
+        && (!append || view.borrow().voices.len() + page.voices.len() <= 1000);
+    if search.is_empty() {
+        if page.voices.len() > 5 || has_more {
+            let _ = element("voice-search-label").remove_attribute("hidden");
+        } else {
+            let _ = element("voice-search-label").set_attribute("hidden", "");
+        }
+    }
+    {
+        let mut v = view.borrow_mut();
+        if !append {
+            v.voices.clear();
+        }
+        for voice in page.voices {
+            if !v.voices.iter().any(|v| v.id == voice.id) && v.voices.len() < 1000 {
+                v.voices.push(voice);
+            }
+        }
+        v.next_cursor = if has_more { page.next_cursor } else { None };
+    }
+    render_voice_options(&view, &chosen, &saved_name);
+    if has_more {
+        let _ = element("more-voices").remove_attribute("hidden");
+    } else {
+        let _ = element("more-voices").set_attribute("hidden", "");
+    }
+    element("voice-info").set_text_content(Some(if view.borrow().voices.is_empty() {
+        "No matching voices"
+    } else {
+        "Choose a voice, then preview it."
+    }));
+    Ok(())
+}
+fn message(error: impl AsRef<str>) {
+    element("error").set_text_content(Some(error.as_ref()));
+    if let Some(reply) = document().get_element_by_id("reply") {
+        reply.set_text_content(Some(error.as_ref()));
+    }
+}
+fn js_error(v: JsValue) -> String {
+    v.as_string().unwrap_or_else(|| format!("{v:?}"))
+}
+async fn call(command: &str, args: Value) -> Result<JsValue, String> {
+    let args = args
+        .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+        .map_err(|e| e.to_string())?;
+    JsFuture::from(invoke(command, args))
+        .await
+        .map_err(js_error)
+}
+fn on(target: &web_sys::EventTarget, event: &str, f: impl FnMut(Event) + 'static) {
+    let c = Closure::<dyn FnMut(Event)>::new(f);
+    target
+        .add_event_listener_with_callback(event, c.as_ref().unchecked_ref())
+        .expect("event registration");
+    c.forget();
+}
+fn open_panel(view: &Shared) {
+    let s = view.borrow().snapshot.settings.clone();
+    input("name").set_value(&s.name);
+    input("hue").set_value(&s.hue.to_string());
+    select("provider").set_value(&s.voice_provider);
+    render_voice_options(view, &s.voice_id, &s.voice_name);
+    apply_theme(s.hue);
+    input("memory").set_checked(s.memory_enabled);
+    input("key").set_value("");
+    input("key").set_placeholder(if view.borrow().snapshot.key_configured {
+        "Key saved · leave blank to keep"
+    } else {
+        "Stored in your OS keychain"
+    });
+    element("heading").set_text_content(Some(if s.onboarding_complete {
+        "Your companion"
+    } else {
+        "Meet your companion"
+    }));
+    let _ = resize(450., 680.);
+    let provider = s.voice_provider.clone();
+    spawn_local(async move {
+        if let Ok(value) = call("voice_providers", json!({})).await
+            && let Ok(items) = serde_wasm_bindgen::from_value::<Value>(value)
+            && let Some(items) = items.as_array()
+        {
+            let dropdown = element("provider");
+            dropdown.set_text_content(None);
+            for item in items {
+                if let (Some(id), Some(name)) = (item["id"].as_str(), item["name"].as_str())
+                    && let Ok(option) = document().create_element("option")
+                {
+                    let _ = option.set_attribute("value", id);
+                    option.set_text_content(Some(name));
+                    let _ = dropdown.append_child(&option);
+                }
+            }
+            select("provider").set_value(&provider);
+        }
+    });
+    let _ = dialog("panel").show_modal();
+    if view.borrow().snapshot.key_configured {
+        let target = view.clone();
+        spawn_local(async move {
+            if let Err(e) = load_catalog(target, false).await {
+                message(e);
+            }
+        });
+    }
+}
+fn close_panel(view: &Shared) {
+    view.borrow_mut().preview_hue = None;
+    apply_theme(view.borrow().snapshot.settings.hue);
+    dialog("panel").close();
+    let _ = resize(360., 360.);
+}
+fn stop_audio(view: &Shared) {
+    let mut v = view.borrow_mut();
+    v.generation += 1;
+    v.voice_pending = false;
+    v.local_phase = None;
+    if let Some(recording) = v.recording.take() {
+        let _ = recording.stop();
+    }
+    if let Some(stream) = v.stream.take() {
+        for track in stream.get_tracks() {
+            let track: web_sys::MediaStreamTrack = track.unchecked_into();
+            track.stop();
+        }
+    }
+    if let Some(audio) = v.audio.take() {
+        let _ = audio.pause();
+    }
+    if let Some(url) = v.audio_url.take() {
+        let _ = web_sys::Url::revoke_object_url(&url);
+    }
+}
+async fn play(view: Shared, text: String, generation: u64) -> Result<(), String> {
+    let value = call("speak", json!({"text":text})).await?;
+    play_encoded(view, value, generation).await
+}
+async fn play_encoded(view: Shared, value: JsValue, generation: u64) -> Result<(), String> {
+    if view.borrow().generation != generation {
+        return Ok(());
+    }
+    let clip: EncodedAudio = serde_wasm_bindgen::from_value(value).map_err(|e| e.to_string())?;
+    let encoded = clip.data;
+    let binary = window().atob(&encoded).map_err(js_error)?;
+    let bytes: Vec<u8> = binary.chars().map(|c| c as u8).collect();
+    let array = js_sys::Array::new();
+    array.push(&js_sys::Uint8Array::from(bytes.as_slice()));
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type(&clip.mime);
+    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&array, &options)
+        .map_err(js_error)?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(js_error)?;
+    let audio = web_sys::HtmlAudioElement::new_with_src(&url).map_err(js_error)?;
+    {
+        let mut v = view.borrow_mut();
+        if let Some(old) = v.audio_url.replace(url) {
+            let _ = web_sys::Url::revoke_object_url(&old);
+        }
+        v.audio = Some(audio.clone());
+    }
+    let finished = view.clone();
+    on(audio.as_ref(), "ended", move |_| {
+        if finished.borrow().generation == generation {
+            element("voice-info").set_text_content(Some("Playback finished"));
+        }
+    });
+    JsFuture::from(audio.play().map_err(js_error)?)
+        .await
+        .map_err(js_error)?;
+    Ok(())
+}
+async fn voice(view: Shared) -> Result<(), String> {
+    if let Some(recorder) = view.borrow().recording.clone() {
+        recorder.stop().map_err(js_error)?;
+        return Ok(());
+    }
+    if view.borrow().local_phase == Some("listening") {
+        return Ok(());
+    }
+    if view.borrow().local_phase.is_some() {
+        stop_audio(&view);
+    }
+    if view.borrow().snapshot.phase == "thinking" {
+        call("stop", json!({})).await?;
+    }
+    stop_audio(&view);
+    if !view.borrow().snapshot.key_configured || view.borrow().snapshot.settings.voice_id.is_empty()
+    {
+        return Err("Choose a voice and save your backend API key before recording".into());
+    }
+    let generation = view.borrow().generation;
+    view.borrow_mut().local_phase = Some("listening");
+    let constraints = web_sys::MediaStreamConstraints::new();
+    constraints.set_audio(&JsValue::TRUE);
+    let result = JsFuture::from(
+        window()
+            .navigator()
+            .media_devices()
+            .map_err(js_error)?
+            .get_user_media_with_constraints(&constraints)
+            .map_err(js_error)?,
+    )
+    .await;
+    if view.borrow().generation != generation {
+        if let Ok(value) = result
+            && let Ok(stream) = value.dyn_into::<web_sys::MediaStream>()
+        {
+            for track in stream.get_tracks() {
+                let track: web_sys::MediaStreamTrack = track.unchecked_into();
+                track.stop();
+            }
+        }
+        return Ok(());
+    }
+    let stream: web_sys::MediaStream = result.map_err(js_error)?.dyn_into().map_err(js_error)?;
+    if view.borrow().generation != generation {
+        for track in stream.get_tracks() {
+            let track: web_sys::MediaStreamTrack = track.unchecked_into();
+            track.stop();
+        }
+        return Ok(());
+    }
+    let options = web_sys::MediaRecorderOptions::new();
+    let mime = if web_sys::MediaRecorder::is_type_supported("audio/mp4") {
+        "audio/mp4"
+    } else {
+        "audio/webm"
+    };
+    options.set_mime_type(mime);
+    let recorder = match web_sys::MediaRecorder::new_with_media_stream_and_media_recorder_options(
+        &stream, &options,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            for t in stream.get_tracks() {
+                let t: web_sys::MediaStreamTrack = t.unchecked_into();
+                t.stop();
+            }
+            return Err(js_error(e));
+        }
+    };
+    let chunks = Rc::new(RefCell::new(Vec::<web_sys::Blob>::new()));
+    let collected = chunks.clone();
+    on(recorder.as_ref(), "dataavailable", move |e| {
+        if let Ok(event) = e.dyn_into::<web_sys::BlobEvent>()
+            && let Some(blob) = event.data()
+        {
+            collected.borrow_mut().push(blob);
+        }
+    });
+    let target = view.clone();
+    let media_type = mime.to_string();
+    let stream_to_stop = stream.clone();
+    on(recorder.as_ref(), "stop", move |_| {
+        for track in stream_to_stop.get_tracks() {
+            let track: web_sys::MediaStreamTrack = track.unchecked_into();
+            track.stop();
+        }
+        if target.borrow().generation != generation {
+            return;
+        }
+        {
+            let mut v = target.borrow_mut();
+            v.recording = None;
+            v.stream = None;
+            v.local_phase = Some("transcribing");
+        }
+        let pieces = js_sys::Array::new();
+        for blob in chunks.borrow_mut().drain(..) {
+            pieces.push(&blob);
+        }
+        let view = target.clone();
+        let mime = media_type.clone();
+        spawn_local(async move {
+            let result = async {
+                let blob = web_sys::Blob::new_with_blob_sequence(&pieces).map_err(js_error)?;
+                if blob.size() > 10_000_000. {
+                    return Err("Recording exceeded 10 MB".into());
+                }
+                let bytes = js_sys::Uint8Array::new(
+                    &JsFuture::from(blob.array_buffer())
+                        .await
+                        .map_err(js_error)?,
+                )
+                .to_vec();
+                let text = call("transcribe", json!({"audio":bytes,"mime":mime}))
+                    .await?
+                    .as_string()
+                    .ok_or("Transcription returned no text")?;
+                if view.borrow().generation != generation {
+                    return Ok(());
+                }
+                call("send_message", json!({"text":text})).await?;
+                {
+                    let mut v = view.borrow_mut();
+                    v.voice_pending = true;
+                    v.spoken.clear();
+                }
+                view.borrow_mut().local_phase = None;
+                Ok::<(), String>(())
+            }
+            .await;
+            if let Err(e) = result
+                && view.borrow().generation == generation
+            {
+                message(&e);
+                view.borrow_mut().local_phase = None;
+                view.borrow_mut().snapshot.phase = "error".into();
+                open_panel(&view);
+            }
+        });
+    });
+    if let Err(error) = recorder.start() {
+        for track in stream.get_tracks() {
+            let track: web_sys::MediaStreamTrack = track.unchecked_into();
+            track.stop();
+        }
+        return Err(js_error(error));
+    }
+    {
+        let mut v = view.borrow_mut();
+        v.recording = Some(recorder.clone());
+        v.stream = Some(stream);
+        v.snapshot.phase = "listening".into();
+    }
+    let deadline = Closure::once(move || {
+        if recorder.state() == web_sys::RecordingState::Recording {
+            let _ = recorder.stop();
+        }
+    });
+    window()
+        .set_timeout_with_callback_and_timeout_and_arguments_0(
+            deadline.as_ref().unchecked_ref(),
+            60_000,
+        )
+        .map_err(js_error)?;
+    deadline.forget();
+    Ok(())
+}
+#[wasm_bindgen(start)]
+pub fn start() -> Result<(), JsValue> {
+    let view = Rc::new(RefCell::new(View {
+        snapshot: Snapshot {
+            settings: Settings {
+                name: "notdot".into(),
+                hue: 192,
+                ..Settings::default()
+            },
+            phase: "connecting".into(),
+            ..Snapshot::default()
+        },
+        ..View::default()
+    }));
+    let canvas: HtmlCanvasElement = element("orb").unchecked_into();
+    let target = view.clone();
+    on(canvas.as_ref(), "contextmenu", move |e| {
+        e.prevent_default();
+        open_panel(&target);
+    });
+    let origin = Rc::new(RefCell::new((0, 0)));
+    let point = origin.clone();
+    on(canvas.as_ref(), "mousedown", move |e| {
+        if let Ok(e) = e.dyn_into::<web_sys::MouseEvent>() {
+            *point.borrow_mut() = (e.client_x(), e.client_y());
+        }
+    });
+    let down = origin.clone();
+    on(canvas.as_ref(), "mousemove", move |e| {
+        if let Ok(e) = e.dyn_into::<web_sys::MouseEvent>() {
+            let (x, y) = *down.borrow();
+            if e.buttons() == 1 && (e.client_x() - x).abs() + (e.client_y() - y).abs() > 6 {
+                let _ = drag();
+            }
+        }
+    });
+    let target = view.clone();
+    on(canvas.as_ref(), "click", move |e| {
+        let Ok(e) = e.dyn_into::<web_sys::MouseEvent>() else {
+            return;
+        };
+        if e.button() != 0 || e.ctrl_key() {
+            return;
+        }
+        let (x, y) = *origin.borrow();
+        if (e.client_x() - x).abs() + (e.client_y() - y).abs() > 6 {
+            return;
+        }
+        let target = target.clone();
+        spawn_local(async move {
+            if let Err(e) = voice(target.clone()).await {
+                target.borrow_mut().local_phase = None;
+                message(&e);
+                open_panel(&target);
+            }
+        });
+    });
+    let target = view.clone();
+    on(window().as_ref(), "notdot-settings", move |_| {
+        open_panel(&target)
+    });
+    let target = view.clone();
+    on(window().as_ref(), "keydown", move |e| {
+        if let Ok(e) = e.dyn_into::<web_sys::KeyboardEvent>() {
+            if e.repeat() && (e.key() == " " || e.key() == "Escape") {
+                return;
+            }
+            if e.key() == "Escape" {
+                stop_audio(&target);
+                spawn_local(async {
+                    let _ = call("stop", json!({})).await;
+                });
+            }
+            if e.key() == " "
+                && !dialog("panel").open()
+                && !document()
+                    .get_element_by_id("composer")
+                    .is_some_and(|e| e.unchecked_into::<HtmlDialogElement>().open())
+            {
+                e.prevent_default();
+                let target = target.clone();
+                spawn_local(async move {
+                    if let Err(e) = voice(target.clone()).await {
+                        target.borrow_mut().local_phase = None;
+                        message(e);
+                        open_panel(&target);
+                    }
+                });
+            }
+            #[cfg(feature = "debug-ui")]
+            if e.key() == "Enter" && !dialog("panel").open() && !dialog("composer").open() {
+                e.prevent_default();
+                let _ = resize(430., 430.);
+                let _ = dialog("composer").show_modal();
+                let _ = element("text")
+                    .unchecked_into::<web_sys::HtmlTextAreaElement>()
+                    .focus();
+            }
+        }
+    });
+    let target = view.clone();
+    on(element("close").as_ref(), "click", move |_| {
+        close_panel(&target)
+    });
+    let target = view.clone();
+    on(element("panel").as_ref(), "cancel", move |_| {
+        target.borrow_mut().preview_hue = None;
+        apply_theme(target.borrow().snapshot.settings.hue);
+        let _ = resize(360., 360.);
+    });
+    #[cfg(feature = "debug-ui")]
+    mount_debug(&view);
+    let target = view.clone();
+    on(input("hue").as_ref(), "input", move |_| {
+        let hue = input("hue").value().parse::<u16>().unwrap_or(192).min(360);
+        target.borrow_mut().preview_hue = Some(hue);
+        apply_theme(hue);
+    });
+    let target = view.clone();
+    on(element("load-voices").as_ref(), "click", move |_| {
+        let view = target.clone();
+        spawn_local(async move {
+            if let Err(e) = load_catalog(view, false).await {
+                message(e);
+            }
+        });
+    });
+    let target = view.clone();
+    on(element("more-voices").as_ref(), "click", move |_| {
+        let view = target.clone();
+        spawn_local(async move {
+            if let Err(e) = load_catalog(view, true).await {
+                message(e);
+            }
+        });
+    });
+    let target = view.clone();
+    on(element("provider").as_ref(), "change", move |_| {
+        target.borrow_mut().voices.clear();
+        target.borrow_mut().next_cursor = None;
+        render_voice_options(&target, "", "");
+        input("voice-search").set_value("");
+        message("Enter this backend's key, then load voices.");
+    });
+    let target = view.clone();
+    on(element("voice-search").as_ref(), "input", move |_| {
+        let generation = {
+            let mut v = target.borrow_mut();
+            v.catalog_generation += 1;
+            v.catalog_generation
+        };
+        let view = target.clone();
+        let callback = Closure::once(move || {
+            if view.borrow().catalog_generation == generation {
+                spawn_local(async move {
+                    if let Err(e) = load_catalog(view, false).await {
+                        message(e);
+                    }
+                });
+            }
+        });
+        let _ = window().set_timeout_with_callback_and_timeout_and_arguments_0(
+            callback.as_ref().unchecked_ref(),
+            300,
+        );
+        callback.forget();
+    });
+    let target = view.clone();
+    on(element("voice").as_ref(), "change", move |_| {
+        let id = select("voice").value();
+        let view = target.borrow();
+        element("voice-info").set_text_content(
+            view.voices
+                .iter()
+                .find(|v| v.id == id)
+                .map(|v| v.description.as_str()),
+        );
+    });
+    let target = view.clone();
+    on(element("preview-voice").as_ref(), "click", move |_| {
+        let id = select("voice").value();
+        if id.is_empty() {
+            message("Choose a voice first");
+            return;
+        }
+        stop_audio(&target);
+        let generation = target.borrow().generation;
+        target.borrow_mut().local_phase = Some("synthesizing");
+        let view = target.clone();
+        let provider = select("provider").value();
+        element("voice-info").set_text_content(Some("Preparing preview…"));
+        spawn_local(async move {
+            let result = async {
+                let clip = call("preview_voice", json!({"provider":provider,"voiceId":id})).await?;
+                play_encoded(view.clone(), clip, generation).await
+            }
+            .await;
+            if view.borrow().generation == generation {
+                view.borrow_mut().local_phase = None;
+            }
+            if view.borrow().generation == generation {
+                match result {
+                    Ok(()) => element("voice-info").set_text_content(Some("Playing preview")),
+                    Err(e) => message(e),
+                }
+            }
+        });
+    });
+    on(element("settings").as_ref(), "keydown", |event| {
+        if let Ok(key) = event.dyn_into::<web_sys::KeyboardEvent>()
+            && key.key() == "Enter"
+            && !key
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                .is_some_and(|e| e.id() == "save-settings")
+        {
+            key.prevent_default();
+        }
+    });
+    let target = view.clone();
+    on(element("settings").as_ref(), "submit", move |e| {
+        e.prevent_default();
+        let mut settings = target.borrow().snapshot.settings.clone();
+        settings.name = input("name").value();
+        settings.hue = input("hue").value().parse().unwrap_or(192);
+        settings.voice_id = select("voice").value();
+        settings.voice_provider = select("provider").value();
+        settings.voice_name = target
+            .borrow()
+            .voices
+            .iter()
+            .find(|v| v.id == settings.voice_id)
+            .map(|v| v.name.clone())
+            .unwrap_or_else(|| target.borrow().snapshot.settings.voice_name.clone());
+        if settings.voice_id.is_empty() {
+            settings.voice_name.clear();
+        }
+        settings.memory_enabled = input("memory").checked();
+        settings.onboarding_complete = true;
+        let key = input("key").value();
+        let target = target.clone();
+        spawn_local(async move {
+            match call("save_settings", json!({"settings":settings,"key":key})).await {
+                Ok(_) => {
+                    input("key").set_value("");
+                    message("");
+                    target.borrow_mut().snapshot.settings = settings;
+                    close_panel(&target);
+                }
+                Err(e) => message(e),
+            }
+        });
+    });
+    on(element("memories").as_ref(), "click", |_| {
+        spawn_local(async {
+            if let Err(e) = review_memories().await {
+                message(e);
+            }
+        });
+    });
+    on(element("notes").as_ref(), "click", |e| {
+        let Some(target) = e
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+        else {
+            return;
+        };
+        let Some(id) = target.get_attribute("data-memory-id") else {
+            return;
+        };
+        spawn_local(async move {
+            match call("forget", json!({"id":id})).await {
+                Ok(_) => {
+                    message("Note and derived summaries forgotten.");
+                    if let Err(e) = review_memories().await {
+                        message(e);
+                    }
+                }
+                Err(e) => message(e),
+            }
+        });
+    });
+    on(element("maintain").as_ref(), "click", |_| {
+        spawn_local(async {
+            match call("maintain_memory", json!({})).await {
+                Ok(_) => {
+                    message("Memory review complete. Source-linked summaries updated.");
+                    if let Err(e) = review_memories().await {
+                        message(e);
+                    }
+                }
+                Err(e) => message(e),
+            }
+        });
+    });
+    on(element("clear-key").as_ref(), "click", |_| {
+        spawn_local(async {
+            match call("clear_voice_key", json!({})).await {
+                Ok(_) => message("Voice key removed"),
+                Err(e) => message(e),
+            }
+        });
+    });
+    on(element("retry").as_ref(), "click", |_| {
+        spawn_local(async {
+            if let Err(e) = call("reconnect", json!({})).await {
+                message(e);
+            }
+        });
+    });
+    let target = view.clone();
+    let first = Rc::new(RefCell::new(true));
+    let tick = Closure::<dyn FnMut()>::new(move || {
+        if target.borrow().polling {
+            return;
+        }
+        target.borrow_mut().polling = true;
+        let target = target.clone();
+        let first = first.clone();
+        spawn_local(async move {
+            match call("snapshot", json!({})).await.and_then(|v| {
+                serde_wasm_bindgen::from_value::<Snapshot>(v).map_err(|e| e.to_string())
+            }) {
+                Ok(mut snapshot) => {
+                    let speak = {
+                        let v = target.borrow();
+                        if v.recording.is_some() {
+                            snapshot.phase = "listening".into();
+                        }
+                        v.voice_pending
+                            && snapshot.phase == "idle"
+                            && !snapshot.reply.is_empty()
+                            && v.spoken != snapshot.reply
+                    };
+                    if let Some(reply) = document().get_element_by_id("reply") {
+                        reply.set_text_content(Some(
+                            snapshot.error.as_deref().unwrap_or(&snapshot.reply),
+                        ));
+                    }
+                    if let Some(error) = &snapshot.error {
+                        element("error").set_text_content(Some(error));
+                    }
+                    let onboard = !snapshot.settings.onboarding_complete;
+                    target.borrow_mut().snapshot = snapshot;
+                    if !target.borrow().initialized {
+                        apply_theme(target.borrow().snapshot.settings.hue);
+                        target.borrow_mut().initialized = true;
+                        let _ = element("orb").set_attribute("data-ready", "true");
+                    }
+                    if *first.borrow() {
+                        *first.borrow_mut() = false;
+                        if onboard {
+                            open_panel(&target);
+                        }
+                    }
+                    if speak {
+                        let (text, generation) = {
+                            let mut v = target.borrow_mut();
+                            v.voice_pending = false;
+                            v.local_phase = Some("synthesizing");
+                            v.spoken = v.snapshot.reply.clone();
+                            (v.spoken.clone(), v.generation)
+                        };
+                        let voice_target = target.clone();
+                        spawn_local(async move {
+                            if let Err(e) = play(voice_target.clone(), text, generation).await {
+                                message(e);
+                                open_panel(&voice_target);
+                            }
+                            if voice_target.borrow().generation == generation {
+                                voice_target.borrow_mut().local_phase = None;
+                            }
+                        });
+                    }
+                }
+                Err(e) => message(e),
+            }
+            target.borrow_mut().polling = false;
+        });
+    });
+    window().set_interval_with_callback_and_timeout_and_arguments_0(
+        tick.as_ref().unchecked_ref(),
+        500,
+    )?;
+    tick.forget();
+    animate(canvas, view)?;
+    Ok(())
+}
+fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
+    let reduced = window()
+        .match_media("(prefers-reduced-motion: reduce)")?
+        .is_some_and(|m| m.matches());
+    let context: Context = canvas
+        .get_context("2d")?
+        .ok_or("Canvas 2D unavailable")?
+        .dyn_into()?;
+    type Frame = Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>>;
+    let callback: Frame = Rc::new(RefCell::new(None));
+    let next = callback.clone();
+    *callback.borrow_mut() = Some(Closure::new(move |now: f64| {
+        let mut v = view.borrow_mut();
+        if v.initialized
+            && now - v.last_frame >= if reduced { 100. } else { 33. }
+            && !document().hidden()
+        {
+            v.last_frame = now;
+            let w = canvas.client_width() as f64;
+            let h = canvas.client_height() as f64;
+            let dpr = window().device_pixel_ratio().min(2.);
+            let width = (w * dpr) as u32;
+            let height = (h * dpr) as u32;
+            if canvas.width() != width || canvas.height() != height {
+                canvas.set_width(width);
+                canvas.set_height(height);
+            }
+            let _ = context.set_transform(dpr, 0., 0., dpr, 0., 0.);
+            context.clear_rect(0., 0., w, h);
+            let phase = if v.audio.as_ref().is_some_and(|a| !a.paused()) {
+                "speaking"
+            } else {
+                v.local_phase.unwrap_or(v.snapshot.phase.as_str())
+            };
+            let pace = match phase {
+                "thinking" | "connecting" | "transcribing" | "synthesizing" => 1.7,
+                _ => 1.,
+            };
+            let target = match phase {
+                "thinking" | "connecting" | "transcribing" | "synthesizing" => 0.5,
+                "speaking" => 0.65,
+                "listening" => 0.3,
+                _ => 0.08,
+            };
+            v.amplitude += (target - v.amplitude) * 0.1;
+            let hue = if v.snapshot.error.is_some() {
+                12.
+            } else {
+                v.preview_hue.unwrap_or(v.snapshot.settings.hue) as f64
+            };
+            draw(
+                &context,
+                w / 2.,
+                h / 2.,
+                w.min(h) * 0.17,
+                if reduced { 0. } else { now / 1000. * pace },
+                hue,
+                v.amplitude,
+            );
+        }
+        drop(v);
+        if let Some(f) = next.borrow().as_ref() {
+            let _ = window().request_animation_frame(f.as_ref().unchecked_ref());
+        }
+    }));
+    window().request_animation_frame(
+        callback
+            .borrow()
+            .as_ref()
+            .ok_or("Animation callback missing")?
+            .as_ref()
+            .unchecked_ref(),
+    )?;
+    Ok(())
+}
+fn draw(c: &Context, x: f64, y: f64, r: f64, t: f64, hue: f64, amp: f64) {
+    let color = |alpha: f64| format!("hsla({hue},85%,70%,{alpha})");
+    if let Ok(g) = c.create_radial_gradient(x, y, r * 0.1, x, y, r * 2.9) {
+        let _ = g.add_color_stop(0., &color(0.18));
+        let _ = g.add_color_stop(1., &color(0.));
+        c.set_fill_style_canvas_gradient(&g);
+        c.fill_rect(x - r * 3., y - r * 3., r * 6., r * 6.);
+    }
+    for i in 0..70 {
+        let a = i as f64 * 2.39996 + t * 0.025;
+        let radius = r * (1.3 + ((i * 37 % 67) as f64 / 67.) * 1.15);
+        let sparkle = 0.2 + ((t * 0.6 + i as f64).sin() + 1.) * 0.22;
+        c.set_fill_style_str(&color(sparkle));
+        c.begin_path();
+        let _ = c.arc(
+            x + a.cos() * radius,
+            y + a.sin() * radius,
+            if i % 7 == 0 { 1.2 } else { 0.65 },
+            0.,
+            TAU,
+        );
+        c.fill();
+    }
+    c.set_stroke_style_str(&color(0.45));
+    c.set_line_width(1.);
+    c.begin_path();
+    for i in 0..=180 {
+        let a = i as f64 / 180. * TAU;
+        let rr =
+            r * (1.85 + 0.035 * (a * 9. + t * 1.4).sin() + amp * 0.11 * (a * 5. - t * 2.).sin());
+        let (px, py) = (x + a.cos() * rr, y + a.sin() * rr);
+        if i == 0 {
+            c.move_to(px, py)
+        } else {
+            c.line_to(px, py)
+        }
+    }
+    c.close_path();
+    c.stroke();
+    c.save();
+    let _ = c.translate(x, y);
+    c.begin_path();
+    for i in 0..=120 {
+        let a = i as f64 / 120. * TAU;
+        let rr = r * (1. + amp * (0.12 * (a * 3. + t).sin() + 0.08 * (a * 5. - t * 1.4).cos()));
+        let (px, py) = (a.cos() * rr, a.sin() * rr);
+        if i == 0 {
+            c.move_to(px, py)
+        } else {
+            c.line_to(px, py)
+        }
+    }
+    c.close_path();
+    if let Ok(g) = c.create_radial_gradient(-r * 0.28, -r * 0.35, r * 0.1, 0., 0., r * 1.15) {
+        let _ = g.add_color_stop(0., "rgba(255,255,255,.94)");
+        let _ = g.add_color_stop(0.4, &color(0.7));
+        let _ = g.add_color_stop(1., &format!("hsla({},80%,30%,.15)", hue + 40.));
+        c.set_fill_style_canvas_gradient(&g);
+        c.set_shadow_blur(30. + amp * 40.);
+        c.set_shadow_color(&color(0.65));
+        c.fill();
+    }
+    c.set_shadow_blur(0.);
+    c.begin_path();
+    let _ = c.arc(0., 0., r * 0.65, 0., TAU);
+    if let Ok(g) = c.create_radial_gradient(-r * 0.1, -r * 0.1, r * 0.05, 0., 0., r * 0.8) {
+        let _ = g.add_color_stop(0., &color(0.2));
+        let _ = g.add_color_stop(1., "rgba(0,0,0,.68)");
+        c.set_fill_style_canvas_gradient(&g);
+        c.fill();
+    }
+    c.begin_path();
+    let _ = c.arc(-r * 0.18, -r * 0.18, r * 0.18, 0., TAU);
+    c.set_fill_style_str("rgba(255,255,255,.22)");
+    c.fill();
+    c.restore();
+}
+
+#[cfg(feature = "debug-ui")]
+fn mount_debug(view: &Shared) {
+    let node = document().create_element("div").expect("debug container");
+    node.set_inner_html(r#"<dialog id="composer"><form id="message"><label for="text">Debug message</label><textarea id="text" rows="4"></textarea><p id="reply" role="status"></p><div class="actions"><button type="button" id="dismiss">Close</button><button type="button" id="stop">Stop</button><button type="submit">Send</button></div></form></dialog>"#);
+    document()
+        .body()
+        .expect("debug body")
+        .append_child(&node)
+        .expect("debug panel");
+    on(element("dismiss").as_ref(), "click", |_| {
+        dialog("composer").close();
+        let _ = resize(360., 360.);
+    });
+    on(element("composer").as_ref(), "cancel", |_| {
+        let _ = resize(360., 360.);
+    });
+    let target = view.clone();
+    on(element("stop").as_ref(), "click", move |_| {
+        stop_audio(&target);
+        spawn_local(async {
+            if let Err(e) = call("stop", json!({})).await {
+                message(e);
+            }
+        });
+    });
+    let target = view.clone();
+    on(element("message").as_ref(), "submit", move |e| {
+        e.prevent_default();
+        stop_audio(&target);
+        let text = element("text")
+            .unchecked_into::<web_sys::HtmlTextAreaElement>()
+            .value();
+        spawn_local(async move {
+            match call("send_message", json!({"text":text})).await {
+                Ok(_) => element("text")
+                    .unchecked_into::<web_sys::HtmlTextAreaElement>()
+                    .set_value(""),
+                Err(e) => message(e),
+            }
+        });
+    });
+}
+
+async fn review_memories() -> Result<(), String> {
+    let value = call("memories", json!({})).await?;
+    let records: Value = serde_wasm_bindgen::from_value(value).map_err(|e| e.to_string())?;
+    let container = element("notes");
+    container.set_text_content(None);
+    if let Some(records) = records.as_array() {
+        if records.is_empty() {
+            container.set_text_content(Some("No saved notes"));
+        }
+        for note in records {
+            let card = document().create_element("article").map_err(js_error)?;
+            let text = document().create_element("p").map_err(js_error)?;
+            text.set_text_content(note["content"].as_str());
+            card.append_child(&text).map_err(js_error)?;
+            let button = document().create_element("button").map_err(js_error)?;
+            button.set_attribute("type", "button").map_err(js_error)?;
+            button.set_text_content(Some("Forget this note"));
+            let id = note["id"].as_str().ok_or("Memory ID missing")?;
+            button
+                .set_attribute("data-memory-id", id)
+                .map_err(js_error)?;
+            card.append_child(&button).map_err(js_error)?;
+            container.append_child(&card).map_err(js_error)?;
+        }
+    }
+    Ok(())
+}

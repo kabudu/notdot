@@ -1,101 +1,81 @@
 # notdot
 
-Private feasibility prototype for a desktop voice companion. No voice, orb, memory ledger or onboarding has been built yet.
+A private, local desktop companion built with Rust, Tauri 2 and a Rust/WASM orb. The normal interface is just the orb. Conversation is voice-only; onboarding, preferences and memory inspection open separately.
 
-## Bridge proof — 26 October 2026
+## Run the development app
 
-Tested against the Codex runtime bundled with ChatGPT Desktop, `codex-cli 0.164.0-alpha.11.1`, using the existing local ChatGPT sign-in. No API key was copied or required.
-
-| Requirement | Result |
-| --- | --- |
-| GPT-6.1 Terra, Medium | PASS: model/list advertises medium; thread/start and thread/resume return gpt-6.1-terra with reasoningEffort medium; two turns completed |
-| Persistent conversation | PASS: terminate client/server, launch a fresh process, resume the same thread, recall a random marker |
-| Connected tools | PASS: model invoked codex_apps / github.search_installed_repositories_v2 and received private repository metadata |
-| Desktop reads same conversation | PASS: desktop read_thread returned the probe messages and response; navigate_to_codex_page opened the same thread |
-| Desktop UI → companion continuation | PASS with explicit archive/unarchive handoff: companion recalled the desktop-only user message verbatim; desktop read the completed companion turn |
-| Attach to desktop's live server | UNPROVEN: current desktop process uses private stdio; default app-server control socket does not exist |
-| Desktop-only host tools | UNPROVEN: connector access does not establish access to desktop navigation, screenshots, browser control or artifact host services |
-
-The evidence supports a companion using its own app-server process with shared persistent history and connected account tools. It does not yet prove safe simultaneous turn ownership between desktop and companion. Sequential handoff also needs an explicit writer-release mechanism; navigating away did not release ownership in this test. Desktop history reads can describe an externally running turn as interrupted/not loaded: don't use that field as the companion's authoritative live status.
-
-## Run
-
-Requires Python 3, the installed `codex` executable and an existing authorised ChatGPT login.
+Requires macOS, Rust 1.97+, `wasm32-unknown-unknown`, Trunk, Tauri CLI, and a supported installed Codex runtime signed into your ChatGPT account.
 
 ```sh
-python3 scripts/rpc.py
-python3 scripts/prove.py
+rustup target add wasm32-unknown-unknown
+cargo install trunk --locked
+cargo install tauri-cli --locked
+cargo tauri dev
 ```
 
-`rpc.py` discovers models, installed connector state, app directory and recent threads. `prove.py` creates a test conversation, sends a random marker, restarts the runtime, resumes the conversation and asks for marker recall plus a read-only GitHub connector call. Model turns consume account usage. Each run creates a probe thread. The small client rejects server-initiated requests it cannot implement; it does not grant approvals.
-
-Raw discovery, event streams and conversation IDs are stored only in ignored `.local/`. They may contain account metadata and must not be committed. The probe inherits local runtime configuration and is not a production security boundary.
-
-## Finish the desktop round trip
-
-The initial proof conversation is named **notdot bridge proof**. Open it in the desktop app and send a fresh harmless marker, for example `Remember desktop marker: violet-lantern-42. Reply with the marker only.` Wait for completion before resuming from another client.
+Build a local app bundle:
 
 ```sh
-python3 scripts/continue.py THREAD_ID
+cargo tauri build --bundles app
 ```
 
-The continuation asks Terra Medium to recall the desktop marker without supplying it. Verify the returned answer, then reopen the desktop conversation and check that the companion's new turn appears there. This tests both directions without concurrent writers.
+Output: `target/release/bundle/macos/notdot.app`. This is an optimized, locally ad-hoc-signed development artifact, not a Developer ID signed/notarized release. Use `--debug` to build the larger diagnostic variant under `target/debug/bundle/macos/`. The installed runtime is discovered at the bundled ChatGPT macOS path, then `codex` on PATH. `NOTDOT_CODEX_BIN` can select an explicit runtime executable. The OpenAI runtime is a prerequisite, not redistributed inside notdot.
 
-## Architecture decision
+## Use
 
-Proceed with a local, replaceable app-server adapter, persistent thread IDs, streamed agent events and explicit sequential desktop handoff. Keep voice and memory independent of this adapter. Do not rely on private desktop IPC or scrape authentication material.
+- Click the orb or press Space to start recording; click or press Space again to submit. Recordings stop after 60 seconds.
+- Escape cancels recording, playback and an active agent turn.
+- Drag the orb to move it. Right-click or use the tray's Settings item to customize it.
+- The colour slider previews both the orb and settings theme immediately. Closing without saving restores the saved palette. Startup hides the orb until saved settings arrive, preventing a default-blue flash.
+- Save a voice backend API key in Settings, load available voices, select one and preview it before saving. Search appears when there are more than five voices; longer lists use bounded pagination. The key is saved in the OS keychain and is never returned to the frontend. Audio goes to ElevenLabs only after explicit recording; transcripts go to the agent runtime. There is no always-on microphone.
+- Listening, transcribing, thinking, preparing speech and playback have animated orb states. Reduced-motion preference is respected. Rendering pauses while the document is hidden and caps DPR at 2.
+- Enable memory to retain explicit spoken requests such as “Remember that I prefer jasmine tea.” Review or forget notes in Settings. Disabling memory stops new note ingestion and retrieval; it does not delete saved notes.
 
-OpenAI documents app-server for custom clients, but labels the command and WebSocket transport experimental and unsupported for production workloads. Pin and revalidate the installed runtime before release.
+## Agent ownership and Desktop
 
-References: [app-server](https://learn.chatgpt.com/docs/app-server), [models](https://learn.chatgpt.com/docs/models).
+notdot keeps one long-lived `codex app-server --stdio` process, uses `gpt-6.1-terra` with Medium effort, and persists the conversation ID. The default thread is named `notdot · companion`. ChatGPT Desktop can read its stored history. Do not submit messages there: live shared ownership and live Desktop UI refresh have not been established.
 
-## Desktop handoff follow-up
+Writer conflicts are shown as errors. notdot never removes locks or automatically archives a desktop-owned conversation. Reconnect is available from Settings/tray and explicitly interrupts an active turn before replacing the runtime. The app-server interface is experimental; a compatible installed runtime and account access are required.
 
-The desktop added a completed turn saying `Can you recall this?` and recalled the original probe marker. No fresh marker was present in that turn. The companion could read that desktop history via the desktop read API, but three independent resume attempts failed with JSON-RPC -32600: `thread … already has an active writer`. The last attempt followed navigation to another chat and a 45-second wait. No lock files, database state or desktop processes were modified to bypass ownership.
+The runtime starts with read-only filesystem access and untrusted approval policy. This build rejects host approval/elicitation requests it cannot implement; it cannot fulfill every desktop-only tool or permission flow. Connected read-only tools may work with the existing account configuration, but they must not be confused with a full desktop runtime attachment.
 
-Conclusion: shared history and desktop consumption are proven; a live bidirectional companion/desktop bridge is not. Next investigate a documented shared-runtime attachment or explicit unload/release operation. A separate companion-owned thread remains viable, with desktop used for review rather than concurrent ownership.
+See [bridge investigation](docs/bridge-investigation.md) for the original experiments and limitations.
 
-## Successful explicit handoff
+## Memory
 
-A supported lifecycle workaround completed the desktop → companion → desktop round trip on 26 October 2026:
+Mnemara **0.6.0** is embedded as Rust library code with the sled backend. No separate database service is needed. Settings/thread identity use a small atomically saved JSON file. The voice-provider trait separates voice discovery, previews, STT and TTS from the UI; ElevenLabs is the first registered backend. To add another backend, implement `notdot_voice::VoiceBackend` and register its factory in `crates/notdot-voice`. Credentials are scoped per provider, and audio bytes include their MIME type. There is no arbitrary dynamic-library loading.
 
-1. Archive the idle proof chat using the desktop `set_thread_archived` operation. This released ownership in the tested runtime.
-2. Run `codex unarchive THREAD_ID`.
-3. Resume through the companion app-server process using Terra Medium.
-4. Complete the turn and close the companion process.
-5. Read and reopen the same conversation in the desktop.
+Memory data and configuration live under the platform application-data directory; on macOS that is `~/Library/Application Support/com.kabudu.notdot`.
 
-Repeated this handoff twice. First, the companion recalled the original marker. For stronger proof of desktop-origin history, a second prompt asked it to quote the earlier desktop user message without including that text. It returned `Can you recall this?` exactly. Desktop read_thread then returned that completed companion turn, and desktop navigation reopened the same thread. Raw evidence remains in ignored `.local/desktop-continuation.json` and `.local/desktop-history-recall.json`.
+Memory supports source-linked notes, bounded retrieval, deterministic provenance-preserving synthesis, duplicate compaction and forgetting. A maintenance worker reviews enabled memory every 30 minutes while no agent turn is active; Settings can run it immediately. Forgetting retracts dependent summaries. Notes remain in conversation history and the store's historical/tombstone records; forgetting excludes them from active recall, and is not a secure erasure operation. New note ingestion stops when the ledger has 2,000 records (maintenance may add derived summaries) and displays up to 100 notes in its review surface.
 
-This is an explicit archive/unarchive handoff, not simultaneous shared-runtime control or an invisible UX. The desktop archive operation was invoked through its first-party tool in this investigation; a standalone third-party companion has not yet been shown to have a supported way to invoke that desktop operation. A user can archive the idle conversation manually before companion takeover. Do not archive an active task for handoff.
+This is explicit-request memory, not automatic inference of a psychological profile. Mnemara's deterministic synthesis is not an LLM semantic-distillation pass. Automatic importance extraction and stronger long-term consolidation remain separate product work.
 
-The official app-server documentation clarifies that thread/unsubscribe affects only the requesting connection and unloads after **30 minutes** with no subscribers or activity. Our earlier 45-second wait was insufficient to test expiry, and navigating away does not prove the desktop unsubscribed. Calling unsubscribe on a separate companion server cannot release desktop ownership. No documented immediate force-release method was found in the installed protocol schema.
+Mnemara gives us memory semantics we would otherwise implement over SQLite; no comparative speed or durability claim is made. [Mnemara](https://github.com/deliberium/mnemara) is MIT licensed and compiled into the app.
 
-Shared app-server transports (stdio, Unix socket and experimental WebSocket) support custom clients, but the current desktop process exposes no default control socket. `codex app-server proxy` cannot attach here. `codex queue` is documented, but its shared-daemon/remote route is not evidence of access to the current private desktop stdio server. No daemon was started, no remote control enabled, and no private IPC or lock files modified.
+[QATQ](https://github.com/kabudu/qatq) is not used: it compresses exported tensors/KV caches, while the Terra bridge exposes conversation events and no KV-cache export. It does not solve semantic note distillation. Revisit it only for a local inference/tensor-archive requirement with representative benchmarks.
 
-Updated conclusion: sequential bidirectional history handoff is proven through archive/unarchive. Seamless live shared-runtime attachment remains unproven. For an initial companion, use a companion-owned thread and an explicit desktop handoff action, with manual desktop archive required to hand control back until a supported desktop attachment endpoint exists.
+## Voice boundary
 
-## Ownership and viewing follow-up
+The initial voice path is bounded push-to-talk using browser MediaRecorder, ElevenLabs Scribe v2 transcription, Terra, and Eleven Flash v2.5 speech. It currently buffers each recording and speech response; realtime STT/TTS streaming and full-duplex interruption are not implemented. Starting a new recording stops playback and interrupts an active agent turn. Old transcription/speech work is invalidated on cancellation before delivery.
 
-Additional controlled tests refine the earlier handoff result:
+Live provider and microphone validation depends on locally configured credentials and microphone permission. Do not infer end-to-end voice success from compilation or the agent smoke tests.
 
-- An independent client successfully invoked thread/archive, thread/unarchive and thread/resume when no other writer held the thread. No desktop-only archive tool is needed in that state.
-- In a controlled two-client test, A held the thread. B's baseline resume failed with `already has an active writer`; B's archive and unarchive both failed with the same error. Therefore an external companion cannot use archive/unarchive to evict a desktop owner. The earlier first-party desktop archive worked because it operated through the owning desktop runtime.
-- A long-lived companion client held the thread while desktop navigate_to_codex_page and read_thread accessed it. The companion then completed another Terra Medium turn without handoff. Desktop read access did not steal ownership. This demonstrates history/API viewing, not live native UI repaint, UI submission semantics, or desktop capabilities inside the companion. Computer-use restrictions prevent automated native UI verification.
+## Validation
 
-Preferred product mode: notdot remains the single writer. Desktop is optional history viewing. Do not automatically archive on writer-lock errors; surface ownership and request a supported release instead. No seamless reclaim from desktop is currently proven. Current tests must not be described as live shared-runtime control.
+```sh
+cargo fmt --all --check
+cargo test -p notdot-core -p notdot-voice
+cargo clippy -p notdot-core -p notdot-voice -p notdot --all-targets -- -D warnings
+cargo clippy -p notdot-orb --target wasm32-unknown-unknown -- -D warnings
+cargo clippy -p notdot-orb --target wasm32-unknown-unknown --features debug-ui -- -D warnings
+cargo run -p notdot-core --example bridge_smoke
+```
 
-Evidence: ignored `.local/cross-owner.json`, `.local/viewer-events.json`, `.local/ownership.json`. Repeatable viewer and lifecycle probes are in scripts/viewer.py and scripts/ownership.py. The lifecycle probe changes archive state and is intended only for the disposable proof conversation.
+The smoke example uses real account inference and stores a separate test conversation ID in ignored `.local/rust-smoke/`. Native and WASM tests cover settings restart, memory restart/forget/derived-summary retraction, explicit retention intent, interleaved protocol events, writer errors and runtime exit.
 
-## Intended product stack and UI
+A text composer exists only in the explicitly enabled frontend `debug-ui` feature for development. The default frontend and bundled HTML have no composer or conversation transcript. To use it in development, run `trunk serve --features debug-ui` in one terminal, then `cargo tauri dev --config '{"build":{"beforeDevCommand":""}}'` in another. Normal app builds do not enable it. The historical Python scripts remain investigation tools, not application dependencies.
 
-Current implementation is Python 3 standard-library probe code driving the installed Codex app-server over JSONL stdio. There is no production UI or voice implementation yet.
+The debug native binary also accepts `--voice-smoke`: it synthesizes a fixed test phrase with the saved voice, transcribes the generated audio, and verifies the returned phrase without using the microphone. This consumes a small amount of voice-provider usage. This diagnostic is compiled out of release builds.
 
-The intended product can be predominantly Rust:
-
-- Tauri 2 desktop shell and Rust backend; Tokio for process/stream coordination, Serde for protocol messages, SQLite for settings and memory, OS keychain for credentials.
-- Rust owns agent lifecycle, single-writer state, voice transport, audio coordination, memory and persistence.
-- Small canvas frontend extracted from Lumina's existing Canvas 2D renderer. A thin TypeScript renderer is the lowest-risk visual port; a Rust/WASM renderer is feasible if Rust throughout the UI is preferred. Tauri itself uses a system webview, so a WASM route still needs HTML/CSS and minimal browser/IPC glue.
-- Normal interface: only a draggable orb, in a transparent borderless window, with no Lumina panels, dashboard, status cards or composer. Show listening/thinking/speaking/error state through orb animation. Onboarding/settings appear separately on demand through a tray/context menu or shortcut.
-
-Rust/WASM rendering is an architectural option, not implemented or benchmarked. No Tauri scaffold or orb was built during bridge investigation. macOS transparent-webview requirements and distribution implications must be validated against the selected Tauri release before packaging.
+The release profile explicitly disables symbol stripping to avoid Rust/LLVM's macOS 27 Mach-O proc-macro alignment issue ([upstream report](https://github.com/rust-lang/rust/issues/157750)). The optimized local app bundle was built successfully with this configuration.
