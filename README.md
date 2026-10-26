@@ -74,3 +74,28 @@ The official app-server documentation clarifies that thread/unsubscribe affects 
 Shared app-server transports (stdio, Unix socket and experimental WebSocket) support custom clients, but the current desktop process exposes no default control socket. `codex app-server proxy` cannot attach here. `codex queue` is documented, but its shared-daemon/remote route is not evidence of access to the current private desktop stdio server. No daemon was started, no remote control enabled, and no private IPC or lock files modified.
 
 Updated conclusion: sequential bidirectional history handoff is proven through archive/unarchive. Seamless live shared-runtime attachment remains unproven. For an initial companion, use a companion-owned thread and an explicit desktop handoff action, with manual desktop archive required to hand control back until a supported desktop attachment endpoint exists.
+
+## Ownership and viewing follow-up
+
+Additional controlled tests refine the earlier handoff result:
+
+- An independent client successfully invoked thread/archive, thread/unarchive and thread/resume when no other writer held the thread. No desktop-only archive tool is needed in that state.
+- In a controlled two-client test, A held the thread. B's baseline resume failed with `already has an active writer`; B's archive and unarchive both failed with the same error. Therefore an external companion cannot use archive/unarchive to evict a desktop owner. The earlier first-party desktop archive worked because it operated through the owning desktop runtime.
+- A long-lived companion client held the thread while desktop navigate_to_codex_page and read_thread accessed it. The companion then completed another Terra Medium turn without handoff. Desktop read access did not steal ownership. This demonstrates history/API viewing, not live native UI repaint, UI submission semantics, or desktop capabilities inside the companion. Computer-use restrictions prevent automated native UI verification.
+
+Preferred product mode: notdot remains the single writer. Desktop is optional history viewing. Do not automatically archive on writer-lock errors; surface ownership and request a supported release instead. No seamless reclaim from desktop is currently proven. Current tests must not be described as live shared-runtime control.
+
+Evidence: ignored `.local/cross-owner.json`, `.local/viewer-events.json`, `.local/ownership.json`. Repeatable viewer and lifecycle probes are in scripts/viewer.py and scripts/ownership.py. The lifecycle probe changes archive state and is intended only for the disposable proof conversation.
+
+## Intended product stack and UI
+
+Current implementation is Python 3 standard-library probe code driving the installed Codex app-server over JSONL stdio. There is no production UI or voice implementation yet.
+
+The intended product can be predominantly Rust:
+
+- Tauri 2 desktop shell and Rust backend; Tokio for process/stream coordination, Serde for protocol messages, SQLite for settings and memory, OS keychain for credentials.
+- Rust owns agent lifecycle, single-writer state, voice transport, audio coordination, memory and persistence.
+- Small canvas frontend extracted from Lumina's existing Canvas 2D renderer. A thin TypeScript renderer is the lowest-risk visual port; a Rust/WASM renderer is feasible if Rust throughout the UI is preferred. Tauri itself uses a system webview, so a WASM route still needs HTML/CSS and minimal browser/IPC glue.
+- Normal interface: only a draggable orb, in a transparent borderless window, with no Lumina panels, dashboard, status cards or composer. Show listening/thinking/speaking/error state through orb animation. Onboarding/settings appear separately on demand through a tray/context menu or shortcut.
+
+Rust/WASM rendering is an architectural option, not implemented or benchmarked. No Tauri scaffold or orb was built during bridge investigation. macOS transparent-webview requirements and distribution implications must be validated against the selected Tauri release before packaging.
