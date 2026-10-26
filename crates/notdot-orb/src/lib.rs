@@ -106,6 +106,10 @@ fn apply_theme(hue: u16) {
         let _ = root.set_attribute("style", &format!("--hue:{hue}"));
     }
 }
+fn close_voice_picker() {
+    let _ = element("voice-popup").set_attribute("hidden", "");
+    let _ = element("voice-toggle").set_attribute("aria-expanded", "false");
+}
 fn render_voice_options(view: &Shared, chosen: &str, saved_name: &str) {
     let dropdown = element("voice");
     dropdown.set_text_content(None);
@@ -131,6 +135,34 @@ fn render_voice_options(view: &Shared, chosen: &str, saved_name: &str) {
         let _ = dropdown.append_child(&option);
     }
     select("voice").set_value(chosen);
+    let name = state
+        .voices
+        .iter()
+        .find(|v| v.id == chosen)
+        .map(|v| v.name.as_str())
+        .unwrap_or(saved_name);
+    element("voice-value").set_text_content(Some(if chosen.is_empty() {
+        "Choose a voice"
+    } else if name.is_empty() {
+        "Saved voice"
+    } else {
+        name
+    }));
+    let _ = element("preview-voice").toggle_attribute_with_force("disabled", chosen.is_empty());
+    let results = element("voice-results");
+    results.set_text_content(None);
+    for voice in &state.voices {
+        let button = document().create_element("button").expect("voice choice");
+        let _ = button.set_attribute("type", "button");
+        let _ = button.set_attribute(
+            "aria-pressed",
+            if voice.id == chosen { "true" } else { "false" },
+        );
+        button.set_text_content(Some(&voice.name));
+        let _ = button.set_attribute("data-voice-id", &voice.id);
+        let _ = button.set_attribute("data-description", &voice.description);
+        let _ = results.append_child(&button);
+    }
 }
 async fn load_catalog(view: Shared, append: bool) -> Result<(), String> {
     let provider = select("provider").value();
@@ -163,7 +195,7 @@ async fn load_catalog(view: Shared, append: bool) -> Result<(), String> {
     }
     let page: VoicePage = serde_wasm_bindgen::from_value(result?).map_err(|e| e.to_string())?;
     let chosen = select("voice").value();
-    let saved_name = view.borrow().snapshot.settings.voice_name.clone();
+    let saved_name = element("voice-value").text_content().unwrap_or_default();
     let has_more = page.next_cursor.is_some()
         && (!append || view.borrow().voices.len() + page.voices.len() <= 1000);
     if search.is_empty() {
@@ -224,6 +256,7 @@ fn on(target: &web_sys::EventTarget, event: &str, f: impl FnMut(Event) + 'static
 }
 fn open_panel(view: &Shared) {
     let s = view.borrow().snapshot.settings.clone();
+    close_voice_picker();
     input("name").set_value(&s.name);
     input("hue").set_value(&s.hue.to_string());
     select("provider").set_value(&s.voice_provider);
@@ -657,6 +690,57 @@ pub fn start() -> Result<(), JsValue> {
         message("Enter this backend's key, then load voices.");
     });
     let target = view.clone();
+    on(element("voice-results").as_ref(), "click", |event| {
+        let Some(button) = event
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+        else {
+            return;
+        };
+        let Some(id) = button.get_attribute("data-voice-id") else {
+            return;
+        };
+        select("voice").set_value(&id);
+        element("voice-value").set_text_content(button.text_content().as_deref());
+        let _ = element("preview-voice").remove_attribute("disabled");
+        element("voice-info").set_text_content(button.get_attribute("data-description").as_deref());
+        close_voice_picker();
+        let _ = element("voice-toggle")
+            .unchecked_into::<web_sys::HtmlElement>()
+            .focus();
+    });
+    on(element("voice-toggle").as_ref(), "click", |_| {
+        if element("voice-popup").has_attribute("hidden") {
+            let _ = element("voice-popup").remove_attribute("hidden");
+            let _ = element("voice-toggle").set_attribute("aria-expanded", "true");
+            if !element("voice-search-label").has_attribute("hidden") {
+                let _ = input("voice-search").focus();
+            }
+        } else {
+            close_voice_picker();
+        }
+    });
+    on(element("voice-popup").as_ref(), "keydown", |event| {
+        if let Ok(key) = event.dyn_into::<web_sys::KeyboardEvent>() {
+            if key.key() == "Escape" {
+                key.prevent_default();
+                key.stop_propagation();
+                close_voice_picker();
+                let _ = element("voice-toggle")
+                    .unchecked_into::<web_sys::HtmlElement>()
+                    .focus();
+            } else if key.key() == "ArrowDown"
+                && key
+                    .target()
+                    .is_some_and(|t| t == element("voice-search").into())
+            {
+                key.prevent_default();
+                if let Some(first) = element("voice-results").first_element_child() {
+                    let _ = first.unchecked_into::<web_sys::HtmlElement>().focus();
+                }
+            }
+        }
+    });
     on(element("voice-search").as_ref(), "input", move |_| {
         let generation = {
             let mut v = target.borrow_mut();
@@ -740,13 +824,7 @@ pub fn start() -> Result<(), JsValue> {
         settings.hue = input("hue").value().parse().unwrap_or(192);
         settings.voice_id = select("voice").value();
         settings.voice_provider = select("provider").value();
-        settings.voice_name = target
-            .borrow()
-            .voices
-            .iter()
-            .find(|v| v.id == settings.voice_id)
-            .map(|v| v.name.clone())
-            .unwrap_or_else(|| target.borrow().snapshot.settings.voice_name.clone());
+        settings.voice_name = element("voice-value").text_content().unwrap_or_default();
         if settings.voice_id.is_empty() {
             settings.voice_name.clear();
         }
