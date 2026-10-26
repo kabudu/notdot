@@ -16,6 +16,8 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --all --check
       - run: cargo test -p notdot-core -p notdot-voice --locked
+      - name: Orb gesture regression
+        run: rustc --edition 2024 --test crates/notdot-orb/src/interaction.rs -o /tmp/notdot-gesture-tests && /tmp/notdot-gesture-tests
       - run: cargo clippy -p notdot-core -p notdot-voice -p notdot --all-targets --locked -- -D warnings
       - run: cargo clippy -p notdot-orb --target wasm32-unknown-unknown --locked -- -D warnings
       - run: cargo clippy -p notdot-orb --target wasm32-unknown-unknown --features debug-ui --locked -- -D warnings

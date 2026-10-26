@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+mod interaction;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{cell::RefCell, f64::consts::TAU, rc::Rc};
@@ -516,20 +517,21 @@ pub fn start() -> Result<(), JsValue> {
         e.prevent_default();
         open_panel(&target);
     });
-    let origin = Rc::new(RefCell::new((0, 0)));
+    let origin = Rc::new(RefCell::new(interaction::Gesture::default()));
     let point = origin.clone();
     on(canvas.as_ref(), "mousedown", move |e| {
         if let Ok(e) = e.dyn_into::<web_sys::MouseEvent>() {
-            *point.borrow_mut() = (e.client_x(), e.client_y());
+            point.borrow_mut().press(e.client_x(), e.client_y());
         }
     });
     let down = origin.clone();
-    on(canvas.as_ref(), "mousemove", move |e| {
-        if let Ok(e) = e.dyn_into::<web_sys::MouseEvent>() {
-            let (x, y) = *down.borrow();
-            if e.buttons() == 1 && (e.client_x() - x).abs() + (e.client_y() - y).abs() > 6 {
-                let _ = drag();
-            }
+    on(canvas.as_ref(), "mousemove", move |event| {
+        if let Ok(event) = event.dyn_into::<web_sys::MouseEvent>()
+            && down
+                .borrow_mut()
+                .moved(event.client_x(), event.client_y(), event.buttons() == 1)
+        {
+            let _ = drag();
         }
     });
     let target = view.clone();
@@ -537,11 +539,10 @@ pub fn start() -> Result<(), JsValue> {
         let Ok(e) = e.dyn_into::<web_sys::MouseEvent>() else {
             return;
         };
-        if e.button() != 0 || e.ctrl_key() {
-            return;
-        }
-        let (x, y) = *origin.borrow();
-        if (e.client_x() - x).abs() + (e.client_y() - y).abs() > 6 {
+        if !origin
+            .borrow()
+            .activates(e.client_x(), e.client_y(), e.button(), e.ctrl_key())
+        {
             return;
         }
         let target = target.clone();
