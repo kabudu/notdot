@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
+mod audio_meter;
 mod interaction;
+mod visual_state;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{cell::RefCell, f64::consts::TAU, rc::Rc};
@@ -35,6 +37,7 @@ struct Snapshot {
     reply: String,
     error: Option<String>,
     key_configured: bool,
+    window_visible: bool,
 }
 #[derive(Clone, Deserialize)]
 struct VoiceChoice {
@@ -71,6 +74,11 @@ struct View {
     catalog_generation: u64,
     preview_hue: Option<u16>,
     initialized: bool,
+    meter: audio_meter::Meter,
+    last_mode: visual_state::Mode,
+    last_report: f64,
+    frames: u64,
+    peak_speaking_rms: f64,
 }
 type Shared = Rc<RefCell<View>>;
 fn window() -> web_sys::Window {
@@ -275,6 +283,8 @@ fn stop_audio(view: &Shared) {
     v.generation += 1;
     v.voice_pending = false;
     v.local_phase = None;
+    v.meter.clear_microphone();
+    v.meter.clear_playback();
     if let Some(recording) = v.recording.take() {
         let _ = recording.stop();
     }
@@ -324,6 +334,7 @@ async fn play_encoded(view: Shared, value: JsValue, generation: u64) -> Result<(
             element("voice-info").set_text_content(Some("Playback finished"));
         }
     });
+    let _ = view.borrow_mut().meter.playback(&audio);
     JsFuture::from(audio.play().map_err(js_error)?)
         .await
         .map_err(js_error)?;
@@ -423,6 +434,7 @@ async fn voice(view: Shared) -> Result<(), String> {
             let mut v = target.borrow_mut();
             v.recording = None;
             v.stream = None;
+            v.meter.clear_microphone();
             v.local_phase = Some("transcribing");
         }
         let pieces = js_sys::Array::new();
@@ -479,6 +491,7 @@ async fn voice(view: Shared) -> Result<(), String> {
     }
     {
         let mut v = view.borrow_mut();
+        let _ = v.meter.microphone(&stream);
         v.recording = Some(recorder.clone());
         v.stream = Some(stream);
         v.snapshot.phase = "listening".into();
@@ -545,6 +558,7 @@ pub fn start() -> Result<(), JsValue> {
         {
             return;
         }
+        let _ = target.borrow_mut().meter.unlock();
         let target = target.clone();
         spawn_local(async move {
             if let Err(e) = voice(target.clone()).await {
@@ -577,6 +591,7 @@ pub fn start() -> Result<(), JsValue> {
                     .is_some_and(|e| e.unchecked_into::<HtmlDialogElement>().open())
             {
                 e.prevent_default();
+                let _ = target.borrow_mut().meter.unlock();
                 let target = target.clone();
                 spawn_local(async move {
                     if let Err(e) = voice(target.clone()).await {
@@ -683,6 +698,7 @@ pub fn start() -> Result<(), JsValue> {
             return;
         }
         stop_audio(&target);
+        let _ = target.borrow_mut().meter.unlock();
         let generation = target.borrow().generation;
         target.borrow_mut().local_phase = Some("synthesizing");
         let view = target.clone();
@@ -711,7 +727,7 @@ pub fn start() -> Result<(), JsValue> {
             && !key
                 .target()
                 .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-                .is_some_and(|e| e.id() == "save-settings")
+                .is_some_and(|e| e.tag_name() == "BUTTON")
         {
             key.prevent_default();
         }
@@ -899,8 +915,8 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
     *callback.borrow_mut() = Some(Closure::new(move |now: f64| {
         let mut v = view.borrow_mut();
         if v.initialized
+            && v.snapshot.window_visible
             && now - v.last_frame >= if reduced { 100. } else { 33. }
-            && !document().hidden()
         {
             v.last_frame = now;
             let w = canvas.client_width() as f64;
@@ -914,36 +930,85 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
             }
             let _ = context.set_transform(dpr, 0., 0., dpr, 0., 0.);
             context.clear_rect(0., 0., w, h);
-            let phase = if v.audio.as_ref().is_some_and(|a| !a.paused()) {
-                "speaking"
-            } else {
-                v.local_phase.unwrap_or(v.snapshot.phase.as_str())
-            };
-            let pace = match phase {
-                "thinking" | "connecting" | "transcribing" | "synthesizing" => 1.7,
-                _ => 1.,
-            };
-            let target = match phase {
-                "thinking" | "connecting" | "transcribing" | "synthesizing" => 0.5,
-                "speaking" => 0.65,
-                "listening" => 0.3,
+            let playing = v
+                .audio
+                .as_ref()
+                .is_some_and(|audio| !audio.paused() && !audio.ended());
+            let mode = visual_state::Mode::resolve(
+                v.local_phase.unwrap_or(v.snapshot.phase.as_str()),
+                playing,
+            );
+            let level = v.meter.sample(mode == visual_state::Mode::Listening);
+            let energy = (level.rms * 4.5).min(1.);
+            let target = match mode {
+                visual_state::Mode::Thinking => 0.65,
+                visual_state::Mode::Speaking | visual_state::Mode::Listening => {
+                    0.22 + energy * 0.78
+                }
                 _ => 0.08,
             };
-            v.amplitude += (target - v.amplitude) * 0.1;
-            let hue = if v.snapshot.error.is_some() {
+            v.amplitude += (target - v.amplitude) * 0.22;
+            let hue = if mode == visual_state::Mode::Error {
                 12.
             } else {
                 v.preview_hue.unwrap_or(v.snapshot.settings.hue) as f64
             };
+            let time = if reduced { 0. } else { now / 1000. };
+            let scale = match mode {
+                visual_state::Mode::Speaking | visual_state::Mode::Listening => {
+                    1. + energy * if reduced { 0.035 } else { 0.12 }
+                }
+                visual_state::Mode::Thinking => {
+                    1. + if reduced {
+                        0.
+                    } else {
+                        0.045 * (time * 3.).sin()
+                    }
+                }
+                _ => 1.,
+            };
+            let radius = w.min(h) * 0.17;
             draw(
                 &context,
                 w / 2.,
                 h / 2.,
-                w.min(h) * 0.17,
-                if reduced { 0. } else { now / 1000. * pace },
+                radius * scale,
+                time,
                 hue,
                 v.amplitude,
             );
+            draw_activity(
+                &context,
+                ActivityFrame {
+                    center: (w / 2., h / 2.),
+                    radius,
+                    time,
+                    hue,
+                    mode,
+                    reduced,
+                },
+                &level,
+            );
+            if mode == visual_state::Mode::Speaking {
+                v.peak_speaking_rms = v.peak_speaking_rms.max(level.rms);
+            }
+            v.frames += 1;
+            if v.frames == 1
+                || v.last_mode != mode
+                || (matches!(
+                    mode,
+                    visual_state::Mode::Thinking
+                        | visual_state::Mode::Speaking
+                        | visual_state::Mode::Listening
+                ) && now - v.last_report >= 1000.)
+            {
+                v.last_mode = mode;
+                v.last_report = now;
+                let report = json!({"mode":mode.name(),"reduced":reduced,"rms":level.rms,"metered":level.metered,"frames":v.frames,"peak_speaking_rms":v.peak_speaking_rms});
+                spawn_local(async move {
+                    let _ = call("report_visual", json!({"report":report})).await;
+                });
+            }
         }
         drop(v);
         if let Some(f) = next.borrow().as_ref() {
@@ -1107,4 +1172,55 @@ async fn review_memories() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+struct ActivityFrame {
+    center: (f64, f64),
+    radius: f64,
+    time: f64,
+    hue: f64,
+    mode: visual_state::Mode,
+    reduced: bool,
+}
+fn draw_activity(c: &Context, frame: ActivityFrame, level: &audio_meter::Level) {
+    let ActivityFrame {
+        center: (x, y),
+        radius: r,
+        time: t,
+        hue,
+        mode,
+        reduced,
+    } = frame;
+    use visual_state::Mode;
+    c.save();
+    c.set_line_cap("round");
+    if mode == Mode::Thinking {
+        for i in 0..28 {
+            let a = t * 2.9 + i as f64 * 0.075;
+            let alpha = (i as f64 / 27.).powf(1.5) * 0.9 + 0.05;
+            c.set_line_width(3. + i as f64 / 28.);
+            c.set_stroke_style_str(&format!("hsla({hue},95%,47%,{alpha})"));
+            c.begin_path();
+            let _ = c.arc(x, y, r * 2.02, a, a + 0.06);
+            c.stroke();
+        }
+    } else if matches!(mode, Mode::Speaking | Mode::Listening) {
+        c.set_line_width(3.);
+        c.set_stroke_style_str(&format!("hsla({hue},90%,48%,.9)"));
+        for i in 0..48 {
+            let a = i as f64 / 48. * TAU;
+            let sample = if level.metered {
+                level.waveform[i] * 4.5
+            } else {
+                0.15 + 0.12 * (t * 8. + i as f64 * 0.7).sin().abs()
+            };
+            let height = 3. + sample.min(1.) * if reduced { 12. } else { 30. };
+            let base = r * 1.78;
+            c.begin_path();
+            c.move_to(x + a.cos() * base, y + a.sin() * base);
+            c.line_to(x + a.cos() * (base + height), y + a.sin() * (base + height));
+            c.stroke();
+        }
+    }
+    c.restore();
 }

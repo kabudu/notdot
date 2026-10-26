@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 use notdot_core::{bridge::Bridge, memory::Memory, settings::Settings};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{
     path::PathBuf,
     sync::{
@@ -23,6 +23,7 @@ struct Snapshot {
     reply: String,
     error: Option<String>,
     key_configured: bool,
+    window_visible: bool,
     active_turn: Option<String>,
 }
 struct AppState {
@@ -34,6 +35,67 @@ struct AppState {
     generation: AtomicU64,
     voice_http: reqwest::Client,
     voice_gate: tokio::sync::Semaphore,
+    visual: Mutex<VisualLog>,
+}
+#[derive(Default)]
+struct VisualLog {
+    current: Value,
+    transitions: std::collections::VecDeque<Value>,
+    peak_speaking_rms: f64,
+    last_write: Option<std::time::Instant>,
+}
+#[tauri::command]
+async fn report_visual(state: State<'_, Arc<AppState>>, report: Value) -> Result<(), String> {
+    let mode = report["mode"]
+        .as_str()
+        .filter(|s| matches!(*s, "idle" | "listening" | "thinking" | "speaking" | "error"))
+        .ok_or("Invalid visual mode")?;
+    let rms = report["rms"]
+        .as_f64()
+        .filter(|n| n.is_finite() && (0.0..=1.0).contains(n))
+        .ok_or("Invalid audio level")?;
+    let Ok(mut log) = state.visual.try_lock() else {
+        return Ok(());
+    };
+    let changed = log.current["mode"] != mode;
+    if !changed
+        && log
+            .last_write
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(750))
+    {
+        return Ok(());
+    }
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis() as u64;
+    let current = json!({"mode":mode,"rms":rms,"reduced":report["reduced"].as_bool().unwrap_or(false),"metered":report["metered"].as_bool().unwrap_or(false),"frames":report["frames"].as_u64().unwrap_or(0),"timestamp_ms":timestamp});
+    if mode == "speaking" {
+        log.peak_speaking_rms = log.peak_speaking_rms.max(rms);
+    }
+    if let Some(peak) = report["peak_speaking_rms"]
+        .as_f64()
+        .filter(|n| n.is_finite() && (0.0..=1.0).contains(n))
+    {
+        log.peak_speaking_rms = log.peak_speaking_rms.max(peak);
+    }
+    if changed {
+        if log.transitions.len() == 16 {
+            log.transitions.pop_front();
+        }
+        log.transitions.push_back(current.clone());
+    }
+    log.current = current;
+    log.last_write = Some(std::time::Instant::now());
+    let data=serde_json::to_vec_pretty(&json!({"current":log.current,"transitions":log.transitions,"peak_speaking_rms":log.peak_speaking_rms})).map_err(|e|e.to_string())?;
+    let path = state.path.with_file_name("visual-status.json");
+    tokio::task::spawn_blocking(move || {
+        let temp = path.with_extension("tmp");
+        std::fs::write(&temp, data).and_then(|()| std::fs::rename(temp, path))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 fn credential_for(provider: &str) -> Result<keyring::Entry, String> {
     if !notdot_voice::providers().iter().any(|p| p.id == provider) {
@@ -47,9 +109,16 @@ fn runtime() -> PathBuf {
  })
 }
 #[tauri::command]
-async fn snapshot(state: State<'_, Arc<AppState>>) -> Result<Snapshot, String> {
-    Ok(state.snapshot.lock().await.clone())
+async fn snapshot(
+    window: tauri::WebviewWindow,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Snapshot, String> {
+    let mut snapshot = state.snapshot.lock().await.clone();
+    snapshot.window_visible =
+        window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
+    Ok(snapshot)
 }
+
 #[tauri::command]
 async fn save_settings(
     state: State<'_, Arc<AppState>>,
@@ -496,7 +565,8 @@ fn main() {
             voice_providers,
             save_voice_key,
             voice_catalog,
-            preview_voice
+            preview_voice,
+            report_visual
         ])
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
@@ -521,6 +591,7 @@ fn main() {
                     error: None,
                     active_turn: None,
                     key_configured,
+                    window_visible: true,
                 }),
                 bridge: Mutex::new(None),
                 memory,
@@ -529,6 +600,7 @@ fn main() {
                 generation: AtomicU64::new(0),
                 voice_http: notdot_voice::http_client().map_err(std::io::Error::other)?,
                 voice_gate: tokio::sync::Semaphore::new(4),
+                visual: Mutex::new(VisualLog::default()),
             });
             app.manage(state.clone());
             let maintenance = state.clone();

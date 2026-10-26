@@ -32,3 +32,9 @@ Environment: macOS arm64; Rust/Cargo 1.97.0; Tauri 2.12.5; Trunk 0.22.1; install
 At implementation commit `569e989`, GitHub Actions run [40415491777](https://github.com/kabudu/notdot/actions/runs/40415491777) failed before executing any steps. Its check annotation states: “The job was not started because recent account payments have failed or your spending limit needs to be increased.” No runner logs exist because the job did not start. Local checks and the optimized bundle build passed; this does not substitute for remote CI. PR remains draft/unmerged pending account remediation and a successful run.
 
 An additional pure Rust gesture regression verifies that a native window drag cannot activate recording when local coordinates return to their original position; primary clicks still activate, and secondary/control-clicks do not.
+
+## Animation follow-up
+
+The original amplitude-only motion was too subtle to establish an obvious thinking/speaking state. The renderer now uses an explicit mode mapping, a high-contrast rotating thinking halo, and radial waveform/body pulses measured from Web Audio during recording/playback. Native window visibility controls drawing; background suspension is disabled on macOS 14+ so the floating companion can keep updating without focus.
+
+Two additional pure Rust tests cover waiting-stage/playback mode mapping and silence/known-waveform RMS. During a live native preview, the local diagnostic recorded `idle → thinking → speaking → idle`, advancing rendered frames, `reduced=false`, metering enabled during playback, and a measured peak speaking RMS of approximately 0.269. This is measured playback data, not a synthetic amplitude setting. A bounded local status file makes future visual-state failures diagnosable without storing speech content.

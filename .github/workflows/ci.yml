@@ -21,5 +21,7 @@ jobs:
       - run: cargo clippy -p notdot-core -p notdot-voice -p notdot --all-targets --locked -- -D warnings
       - run: cargo clippy -p notdot-orb --target wasm32-unknown-unknown --locked -- -D warnings
       - run: cargo clippy -p notdot-orb --target wasm32-unknown-unknown --features debug-ui --locked -- -D warnings
+      - name: Orb visual state and RMS regression
+        run: rustc --edition 2024 --test crates/notdot-orb/src/visual_state.rs -o /tmp/notdot-visual-tests && /tmp/notdot-visual-tests
       - name: No production conversation UI
         run: python3 -c "from pathlib import Path; s=Path('index.html').read_text(); assert 'composer' not in s and '<textarea' not in s"

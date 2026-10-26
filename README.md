@@ -4,7 +4,7 @@ A private, local desktop companion built with Rust, Tauri 2 and a Rust/WASM orb.
 
 ## Run the development app
 
-Requires macOS, Rust 1.97+, `wasm32-unknown-unknown`, Trunk, Tauri CLI, and a supported installed Codex runtime signed into your ChatGPT account.
+Requires macOS 14+, Rust 1.97+, `wasm32-unknown-unknown`, Trunk, Tauri CLI, and a supported installed Codex runtime signed into your ChatGPT account.
 
 ```sh
 rustup target add wasm32-unknown-unknown
@@ -28,7 +28,7 @@ Output: `target/release/bundle/macos/notdot.app`. This is an optimized, locally 
 - Drag the orb to move it. Right-click or use the tray's Settings item to customize it.
 - The colour slider previews both the orb and settings theme immediately. Closing without saving restores the saved palette. Startup hides the orb until saved settings arrive, preventing a default-blue flash.
 - Save a voice backend API key in Settings, load available voices, select one and preview it before saving. Search appears when there are more than five voices; longer lists use bounded pagination. The key is saved in the OS keychain and is never returned to the frontend. Audio goes to ElevenLabs only after explicit recording; transcripts go to the agent runtime. There is no always-on microphone.
-- Listening, transcribing, thinking, preparing speech and playback have animated orb states. Reduced-motion preference is respected. Rendering pauses while the document is hidden and caps DPR at 2.
+- Thinking has a clear rotating comet halo. Listening and playback use an audio-reactive radial waveform and body pulses, with a visible fallback when a meter is unavailable. Transcription and speech preparation use the waiting halo. Reduced-motion preference is respected. Rendering caps frame rate at 30 FPS and DPR at 2; drawing pauses when the native window is hidden/minimized. Webview background suspension is disabled so a visible, unfocused orb and its voice callbacks keep running.
 - Enable memory to retain explicit spoken requests such as “Remember that I prefer jasmine tea.” Review or forget notes in Settings. Disabling memory stops new note ingestion and retrieval; it does not delete saved notes.
 
 ## Agent ownership and Desktop
@@ -79,3 +79,5 @@ A text composer exists only in the explicitly enabled frontend `debug-ui` featur
 The debug native binary also accepts `--voice-smoke`: it synthesizes a fixed test phrase with the saved voice, transcribes the generated audio, and verifies the returned phrase without using the microphone. This consumes a small amount of voice-provider usage. This diagnostic is compiled out of release builds.
 
 The release profile explicitly disables symbol stripping to avoid Rust/LLVM's macOS 27 Mach-O proc-macro alignment issue ([upstream report](https://github.com/rust-lang/rust/issues/157750)). The optimized local app bundle was built successfully with this configuration.
+
+For animation diagnostics, `visual-status.json` in the app-data directory contains the current visual mode, a bounded recent transition list and peak speaking RMS. It contains no transcript or audio samples. Reports are local only and stop while idle; actual drawing pauses when the native window is hidden/minimized. Background webview suspension is disabled on supported macOS versions so a visible, unfocused orb remains animated.
