@@ -10,9 +10,11 @@ Current native acceptance is blocked by the locked Mac and test-build keychain a
 - Debug QA credentials permit existing-key reads/explicit authorisation, but reject saving or deleting OS credentials. QA startup changes and live update installation are also blocked. These restrictions prevent tests from changing shared OS state. No API key is copied to the QA settings file.
 - Build: `cargo tauri build --debug --bundles app --config src-tauri/tauri.qa.conf.json`. This does not enable the debug text composer.
 
+For the synthetic provider API probe after authorisation, run the **same signed QA bundle executable**, not a separately built bare CLI binary: `"target/debug/bundle/macos/notdot QA.app/Contents/MacOS/notdot" --voice-smoke`. It reads that build’s QA settings, prints completed TTS/STT timings, and never requests an authentication prompt. This probe excludes model inference, microphone and speaker; it cannot replace the native steps below.
+
 ## Required native checks
 
-1. Unlock the Mac, open the QA app and use Command/Control+comma to open Settings. Authorise the saved key locally if needed; never paste a key into a test report. Confirm the purple QA palette and isolated profile.
+1. Unlock the Mac, finish any active production turn and quit the production app to avoid two listeners. Open the QA app and use Command/Control+comma to open Settings. Authorise the saved key locally if needed; never paste a key into a test report. Confirm the purple QA palette and isolated profile.
 2. Check keyboard Tab/Shift+Tab order, focus rings, labelled dialogs/selectors/switches and VoiceOver names/status. With About open, Space must activate the focused control without starting the microphone. Check reduced-motion changes while running, narrow viewport/scrolling and multiple hue values.
 3. Select/preview a voice, then record “What is seven plus five?” by orb click and separately by Enter/Space. Verify actual capture, transcription, correct spoken answer, and visibly distinct listening/thinking/speaking animation. Record wall-clock capture-stop-to-first-audio latency and listener confirmation. Inspect the QA `visual-status.json` only for mode/frame/RMS evidence; it is not proof that the speaker produced audible sound.
 4. Cancel during capture, model waiting and playback. Confirm no missing-turnId error, late reply playback or stuck busy state. Test microphone denied/unplugged, network/provider errors and a deliberately unsupported saved model in the QA file, restoring supported settings afterward.
