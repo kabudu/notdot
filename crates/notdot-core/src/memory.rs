@@ -1,3 +1,10 @@
+// Sled shares its flush pool across databases. Parallel temporary-store tests
+// can starve that pool; the app owns one ledger. Serialize only these store
+// fixtures while retaining all assertions and per-ledger concurrency checks.
+#[cfg(test)]
+static TEST_STORE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+mod learning;
+pub use learning::*;
 use mnemara::{
     CompactionRequest, DeleteRequest, EngineConfig, ExportRequest, MemoryHistoricalState,
     MemoryQualityState, MemoryRecord, MemoryRecordKind, MemoryScope, MemoryStore, MemoryTrustLevel,
@@ -10,10 +17,12 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 pub struct Memory {
+    policy: tokio::sync::watch::Sender<LearningPolicy>,
     store: SledMemoryStore,
     mutations: tokio::sync::Mutex<()>,
     revision: std::sync::atomic::AtomicU64,
     maintained: std::sync::atomic::AtomicU64,
+    semantic_reviewed: std::sync::atomic::AtomicU64,
 }
 fn scope() -> MemoryScope {
     MemoryScope {
@@ -27,19 +36,32 @@ fn scope() -> MemoryScope {
 }
 impl Memory {
     pub fn open(path: &Path) -> Result<Self, String> {
+        Self::open_with_learning(path, false)
+    }
+    pub fn open_with_learning(path: &Path, enabled: bool) -> Result<Self, String> {
         let mut config = EngineConfig::default();
         config.compaction.summarize_after_record_count = 2;
         SledMemoryStore::open(SledStoreConfig::new(path).with_engine_config(config))
             .map(|store| Self {
+                policy: tokio::sync::watch::channel(LearningPolicy { enabled, epoch: 0 }).0,
                 store,
                 mutations: tokio::sync::Mutex::new(()),
                 revision: std::sync::atomic::AtomicU64::new(1),
                 maintained: std::sync::atomic::AtomicU64::new(0),
+                semantic_reviewed: std::sync::atomic::AtomicU64::new(0),
             })
             .map_err(|e| e.to_string())
     }
     pub async fn remember(&self, text: &str, thread: &str) -> Result<String, String> {
         let _gate = self.mutations.lock().await;
+        self.remember_unlocked(text, thread, None).await
+    }
+    async fn remember_unlocked(
+        &self,
+        text: &str,
+        thread: &str,
+        turn: Option<&str>,
+    ) -> Result<String, String> {
         if text.trim().is_empty() || text.len() > 4000 {
             return Err("Memory note must contain 1–4,000 bytes".into());
         }
@@ -62,7 +84,7 @@ impl Memory {
             .map_err(|e| e.to_string())?
             .as_millis() as u64;
         let id = uuid::Uuid::new_v4().to_string();
-        let record = MemoryRecord {
+        let mut record = MemoryRecord {
             id: id.clone(),
             scope: scope(),
             kind: MemoryRecordKind::Fact,
@@ -84,6 +106,9 @@ impl Memory {
             lineage: Vec::new(),
             conflict: None,
         };
+        if let Some(turn) = turn {
+            record.metadata.insert("source_turn".into(), turn.into());
+        }
         self.store
             .upsert(UpsertRequest {
                 record,
@@ -142,6 +167,8 @@ impl Memory {
             return Err("Invalid memory note ID".into());
         }
         let _gate = self.mutations.lock().await;
+        self.policy
+            .send_modify(|p| p.epoch = p.epoch.wrapping_add(1));
         let package = self
             .store
             .export(ExportRequest {
@@ -158,7 +185,19 @@ impl Memory {
             .ok_or("Memory note was not found")?;
         let mut ids = std::collections::BTreeSet::from([id.to_string()]);
         for r in &records {
-            if r.content.trim().eq_ignore_ascii_case(source.content.trim()) {
+            if r.content.trim().eq_ignore_ascii_case(source.content.trim())
+                || source
+                    .metadata
+                    .get("semantic_key")
+                    .is_some_and(|key| r.metadata.get("semantic_key") == Some(key))
+                || r.metadata
+                    .get("evidence")
+                    .is_some_and(|quote| quote.trim().eq_ignore_ascii_case(source.content.trim()))
+                || source
+                    .metadata
+                    .get("evidence")
+                    .is_some_and(|quote| quote.trim().eq_ignore_ascii_case(r.content.trim()))
+            {
                 ids.insert(r.id.clone());
             }
         }
@@ -204,10 +243,18 @@ impl Memory {
     }
     pub async fn maintain(&self) -> Result<String, String> {
         let _gate = self.mutations.lock().await;
+        self.maintain_unlocked().await
+    }
+    async fn maintain_unlocked(&self) -> Result<String, String> {
         let revision = self.revision.load(std::sync::atomic::Ordering::Relaxed);
         if self.maintained.load(std::sync::atomic::Ordering::Relaxed) == revision {
             return Ok("No memory changes since the previous review".into());
         }
+        // Compaction can change source visibility, including on partial failure.
+        let revision = self
+            .revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
         let report = self
             .store
             .compact(CompactionRequest {
@@ -241,6 +288,7 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn recall_reopen_forget() {
+        let _store_fixture = TEST_STORE.lock().await;
         let d = tempfile::tempdir().unwrap();
         let id;
         {
@@ -261,6 +309,7 @@ mod tests {
     }
     #[tokio::test]
     async fn forgetting_retracts_derived_summaries() {
+        let _store_fixture = TEST_STORE.lock().await;
         let d = tempfile::tempdir().unwrap();
         let m = Memory::open(d.path()).unwrap();
         let id = m

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add opt-in automatic learning of source-linked user facts/preferences, corrections and model-generated memory digests, using isolated ephemeral Terra Medium analysis.
+- Make memory-off and forgetting invalidate pending learning; expose origin/evidence, learning status and bounded-queue skips in Settings.
+- Reject unresolved cancellation identities and recover timed-out submissions without sending an invalid interrupt request.
+
 - Add opt-in local wake phrases derived from the companion name, with recommended “Hey + name” and optional name-only activation.
 - Bundle sherpa-onnx keyword models/tokenisation, automatic silence stopping, bounded post-activation capture, listening/mute orb indicators, and Settings/tray microphone mute.
 - Pause wake capture around voice processing, playback and announcements; discard pending audio after mute, rename, cancellation or frontend timeout.
