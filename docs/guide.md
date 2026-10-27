@@ -6,7 +6,7 @@ A local desktop companion built with Rust, Tauri 2 and a Rust/WASM orb. The norm
 
 ## Run the development app
 
-Requires macOS 14+, Rust 1.97+, `wasm32-unknown-unknown`, Trunk, Tauri CLI, and a supported installed Codex runtime signed into your ChatGPT account.
+Requires macOS 14+, Xcode command-line tools, CMake, Rust 1.97+, `wasm32-unknown-unknown`, Trunk, Tauri CLI, and a supported installed Codex runtime signed into your ChatGPT account.
 
 ```sh
 rustup target add wasm32-unknown-unknown
@@ -185,3 +185,9 @@ The speaking animation now uses smooth, layered waves with a softened audio leve
 The runtime streams final-answer items into a separate, turn-tagged speech buffer. Commentary and reasoning are never read aloud. The frontend takes complete sentences from a bounded 64 KB text/cursor buffer, keeps at most one next synthesis request in flight, and plays clips in order. It can start before the whole answer is available; this is sentence-level delivery, not byte-stream audio or word-by-word speech.
 
 Cancellation invalidates the frontend generation and clears queued text/audio. A request identity scopes native interruption to the same submission; bounded, expiring cancellation tombstones cover cancel-before-dispatch races. An already-sent provider request can finish or be billed, but its late audio is discarded. Provider failures stop the stream rather than skipping or repeating sentences. Material rewrites of already queued text fail closed. Playback has an onset gain ramp, and its dynamic listener is removed with the graph. Normal builds contain no debug composer; the optional debug composer now exercises the same spoken-reply path after STT.
+
+### Building local wake recognition
+
+The wake layer combines a small keyword detector with a speech-gated Whisper tiny English fallback. Both run locally. Quantised weights are bundled and checked against SHA-256 manifests; there is no first-run model download. Native builds now need CMake, a C/C++ toolchain and libclang for whisper-rs bindings. On Linux, the development Dockerfile includes these packages. Windows builds need the Visual Studio C++ toolchain, CMake and LLVM/libclang (set `LIBCLANG_PATH` if it is not discovered). Those platform builds still require validation before release.
+
+The fallback keeps at most six seconds of mono audio, plus half a second of pre-roll. One job runs at a time; microphone handling continues while it runs. It uses two CPU threads and an abort deadline, and discards results after mute, pause or a settings change. It checks for the configured phrase at the start of locally recognised speech. It does not retain transcripts or audio. The local models add about 31 MiB to the bundle; English wake detection remains experimental and needs live acceptance across voices and environments.

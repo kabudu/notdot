@@ -11,6 +11,6 @@ Desktop lifecycle additions use the Tauri updater/autostart plugins, sysinfo and
 - First-party source and original logomark: Apache-2.0; see root LICENSE and NOTICE.
 - Vendored GLib: its upstream licence is retained in [vendor/glib/LICENSE](vendor/glib/LICENSE); local changes and provenance are recorded alongside it.
 - Mnemara: [MIT notice](third_party/Mnemara-LICENSE.md).
-- Wake models, sherpa-onnx, ONNX Runtime and dictionary: [resource inventory](src-tauri/resources/wake/NOTICE.md), with original licence texts and ONNX third-party notices in that directory.
+- Wake models, Whisper/whisper.cpp/whisper-rs, sherpa-onnx, ONNX Runtime and dictionary: [resource inventory](src-tauri/resources/wake/NOTICE.md), with original licence texts and ONNX third-party notices in that directory.
 
 The root licence does not replace these licences. Cargo.lock is the resolved dependency inventory, not a complete binary attribution bundle. Before distributing binaries, collect the licences of all linked Rust/native dependencies and bundled platform libraries for each target. Provider services and the separately installed Codex runtime are not relicensed or redistributed by this project.
