@@ -182,3 +182,8 @@ The macOS `859727f` QA build passed acoustic microphone → live streaming trans
 ## Native learning and memory E2E follow-up
 
 Completed targeted macOS voice/UI acceptance on `fd980d6`: extraction, provisional exclusion/corroboration, explicit retention, distillation, correction, restart persistence, later spoken recall, memory-off isolation, native Forget and summary retraction, follow-up discovery/permission/Snooze/Dismiss, and actual Reset/self-restart with fresh recall and learning. Tests found and fixed whole-update rejection caused by invalid optional summaries and missed project discovery caused by semantic-key word order. Full local CI passes; the original QA profile is restored and production data is unchanged. OS alert execution passed, but human audibility was not confirmed. See [evidence and limits](validation/2026-10-27-memory-e2e.md).
+
+
+## Voice-memory confirmation follow-up
+
+`a0efdc1` adds a transcription-language setting and requires read-back confirmation before the app stores new voice-derived facts. Automated real-ledger and authenticated learner tests pass; microphone acceptance is pending local saved-key approval for the rebuilt QA app. The earlier native memory run covers the previous ingestion behaviour, not this new confirmation UI. See [current STT safety evidence and remaining gates](validation/2026-10-27-stt-memory-safety.md).
