@@ -45,6 +45,7 @@ struct Snapshot {
     version: String,
     desktop_launch_supported: bool,
     updates: UpdateStatus,
+    quota: Value,
 }
 #[derive(Clone, Default, Deserialize)]
 struct UpdateStatus {
@@ -98,6 +99,8 @@ struct View {
     update_announced: Option<String>,
     update_listening: Option<String>,
     consent_heard_voice: bool,
+    quota_display: Option<Value>,
+    quota_retry_at: f64,
     consent_silence: Option<f64>,
 }
 type Shared = Rc<RefCell<View>>;
@@ -249,6 +252,96 @@ async fn load_catalog(view: Shared, append: bool) -> Result<(), String> {
         "Choose a voice, then preview it."
     }));
     Ok(())
+}
+fn usage_time(value: &Value) -> String {
+    value
+        .as_f64()
+        .map(|t| {
+            js_sys::Date::new(&JsValue::from_f64(t * 1000.))
+                .to_locale_string("en-GB", &JsValue::UNDEFINED)
+                .as_string()
+                .unwrap_or_default()
+        })
+        .unwrap_or_else(|| "not reported".into())
+}
+fn render_usage(quota: &Value) {
+    let area = element("usage-details");
+    area.set_text_content(None);
+    let card = element("usage-title")
+        .parent_element()
+        .and_then(|e| e.parent_element());
+    if let Some(card) = card {
+        let _ = card.set_attribute("data-level", quota["level"].as_str().unwrap_or("normal"));
+    }
+    let paragraph = |text: String| {
+        let p = document().create_element("p").expect("usage paragraph");
+        p.set_text_content(Some(&text));
+        let _ = area.append_child(&p);
+    };
+    paragraph(
+        quota["message"]
+            .as_str()
+            .unwrap_or("Usage unavailable: not checked yet")
+            .into(),
+    );
+    if let Some(meters) = quota["report"]["meters"].as_array() {
+        for meter in meters {
+            let used = meter["used"].as_u64().unwrap_or(0);
+            let limit = meter["limit"].as_u64().unwrap_or(0);
+            let label = meter["label"].as_str().unwrap_or("Provider allowance");
+            let cached = if quota["availability"] != "available" || quota["stale"] == true {
+                "Last known: "
+            } else {
+                ""
+            };
+            let amount = if limit > 0 {
+                format!(
+                    "{used} / {limit} ({:.1}% used; {} remaining)",
+                    used as f64 / limit as f64 * 100.,
+                    limit.saturating_sub(used)
+                )
+            } else {
+                format!("{used} used; no positive allowance reported")
+            };
+            paragraph(format!(
+                "{cached}{label}: {amount}. Unit: {}.",
+                meter["unit"].as_str().unwrap_or("provider units")
+            ));
+            if limit > 0 {
+                let bar = document()
+                    .create_element("progress")
+                    .expect("usage progress");
+                let _ = bar.set_attribute("max", "100");
+                let _ = bar.set_attribute(
+                    "value",
+                    &(used as f64 / limit as f64 * 100.).min(100.).to_string(),
+                );
+                let _ = bar.set_attribute("aria-label", label);
+                let _ = area.append_child(&bar);
+            }
+            paragraph(format!(
+                "Reset: {}. Usage-based billing: {}.",
+                usage_time(&meter["reset_unix"]),
+                meter["overage"].as_str().unwrap_or("unknown")
+            ));
+        }
+        if let Some(note) = quota["report"]["note"].as_str() {
+            paragraph(note.into());
+        }
+    }
+    if let Some(fault) = quota["fault"]["message"].as_str() {
+        paragraph(format!("Last voice error: {fault}"));
+    }
+    paragraph(format!(
+        "Last checked: {}. Last successful check: {}.{}",
+        usage_time(&quota["last_checked"]),
+        usage_time(&quota["last_success"]),
+        if quota["stale"] == true {
+            " Cached usage may be out of date."
+        } else {
+            ""
+        }
+    ));
 }
 fn message(error: impl AsRef<str>) {
     element("error").set_text_content(Some(error.as_ref()));
@@ -404,6 +497,10 @@ async fn play_encoded(view: Shared, value: JsValue, generation: u64) -> Result<(
     Ok(())
 }
 async fn voice(view: Shared) -> Result<(), String> {
+    if view.borrow().local_phase == Some("announcing") {
+        return Ok(());
+    }
+
     if matches!(
         view.borrow().snapshot.updates.phase.as_str(),
         "downloading" | "installing"
@@ -666,6 +763,13 @@ pub fn start() -> Result<(), JsValue> {
     });
     on(element("show-about").as_ref(), "click", |_| {
         let _ = dialog("about").show_modal();
+    });
+    on(element("refresh-usage").as_ref(), "click", |_| {
+        spawn_local(async {
+            if let Err(e) = call("refresh_usage", json!({})).await {
+                message(e);
+            }
+        });
     });
     on(element("check-updates").as_ref(), "click", |_| {
         spawn_local(async {
@@ -1057,9 +1161,32 @@ pub fn start() -> Result<(), JsValue> {
                     } else {
                         let _ = element("update-bar").remove_attribute("value");
                     }
+                    if target.borrow().quota_display.as_ref() != Some(&snapshot.quota) {
+                        render_usage(&snapshot.quota);
+                        target.borrow_mut().quota_display = Some(snapshot.quota.clone());
+                    }
+                    let usage_notice = {
+                        let v = target.borrow();
+                        let ready = snapshot.phase == "idle"
+                            && snapshot.window_visible
+                            && !speak
+                            && !v.voice_pending
+                            && v.local_phase.is_none()
+                            && v.recording.is_none()
+                            && !dialog("about").open()
+                            && (snapshot.quota["fault"].is_object() || !dialog("panel").open())
+                            && v.audio.as_ref().is_none_or(|a| a.paused() || a.ended())
+                            && js_sys::Date::now() >= v.quota_retry_at;
+                        if ready {
+                            snapshot.quota["notice_id"].as_str().map(str::to_owned)
+                        } else {
+                            None
+                        }
+                    };
                     let announce = {
                         let v = target.borrow();
-                        snapshot.updates.prompt
+                        usage_notice.is_none()
+                            && snapshot.updates.prompt
                             && snapshot.phase == "idle"
                             && !speak
                             && !v.voice_pending
@@ -1082,6 +1209,20 @@ pub fn start() -> Result<(), JsValue> {
                         if onboard {
                             open_panel(&target);
                         }
+                    }
+                    if let Some(id) = usage_notice {
+                        target.borrow_mut().local_phase = Some("announcing");
+                        let companion = target.clone();
+                        let generation = companion.borrow().generation;
+                        spawn_local(async move {
+                            if let Err(error) = call("announce_usage", json!({"id":id})).await {
+                                message(error);
+                                companion.borrow_mut().quota_retry_at = js_sys::Date::now() + 5000.;
+                            }
+                            if companion.borrow().generation == generation {
+                                companion.borrow_mut().local_phase = None;
+                            }
+                        });
                     }
                     if announce {
                         let version = target.borrow().snapshot.updates.version.clone();
@@ -1248,6 +1389,22 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                 },
                 &level,
             );
+            if matches!(
+                v.snapshot.quota["level"].as_str(),
+                Some("warning" | "exhausted")
+            ) {
+                context.save();
+                context.set_stroke_style_str(if v.snapshot.quota["level"] == "exhausted" {
+                    "#f08c7a"
+                } else {
+                    "#edb347"
+                });
+                context.set_line_width(2.5);
+                context.begin_path();
+                let _ = context.arc(w / 2., h / 2., radius * 1.8, 0., TAU);
+                context.stroke();
+                context.restore();
+            }
             if mode == visual_state::Mode::Speaking {
                 v.peak_speaking_rms = v.peak_speaking_rms.max(level.rms);
             }

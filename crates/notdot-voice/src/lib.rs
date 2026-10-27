@@ -1,9 +1,12 @@
 #![forbid(unsafe_code)]
 //! Voice-provider boundary. Providers own HTTP protocols and audio formats; the app owns credentials.
+pub mod quota;
+pub mod usage;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
+pub use usage::{UsageReport, VoiceError, VoiceErrorKind};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Voice {
     pub id: String,
@@ -31,10 +34,16 @@ pub struct ProviderInfo {
 #[async_trait]
 pub trait VoiceBackend: Send + Sync {
     fn info(&self) -> ProviderInfo;
-    async fn voices(&self, search: &str, cursor: Option<&str>) -> Result<VoicePage, String>;
-    async fn transcribe(&self, clip: AudioClip) -> Result<String, String>;
-    async fn synthesize(&self, text: &str, voice: &str) -> Result<AudioClip, String>;
-    async fn preview(&self, voice: &str) -> Result<AudioClip, String>;
+    async fn usage(&self) -> Result<UsageReport, VoiceError> {
+        Err(VoiceError::new(
+            VoiceErrorKind::Unsupported,
+            "This backend does not expose usage",
+        ))
+    }
+    async fn voices(&self, search: &str, cursor: Option<&str>) -> Result<VoicePage, VoiceError>;
+    async fn transcribe(&self, clip: AudioClip) -> Result<String, VoiceError>;
+    async fn synthesize(&self, text: &str, voice: &str) -> Result<AudioClip, VoiceError>;
+    async fn preview(&self, voice: &str) -> Result<AudioClip, VoiceError>;
 }
 pub fn providers() -> Vec<ProviderInfo> {
     vec![ProviderInfo {
@@ -75,26 +84,38 @@ fn valid_id(id: &str) -> bool {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
-async fn body(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>, String> {
-    if !response.status().is_success() {
-        return Err(format!(
-            "Voice service returned {}. Check the key, account permissions and quota.",
-            response.status()
-        ));
-    }
+async fn body(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>, VoiceError> {
+    let status = response.status();
+    let limit = if status.is_success() {
+        limit
+    } else {
+        64 * 1024
+    };
     if response.content_length().is_some_and(|n| n > limit as u64) {
-        return Err("Voice service response exceeded the size limit".into());
+        return Err(if status.is_success() {
+            VoiceError::from("Voice service response exceeded the size limit")
+        } else {
+            usage::response_error(status.as_u16(), &[])
+        });
     }
     let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| "Voice service response interrupted")?
-    {
+    while let Some(chunk) = response.chunk().await.map_err(|_| {
+        VoiceError::new(
+            VoiceErrorKind::Network,
+            "Voice service response interrupted",
+        )
+    })? {
         if bytes.len() + chunk.len() > limit {
-            return Err("Voice service response exceeded the size limit".into());
+            return Err(if status.is_success() {
+                VoiceError::from("Voice service response exceeded the size limit")
+            } else {
+                usage::response_error(status.as_u16(), &[])
+            });
         }
         bytes.extend_from_slice(&chunk);
+    }
+    if !status.is_success() {
+        return Err(usage::response_error(status.as_u16(), &bytes));
     }
     Ok(bytes)
 }
@@ -104,7 +125,7 @@ impl ElevenLabs {
         search: &str,
         cursor: Option<&str>,
         voice: Option<&str>,
-    ) -> Result<VoicePage, String> {
+    ) -> Result<VoicePage, VoiceError> {
         if search.len() > 200 || cursor.is_some_and(|c| c.len() > 2048) {
             return Err("Voice search is too long".into());
         }
@@ -127,10 +148,12 @@ impl ElevenLabs {
         if let Some(voice) = voice {
             request = request.query(&[("voice_ids", voice)]);
         }
-        let response = request
-            .send()
-            .await
-            .map_err(|_| "Could not connect to the voice service")?;
+        let response = request.send().await.map_err(|_| {
+            VoiceError::new(
+                VoiceErrorKind::Network,
+                "Could not connect to the voice service",
+            )
+        })?;
         let value: Value = serde_json::from_slice(&body(response, 2_000_000).await?)
             .map_err(|_| "Voice service returned invalid JSON")?;
         let items = value["voices"]
@@ -200,10 +223,33 @@ impl VoiceBackend for ElevenLabs {
             name: "ElevenLabs",
         }
     }
-    async fn voices(&self, search: &str, cursor: Option<&str>) -> Result<VoicePage, String> {
+    async fn usage(&self) -> Result<UsageReport, VoiceError> {
+        let response = self
+            .client
+            .get(format!("{}/v1/user", self.endpoint))
+            .timeout(Duration::from_secs(15))
+            .header("xi-api-key", &self.key)
+            .send()
+            .await
+            .map_err(|_| {
+                VoiceError::new(
+                    VoiceErrorKind::Network,
+                    "Could not connect to usage service",
+                )
+            })?;
+        let value: Value =
+            serde_json::from_slice(&body(response, 256 * 1024).await?).map_err(|_| {
+                VoiceError::new(
+                    VoiceErrorKind::Provider,
+                    "Usage service returned invalid JSON",
+                )
+            })?;
+        usage::elevenlabs_usage(&value)
+    }
+    async fn voices(&self, search: &str, cursor: Option<&str>) -> Result<VoicePage, VoiceError> {
         self.page(search, cursor, None).await
     }
-    async fn transcribe(&self, clip: AudioClip) -> Result<String, String> {
+    async fn transcribe(&self, clip: AudioClip) -> Result<String, VoiceError> {
         if clip.bytes.is_empty() || clip.bytes.len() > 10_000_000 {
             return Err("Recording must contain audio and be under 10 MB".into());
         }
@@ -230,16 +276,21 @@ impl VoiceBackend for ElevenLabs {
             )
             .send()
             .await
-            .map_err(|_| "Could not connect to transcription service")?;
+            .map_err(|_| {
+                VoiceError::new(
+                    VoiceErrorKind::Network,
+                    "Could not connect to transcription service",
+                )
+            })?;
         let value: Value = serde_json::from_slice(&body(response, 1_000_000).await?)
             .map_err(|_| "Transcription returned invalid JSON")?;
         value["text"]
             .as_str()
             .filter(|s| !s.trim().is_empty() && s.len() <= 24_000)
             .map(str::to_owned)
-            .ok_or("No usable speech was transcribed".into())
+            .ok_or_else(|| VoiceError::from("No usable speech was transcribed"))
     }
-    async fn synthesize(&self, text: &str, voice: &str) -> Result<AudioClip, String> {
+    async fn synthesize(&self, text: &str, voice: &str) -> Result<AudioClip, VoiceError> {
         if !valid_id(voice) {
             return Err("Choose a voice in Settings".into());
         }
@@ -253,13 +304,18 @@ impl VoiceBackend for ElevenLabs {
             .json(&serde_json::json!({"text":text,"model_id":"eleven_flash_v2_5"}))
             .send()
             .await
-            .map_err(|_| "Could not connect to speech service")?;
+            .map_err(|_| {
+                VoiceError::new(
+                    VoiceErrorKind::Network,
+                    "Could not connect to speech service",
+                )
+            })?;
         Ok(AudioClip {
             bytes: body(response, 20_000_000).await?,
             mime: "audio/mpeg".into(),
         })
     }
-    async fn preview(&self, voice: &str) -> Result<AudioClip, String> {
+    async fn preview(&self, voice: &str) -> Result<AudioClip, VoiceError> {
         if !valid_id(voice) {
             return Err("Choose a voice to preview".into());
         }
@@ -270,12 +326,12 @@ impl VoiceBackend for ElevenLabs {
             .find(|v| v.id == voice)
             .ok_or("This voice is no longer available")?;
         if let Some(url) = selected.preview_url.filter(|url| safe_preview_url(url)) {
-            let response = self
-                .client
-                .get(url)
-                .send()
-                .await
-                .map_err(|_| "Voice preview could not be downloaded")?;
+            let response = self.client.get(url).send().await.map_err(|_| {
+                VoiceError::new(
+                    VoiceErrorKind::Network,
+                    "Voice preview could not be downloaded",
+                )
+            })?;
             return Ok(AudioClip {
                 bytes: body(response, 10_000_000).await?,
                 mime: "audio/mpeg".into(),

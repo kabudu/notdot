@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add pluggable provider usage reporting, cached ElevenLabs allowance/reset details and Settings refresh.
+- Announce 80/90/100% thresholds using local system speech between turns, with durable per-cycle deduplication and orb warning states.
+- Distinguish credit exhaustion, authentication, permissions and temporary limits; preserve unknown/separate STT and API billing boundaries.
+
 - Add the notdot orbit logomark to platform icons, tray and About.
 - Add manual, sign-in and desktop-launch watcher startup preferences, plus optional macOS background desktop launch.
 - Add six-hour update polling, persisted deferral, local spoken announcements, explicit voice confirmation, download progress and restart through Tauri's signed updater.

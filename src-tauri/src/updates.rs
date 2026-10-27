@@ -214,46 +214,13 @@ pub async fn announce_update(
         i.status.version.clone().ok_or("No update version")?
     };
     // Fixed local speech works even when the paid TTS provider has run out of quota.
-    system_speech(
+    super::system_speech::speak(
         "A notdot update is available. May I install it and restart? Say install update, or later.",
     )
     .await?;
     updates.lock_state().consent =
         Some((version.clone(), Instant::now() + Duration::from_secs(30)));
     Ok(version)
-}
-async fn system_speech(text: &str) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut c = tokio::process::Command::new("/usr/bin/say");
-        c.arg(text);
-        c
-    };
-    #[cfg(windows)]
-    let mut command = {
-        let mut c = tokio::process::Command::new("powershell.exe");
-        c.args(["-NoProfile", "-NonInteractive", "-Command", "Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Speak($env:NOTDOT_SYSTEM_SPEECH)"]).env("NOTDOT_SYSTEM_SPEECH", text).creation_flags(0x08000000);
-        c
-    };
-    #[cfg(target_os = "linux")]
-    let mut command = {
-        let mut c = tokio::process::Command::new("spd-say");
-        c.args(["--wait", "--", text]);
-        c
-    };
-    command
-        .kill_on_drop(true)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    let status = tokio::time::timeout(Duration::from_secs(25), command.status())
-        .await
-        .map_err(|_| "System voice timed out")?
-        .map_err(|e| format!("System voice unavailable: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err("System voice could not announce the update".into())
-    }
 }
 #[tauri::command]
 pub async fn answer_update(

@@ -85,3 +85,11 @@ For animation diagnostics, `visual-status.json` in the app-data directory contai
 ## Desktop lifecycle and releases
 
 The companion uses its own headless Codex runtime; the desktop window need not be foreground. Work/Chat conversations are not a supported bridge. Startup options, the branded About screen and updater implementation are described in [release readiness](docs/release-readiness.md). Public releases and installed cross-platform update acceptance remain gated. GitHub Actions is disabled while this repository is private; run `scripts/ci-local.sh` locally.
+
+### Voice usage alerts
+
+Settings shows provider-reported usage, reset time, overage status and last check, with a manual refresh. ElevenLabs usage refreshes every 15 minutes, or after voice activity with a one-minute debounce. Cached results older than one hour or past their reset are marked stale. Unsupported accounting or missing API-key permissions shows **usage unavailable**.
+
+At 80%, 90% and 100%, notdot speaks a short system-voice alert between turns and shows an amber orb ring; an actual credit failure shows a red ring. Warning history survives restart and is scoped to the provider account/workspace and billing reset. If usage jumps across thresholds, only the highest reached threshold is announced. Unknown reset dates suppress proactive threshold announcements because no reliable billing cycle can be identified. macOS uses `say`, Windows uses System.Speech, and Linux requires `spd-say`; missing local speech retains the visual warning and retries after 15 minutes.
+
+The ElevenLabs subscription pool is **not a guaranteed combined STT/TTS balance**. Separate API/PAYG balances, API-key caps and remaining transcription minutes are unavailable from this report. Credit exhaustion, authentication, permission and temporary rate limits are distinguished. notdot never enables extra spending or changes providers automatically. Usage caching stores account/workspace identifiers and warning history locally, without API keys or speech content.

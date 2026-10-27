@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod quota;
 mod startup;
+mod system_speech;
 mod updates;
 use notdot_core::{bridge::Bridge, memory::Memory, settings::Settings};
 use serde::Serialize;
@@ -30,6 +32,7 @@ struct Snapshot {
     window_visible: bool,
     active_turn: Option<String>,
     updates: updates::Status,
+    quota: notdot_voice::quota::Status,
     version: String,
     desktop_launch_supported: bool,
 }
@@ -44,6 +47,7 @@ struct AppState {
     voice_gate: tokio::sync::Semaphore,
     visual: Mutex<VisualLog>,
     waiting_for_desktop: AtomicBool,
+    quota: Arc<quota::Monitor>,
 }
 #[derive(Default)]
 struct VisualLog {
@@ -121,6 +125,7 @@ async fn snapshot(
     snapshot.window_visible =
         window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
     snapshot.updates = app.state::<Arc<updates::Updates>>().status();
+    snapshot.quota = state.quota.status(&snapshot.settings.voice_provider).await;
     Ok(snapshot)
 }
 
@@ -134,7 +139,9 @@ async fn save_settings(
     if settings.open_desktop && !cfg!(target_os = "macos") {
         return Err("Automatic desktop launch is currently supported on macOS".into());
     }
+    let key_changed = key.as_ref().is_some_and(|key| !key.is_empty());
     let mut snap = state.snapshot.lock().await;
+    let provider_changed = settings.voice_provider != snap.settings.voice_provider;
     let name_changed = settings.name != snap.settings.name;
     if name_changed && snap.active_turn.is_some() {
         return Err("Stop the active turn before changing your companion's name".into());
@@ -157,13 +164,26 @@ async fn save_settings(
         snap.key_checking = false;
     }
     let previous_startup = snap.settings.startup;
-    startup::configure(&app, settings.startup)?;
+    if let Err(e) = startup::configure(&app, settings.startup) {
+        drop(snap);
+        if key_changed {
+            state.quota.invalidate().await?;
+        }
+        return Err(e);
+    }
     if let Err(e) = settings.save(&state.path) {
         let _ = startup::configure(&app, previous_startup);
+        drop(snap);
+        if key_changed {
+            state.quota.invalidate().await?;
+        }
         return Err(e);
     }
     snap.settings = settings;
     drop(snap);
+    if key_changed || provider_changed {
+        state.quota.invalidate().await?;
+    }
     if name_changed {
         connect(state.inner().clone(), false).await?;
     }
@@ -179,6 +199,8 @@ async fn clear_voice_key(state: State<'_, Arc<AppState>>) -> Result<(), String> 
     let mut snapshot = state.snapshot.lock().await;
     snapshot.key_configured = false;
     snapshot.key_checking = false;
+    drop(snapshot);
+    state.quota.invalidate().await?;
     Ok(())
 }
 async fn connect(state: Arc<AppState>, allow_interrupt: bool) -> Result<(), String> {
@@ -454,6 +476,8 @@ async fn save_voice_key(
     if selected == s.settings.voice_provider {
         s.key_configured = true;
         s.key_checking = false;
+        drop(s);
+        state.quota.invalidate().await?;
     }
     Ok(())
 }
@@ -472,6 +496,7 @@ async fn voice_catalog(
         .await?
         .voices(&search, cursor.as_deref())
         .await
+        .map_err(|e| e.to_string())
 }
 #[tauri::command]
 async fn preview_voice(
@@ -483,9 +508,12 @@ async fn preview_voice(
         .voice_gate
         .try_acquire()
         .map_err(|_| "Voice service is busy")?;
-    backend(&state, Some(provider))
+    let generation = state.quota.generation();
+    let result = backend(&state, Some(provider.clone()))
         .await?
         .preview(&voice_id)
+        .await;
+    quota::finish(&state, &provider, generation, "preview", result)
         .await
         .map(encoded)
 }
@@ -499,10 +527,13 @@ async fn transcribe(
         .voice_gate
         .try_acquire()
         .map_err(|_| "Voice service is busy")?;
-    backend(&state, None)
+    let provider = state.snapshot.lock().await.settings.voice_provider.clone();
+    let generation = state.quota.generation();
+    let result = backend(&state, Some(provider.clone()))
         .await?
         .transcribe(notdot_voice::AudioClip { bytes: audio, mime })
-        .await
+        .await;
+    quota::finish(&state, &provider, generation, "stt", result).await
 }
 #[tauri::command]
 async fn speak(state: State<'_, Arc<AppState>>, text: String) -> Result<EncodedAudio, String> {
@@ -511,9 +542,13 @@ async fn speak(state: State<'_, Arc<AppState>>, text: String) -> Result<EncodedA
         .try_acquire()
         .map_err(|_| "Voice service is busy")?;
     let voice = state.snapshot.lock().await.settings.voice_id.clone();
-    backend(&state, None)
+    let provider = state.snapshot.lock().await.settings.voice_provider.clone();
+    let generation = state.quota.generation();
+    let result = backend(&state, Some(provider.clone()))
         .await?
         .synthesize(&text, &voice)
+        .await;
+    quota::finish(&state, &provider, generation, "tts", result)
         .await
         .map(encoded)
 }
@@ -531,9 +566,13 @@ async fn voice_smoke() -> Result<(), String> {
         notdot_voice::provider(&settings.voice_provider, key, notdot_voice::http_client()?)?;
     let audio = provider
         .synthesize("The voice bridge is working.", &settings.voice_id)
-        .await?;
+        .await
+        .map_err(|e| e.to_string())?;
     let bytes = audio.bytes.len();
-    let transcript = provider.transcribe(audio).await?;
+    let transcript = provider
+        .transcribe(audio)
+        .await
+        .map_err(|e| e.to_string())?;
     let normalized: String = transcript
         .chars()
         .filter(char::is_ascii_alphabetic)
@@ -599,7 +638,9 @@ fn main() {
             updates::defer_update,
             updates::announce_update,
             updates::answer_update,
-            updates::install_update
+            updates::install_update,
+            quota::refresh_usage,
+            quota::announce_usage
         ])
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
@@ -620,6 +661,7 @@ fn main() {
             app.manage(updater.clone());
             let memory =
                 Arc::new(Memory::open(&dir.join("memory")).map_err(std::io::Error::other)?);
+            let quota_monitor = Arc::new(quota::Monitor::new(dir.join("voice-usage.json")));
             let state = Arc::new(AppState {
                 snapshot: Mutex::new(Snapshot {
                     settings,
@@ -631,6 +673,7 @@ fn main() {
                     key_checking: true,
                     window_visible: !waiting_for_desktop,
                     updates: updates::Status::default(),
+                    quota: notdot_voice::quota::Ledger::default().status("", 0),
                     version: app.package_info().version.to_string(),
                     desktop_launch_supported: cfg!(target_os = "macos"),
                 }),
@@ -643,8 +686,10 @@ fn main() {
                 voice_gate: tokio::sync::Semaphore::new(4),
                 visual: Mutex::new(VisualLog::default()),
                 waiting_for_desktop: AtomicBool::new(waiting_for_desktop),
+                quota: quota_monitor,
             });
             app.manage(state.clone());
+            quota::spawn(state.clone());
             // Keychain access may wait for OS authorization. Never put it on the UI thread.
             let key_state = state.clone();
             tauri::async_runtime::spawn(async move {
