@@ -698,10 +698,23 @@ async fn save_voice_key(
 }
 #[tauri::command]
 async fn authorize_voice_key(
+    _app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
     provider: String,
 ) -> Result<(), String> {
     let _ = state.credentials.read(&provider, true).await?;
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if is_qa(&_app)
+        && let Ok(dir) = _app.path().app_data_dir()
+    {
+        let diagnostic = credentials::qa_access_probe(provider.clone())
+            .await
+            .unwrap_or_else(|_| serde_json::json!({"error":"Diagnostic unavailable"}));
+        let _ = std::fs::write(
+            dir.join("keychain-diagnostics.json"),
+            diagnostic.to_string(),
+        );
+    }
     let mut s = state.snapshot.lock().await;
     if s.settings.voice_provider == provider {
         s.key_configured = true;

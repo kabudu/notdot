@@ -124,6 +124,25 @@ impl Credentials {
         .map_err(|e| e.to_string())?
     }
 }
+// Compare authorised, non-interactive readers without returning any secret.
+// Used only by the QA build to diagnose repeated trust prompts.
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub async fn qa_access_probe(provider: String) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let _operation = OPERATIONS.lock().expect("credential operation");
+        let search_reader = os_read(&provider, false).map(Zeroizing::new).is_ok();
+        let legacy_reader = {
+            let _no_ui = non_interactive_keychain()?;
+            super::credential_for(&provider)?
+                .get_password()
+                .map(Zeroizing::new)
+                .is_ok()
+        };
+        Ok(serde_json::json!({"search_reader":search_reader,"legacy_reader":legacy_reader}))
+    })
+    .await
+    .map_err(|_| "Keychain diagnostic did not complete".to_owned())?
+}
 #[cfg(target_os = "macos")]
 fn non_interactive_keychain()
 -> Result<Option<security_framework::os::macos::keychain::KeychainUserInteractionLock>, String> {
