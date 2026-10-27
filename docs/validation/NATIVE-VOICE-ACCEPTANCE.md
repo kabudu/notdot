@@ -1,6 +1,6 @@
 # Native voice acceptance — isolated QA only
 
-Current native acceptance is blocked by the locked Mac and test-build keychain authorisation. Do not substitute the successful API/model/unit tests for this run.
+The Mac is unlocked and real microphone/reply tests have run. Full acceptance remains incomplete; see the dated full-voice and security reports. Do not substitute API/model/unit tests for the remaining native checks.
 
 ## Prepared environment
 
@@ -18,7 +18,7 @@ For the synthetic provider API probe after authorisation, run the **same signed 
 2. Check keyboard Tab/Shift+Tab order, focus rings, labelled dialogs/selectors/switches and VoiceOver names/status.
 
 With About open, Space must activate the focused control without starting the microphone. Check reduced-motion changes while running, narrow viewport/scrolling and multiple hue values.
-3. Select/preview a voice, then record “What is seven plus five?” by orb click and separately by Enter/Space. Verify actual capture, transcription, correct spoken answer, and visibly distinct listening/thinking/speaking animation. Record wall-clock capture-stop-to-first-audio latency and listener confirmation.
+3. Select/preview a voice, then say “What is seven plus five?” after one orb click and separately after Enter/Space. Pause to submit automatically; a second click can submit sooner. Verify actual capture, transcription, correct spoken answer, and visibly distinct listening/thinking/speaking animation. Record wall-clock capture-stop-to-first-audio latency and listener confirmation.
 
 Inspect the QA `visual-status.json` only for mode/frame/RMS evidence; it is not proof that the speaker produced audible sound.
 4. Cancel during capture, model waiting and playback. Confirm no missing-turnId error, late reply playback or stuck busy state. Test lock-screen/occlusion behavior (including whether the microphone lease expires), microphone denied/unplugged, network/provider errors and a deliberately unsupported saved model in the QA file, restoring supported settings afterward.

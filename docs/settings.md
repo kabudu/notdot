@@ -14,6 +14,8 @@ The choices come from your installed Codex tool and account. notdot checks them 
 
 ## Voice
 
+Click the orb once, speak, then pause. notdot sends the request after 1.4 seconds of silence. A second click sends sooner; Escape cancels. Silence without speech is discarded after eight seconds.
+
 A **voice service** turns your recording into words and turns the reply into speech. ElevenLabs is currently the available service. Save its API key, choose **Load voices**, and pick a voice. Use the play icon to hear a sample. Search is built into the voice picker when the list is long.
 
 An **API key** is a secret that lets notdot use your service account. It stays in your computer’s secure key store. macOS may ask you to allow access, especially after a development build changes. Do not put a key in an issue, screenshot or chat.

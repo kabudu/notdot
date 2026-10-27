@@ -230,7 +230,7 @@ pub(crate) mod tests {
         });
         (
             ElevenLabs {
-                key: "fake".into(),
+                key: crate::sensitive_key("fake").unwrap(),
                 client: http_client().unwrap(),
                 endpoint: format!("http://{address}"),
             },

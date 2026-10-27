@@ -8,9 +8,12 @@ pub(crate) enum Mode {
     Error,
 }
 impl Mode {
-    pub(crate) fn resolve(status: &str, playing: bool) -> Self {
+    pub(crate) fn resolve(status: &str, playing: bool, waiting: bool) -> Self {
         if playing {
             return Self::Speaking;
+        }
+        if status == "idle" && waiting {
+            return Self::Thinking;
         }
         match status {
             "listening" => Self::Listening,
@@ -49,12 +52,18 @@ mod tests {
     #[test]
     fn all_waiting_stages_are_visibly_thinking_and_playback_overrides_idle() {
         for stage in ["thinking", "connecting", "transcribing", "synthesizing"] {
-            assert_eq!(Mode::resolve(stage, false), Mode::Thinking);
+            assert_eq!(Mode::resolve(stage, false, false), Mode::Thinking);
         }
-        assert_eq!(Mode::resolve("transcribing", false).name(), "thinking");
-        assert_eq!(Mode::resolve("idle", true), Mode::Speaking);
-        assert_eq!(Mode::resolve("idle", false), Mode::Idle);
-        assert_eq!(Mode::resolve("listening", false), Mode::Listening);
+        assert_eq!(
+            Mode::resolve("transcribing", false, false).name(),
+            "thinking"
+        );
+        assert_eq!(Mode::resolve("idle", true, false), Mode::Speaking);
+        assert_eq!(Mode::resolve("idle", false, false), Mode::Idle);
+        assert_eq!(Mode::resolve("idle", false, true), Mode::Thinking);
+        assert_eq!(Mode::resolve("error", false, true), Mode::Error);
+        assert_eq!(Mode::resolve("idle", true, true), Mode::Speaking);
+        assert_eq!(Mode::resolve("listening", false, false), Mode::Listening);
     }
     #[test]
     fn audio_meter_distinguishes_silence_from_known_waveform() {

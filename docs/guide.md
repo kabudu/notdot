@@ -25,7 +25,7 @@ Output: `target/release/bundle/macos/notdot.app`. This is an optimized, locally 
 
 ## Use
 
-- Click the orb or press Space to start recording; click or press Space again to submit. Recordings stop after 60 seconds.
+- Click the orb or press Enter or Space once, speak, then pause. After 1.4 seconds of silence, notdot sends your request automatically. A second click sends sooner; Escape cancels. If no speech is detected within eight seconds, the recording is discarded. Recordings are limited to 60 seconds.
 - Escape cancels recording, playback and an active agent turn.
 - Drag the orb to move it. Right-click or use the tray's Settings item to customize it.
 - The colour slider previews both the orb and settings theme immediately. Closing without saving restores the saved palette. Startup hides the orb until saved settings arrive, preventing a default-blue flash.
