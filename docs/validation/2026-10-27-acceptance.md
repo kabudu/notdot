@@ -62,3 +62,19 @@ The unpatched upstream GLib iterator tests also pass on this particular toolchai
 ## Linux fixture race
 
 The final default-parallel Linux rerun exposed a failure in native wake fixtures after an earlier complete pass. ONNX Runtime reported: “Only one instance of LoggingManager created with InstanceType::Default can exist at any point in time.” Two fixtures were constructing/destroying models concurrently; production uses one inference worker per process. The model fixtures now share a test-only mutex across the entire fixture lifetime, including teardown. All assertions remain. The full Linux suite then passed, followed by three fresh-process runs of all five wake tests (each passed). This is a harness correction matching the production ownership model, not a claim that ONNX supports arbitrary concurrent environment construction.
+
+## Final automated results and open gates
+
+| Check | Result |
+| --- | --- |
+| macOS local CI | 59 Rust tests, four standalone keyboard/visual tests, six Python tests; formatting and native/WASM Clippy (normal/debug UI) pass |
+| Linux amd64 container | 58 Rust tests pass, plus 57 optimized GLib variant tests; five wake tests pass in three additional fresh processes after fixture lifetime serialization |
+| Windows x64 | All-target cross-compilation passes; native hardware/RDP acceptance is not run |
+| Real authenticated runtime | Model catalog/non-default selection, semantic memory lifecycle, adversarial learning and two-process marker recall pass |
+| Real voice provider/hardware | Blocked before provider calls by local key authorisation; Mac locked. Final signed-QA probe returns an authorisation-required error in 0.71 seconds (including context/startup), not a voice-latency pass |
+| Dependencies/secrets | Zero cargo-audit vulnerability findings; no leaks in the committed-history scan. Six maintenance notices remain tracked; GLib's version-based unsoundness warning remains despite the reviewed/tested source backport |
+| Bundles | Optimized production and isolated debug QA Mac bundles built and ad-hoc signatures verified; no release published |
+
+Remaining required native gates: microphone → STT → selected model → TTS → audible speaker; cancellation/wake/mute/error hardware cases; VoiceOver, focus, scaling and visual layout; lock-screen/privacy behavior; OS sign-in startup and installed updater/restart; current Windows hardware acceptance. The Mac lock/key authorisation is an external blocker, not a successful E2E result. See NATIVE-VOICE-ACCEPTANCE.md for the prepared test profile and procedure.
+
+No real memory was reset, no real key/ACL was changed, and the production app was not restarted for these tests. GitHub Actions remains intentionally disabled. The draft PR remains unmerged.

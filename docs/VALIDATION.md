@@ -149,3 +149,8 @@ Settings offers a two-step destructive confirmation with safe cancellation and a
 Local CI passes 54 core/provider/native tests, three standalone gesture/visual tests, one Python regression, formatting and native/WASM Clippy. Temporary-directory lifecycle tests populate/maintain/forget a real ledger, close it, mark and complete a reset, verify physical directory/journal removal, exact preservation of every settings field except thread_id, no remaining recall/review results and successful learning into a fresh ledger. Another test injects a cleanup failure and proves the intent survives and a later retry completes. Unrelated app-data files are preserved. These tests do not reset real user data or exercise a real app self-restart. Windows/Linux x64 compile checks and an optimized macOS build are run; native confirmation/restart acceptance remains unverified while the Mac is locked.
 
 Self-review also found the Settings save handler held send_gate while asking connect to acquire it again after changing model/name. Releasing the completed-save guard before reconnect removes that deterministic rejection; model/thread protocol tests continue passing. No model/voice preference was changed during validation.
+
+
+## Broad acceptance audit
+
+The 2026-10-27 validation sweep, fixes, source provenance, repeated local-memory performance measurements and exact outstanding native gates are tracked in [the acceptance record](validation/2026-10-27-acceptance.md). This adds security/dependency scans, real runtime/adversarial checks, Linux native tests, keyboard/modal/contrast regressions and an isolated read-only-credential QA profile. It does not claim completion of microphone/speaker or VoiceOver acceptance while the Mac is locked.
