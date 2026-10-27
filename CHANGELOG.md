@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Improve local wake recognition and explain when listening is paused.
+- Improve local wake recognition, shorten activation waits and explain when listening is paused.
 - Hear replies sooner as notdot starts speaking before the full answer is finished.
 - Use the wake phrase when hands-free mode is on; clicks and activation keys no longer start a competing recording.
 - Speak after one click; a short pause sends your request automatically. Remove spike-style listening feedback and keep the orb thinking throughout the wait.
