@@ -34,6 +34,7 @@ rubato = { version = "=0.16.2", default-features = false }
 custom-protocol = ["tauri/custom-protocol"]
 
 [dev-dependencies]
+async-trait = "0.1"
 tauri = { version = "2", features = ["test"] }
 tempfile = "3"
 

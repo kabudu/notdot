@@ -74,7 +74,7 @@ impl Fallback {
             tail: VecDeque::new(),
             samples: Vec::new(),
             silence: 0,
-            pause_ms: 300,
+            pause_ms: 200,
             speech: 0,
             error: None,
         })
@@ -123,8 +123,9 @@ impl Fallback {
         } else {
             self.silence += samples.len();
         }
-        if self.silence >= rate as usize * self.pause_ms as usize / 1000
-            || self.samples.len() >= rate as usize * 6
+        if !self.busy
+            && (self.silence >= rate as usize * self.pause_ms as usize / 1000
+                || self.samples.len() >= rate as usize * 6)
         {
             let samples = std::mem::take(&mut self.samples);
             if self.speech >= rate as usize / 5 && !self.busy {
@@ -349,7 +350,7 @@ mod tests {
         .unwrap();
         if let Ok(pause) = std::env::var("NOTDOT_WAKE_PAUSE_MS") {
             fallback.pause_ms = pause.parse().unwrap();
-            assert!([300, 500].contains(&fallback.pause_ms));
+            assert!([200, 300, 500].contains(&fallback.pause_ms));
         }
         let start = Instant::now();
         let mut supplied = 0usize;
@@ -377,7 +378,8 @@ mod tests {
             start.elapsed().as_millis()
         );
         assert!(fallback.error.is_none(), "{:?}", fallback.error);
-        assert!(heard);
+        let expected = std::env::var("NOTDOT_WAKE_EXPECTED").map_or(true, |s| s != "false");
+        assert_eq!(heard, expected);
     }
     #[test]
     #[ignore = "private local audio fixture; never commit the recording"]
