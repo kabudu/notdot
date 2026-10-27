@@ -2135,7 +2135,7 @@ pub fn start() -> Result<(), JsValue> {
         spawn_local(async {
             match call("maintain_memory", json!({})).await {
                 Ok(_) => {
-                    message("Memory review complete. Source-linked summaries updated.");
+                    message("Notes tidied. Checking for useful summaries…");
                     if let Err(e) = review_memories().await {
                         message(e);
                     }
@@ -3129,7 +3129,7 @@ async fn review_memories() -> Result<(), String> {
                 "{}{} · updated {}",
                 match note["metadata"]["learning_state"].as_str().unwrap_or("") {
                     "provisional" => "Needs confirmation",
-                    "corroborated" => "Confirmed in more than one chat",
+                    "corroborated" => "Repeated by you",
                     "corrected" | "explicit correction" => "Corrected",
                     "confirmed" | "confirmed by user" => "Confirmed by you",
                     _ if note["metadata"]["origin"] == "semantic distillation" => "Summary",

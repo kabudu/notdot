@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep valid new memories when an optional summary cannot be verified.
+
 - Respond to the wake phrase sooner, show immediate orb feedback and transcribe requests while you speak.
 - Hear replies sooner as notdot starts speaking before the full answer is finished.
 - Use the wake phrase when hands-free mode is on; clicks and activation keys no longer start a competing recording.

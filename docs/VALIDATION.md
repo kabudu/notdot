@@ -177,3 +177,8 @@ The 2026-10-27 validation sweep, fixes, source provenance, repeated local-memory
 ## Live streaming voice acceptance
 
 The macOS `859727f` QA build passed acoustic microphone → live streaming transcription → Terra Medium → spoken reply tests in wake and one-click modes, plus active capture, model and playback cancellation. Native events delivered the first listening frame 15 ms after activation in the measured wake turn; partial transcription arrived before recording ended. See [measurements and limits](validation/2026-10-27-wake-streaming.md). This supersedes earlier pending gates for this macOS path; Windows/Linux and fresh promotional recording remain separate.
+
+
+## Native learning and memory E2E follow-up
+
+The isolated macOS voice/UI run verified automatic extraction, provisional exclusion, independent corroboration, explicit retention, semantic distillation, correction, restart persistence, later spoken recall, memory-off isolation and quiet-hour reminder delivery. It also exposed an optional-summary validation failure that rejected an entire update; the fix preserves strict fact validation while skipping only an invalid summary and reporting it. Automated regression and authenticated worker checks pass. Actual Forget/reset deletion tests and final rebuilt-app retest remain pending; see [current evidence and limits](validation/2026-10-27-memory-e2e.md).

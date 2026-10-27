@@ -63,10 +63,10 @@ impl Learning {
                     // ledger without extracting a paraphrased duplicate from them.
                     let automatic_source = job.source.filter(|i| memory::explicit_note(&i.user).is_none());
                     let Some(plan) = ledger.plan(job.ticket, automatic_source).await? else {
-                        return Ok(0);
+                        return Ok((0, false));
                     };
                     if plan.interaction.is_none() && plan.notes.len() < 2 {
-                        return Ok(0);
+                        return Ok((0, false));
                     }
                     let mut policy = ledger.policy();
                     let ticket = job.ticket;
@@ -93,9 +93,10 @@ impl Learning {
                     };
                     if response.is_err() && let Some(bridge) = client.take() { bridge.shutdown().await; }
                     let response = response?;
-                    let batch: LearningBatch = serde_json::from_str(&response)
+                    let mut batch: LearningBatch = serde_json::from_str(&response)
                         .map_err(|_| "The AI returned notes that could not be saved. Your chat still works.")?;
-                    ledger.apply_learning(&plan, batch).await
+                    let skipped_summary = batch.discard_invalid_digest(&plan);
+                    ledger.apply_learning(&plan, batch).await.map(|count| (count, skipped_summary))
                 }
                 .await;
                 let mut s = report.lock().expect("learning status");
@@ -106,7 +107,7 @@ impl Learning {
                         .as_secs(),
                 );
                 match result {
-                    Ok(count) => {
+                    Ok((count, skipped_summary)) => {
                         s.phase = "idle".into();
                         s.retained += count;
                         s.message = if count == 0 {
@@ -114,6 +115,10 @@ impl Learning {
                         } else {
                             format!("Saved or updated {count} memories and summaries.")
                         };
+                        if skipped_summary {
+                            s.message
+                                .push_str(" A summary could not be verified, so it was not saved.");
+                        }
                     }
                     Err(e) => {
                         s.phase = "error".into();

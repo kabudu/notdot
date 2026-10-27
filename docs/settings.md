@@ -42,6 +42,8 @@ With memory off, notdot stops saving and using these separate memories. Existing
 
 **Reset memory** deletes all local memories, their older stored versions, reminders and suggestions, then starts a fresh companion chat. It keeps your settings and saved key. Old chats in Codex / ChatGPT, backups and other copies remain. The confirmation explains what will be removed; the reset cannot be undone.
 
+A summary is checked separately from new facts. If it cannot be verified, notdot skips it and can still keep valid facts. The memory status tells you when a summary was skipped.
+
 ## Reminders and check-ins
 
 Remembering something does not give notdot permission to interrupt you. Choose one behaviour:
