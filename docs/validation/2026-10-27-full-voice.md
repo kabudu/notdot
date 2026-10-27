@@ -18,3 +18,9 @@ A 0.367-second idle gap appeared between transcription and model waiting. The re
 - Keyboard help and the user/developer guides describe one-click use.
 
 The endpoint detector uses local audio level and duration, not semantic understanding or guaranteed speech/noise classification. Very quiet speech or continuous background noise still needs broader real-environment testing. Full retest evidence follows after local OS approval of the rebuilt QA app.
+
+## Retest checkpoint
+
+On the one-click QA build from 27b3c89, capture cancellation passed: a click reached Listening and Escape returned to Ready without a submitted turn or late playback. The saved key was authorised locally. A new one-click human request was requested but no submitted turn was observed in the bounded three-minute watch; transcription accuracy, automatic submission and model-wait cancellation remain pending live input. No success is inferred from the timeout.
+
+The final security bundle from a8bc6c7 builds successfully. Its additional local-tool restrictions were verified separately in the real-runtime canary and denied-MCP-write probes. The currently running QA process remains the one-click build for the requested spoken retest; restart into the final bundle after that retest. Production data/settings were untouched.
