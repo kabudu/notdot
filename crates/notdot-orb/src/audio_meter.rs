@@ -47,6 +47,24 @@ impl Meter {
         }
         Ok(())
     }
+    /// A short, local activation cue; never uses a voice provider.
+    pub fn wake_cue(&mut self) -> Result<(), JsValue> {
+        self.unlock()?;
+        let context = self.context.as_ref().expect("audio context initialized");
+        let tone = context.create_oscillator()?;
+        tone.set_type(web_sys::OscillatorType::Sine);
+        tone.frequency().set_value(740.);
+        let volume = context.create_gain()?;
+        volume.gain().set_value(0.035);
+        volume
+            .gain()
+            .linear_ramp_to_value_at_time(0., context.current_time() + 0.08)?;
+        tone.connect_with_audio_node(&volume)?;
+        volume.connect_with_audio_node(&context.destination())?;
+        tone.start()?;
+        tone.stop_with_when(context.current_time() + 0.09)?;
+        Ok(())
+    }
     fn analyser(context: &AudioContext) -> Result<AnalyserNode, JsValue> {
         let analyser = context.create_analyser()?;
         analyser.set_fft_size(256);

@@ -22,6 +22,9 @@ pub struct Settings {
     pub startup: Startup,
     pub open_desktop: bool,
     pub automatic_updates: bool,
+    pub wake_enabled: bool,
+    pub wake_name_only: bool,
+    pub microphone_muted: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -37,6 +40,9 @@ impl Default for Settings {
             startup: Startup::Manual,
             open_desktop: false,
             automatic_updates: true,
+            wake_enabled: false,
+            wake_name_only: false,
+            microphone_muted: false,
         }
     }
 }
@@ -102,6 +108,15 @@ mod tests {
         let legacy: Settings = serde_json::from_str(r#"{"name":"Legacy"}"#).unwrap();
         assert_eq!(legacy.startup, Startup::Manual);
         assert!(legacy.automatic_updates);
+        assert!(!legacy.wake_enabled);
+        assert!(!legacy.wake_name_only);
+        assert!(!legacy.microphone_muted);
+        s.wake_enabled = true;
+        s.wake_name_only = true;
+        s.microphone_muted = true;
+        s.save(&p).unwrap();
+        let restored = Settings::load(&p).unwrap();
+        assert!(restored.wake_enabled && restored.wake_name_only && restored.microphone_muted);
 
         s.hue = 500;
         assert!(s.save(&p).is_err());

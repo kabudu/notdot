@@ -295,6 +295,9 @@ pub async fn refresh_usage(state: State<'_, Arc<AppState>>) -> Result<(), String
 }
 #[tauri::command]
 pub async fn announce_usage(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+    if state.wake.status().phase == "capturing" {
+        return Err("Wait for the current voice request".into());
+    }
     if id.len() > 1024 {
         return Err("Invalid usage alert".into());
     }
@@ -314,6 +317,7 @@ pub async fn announce_usage(state: State<'_, Arc<AppState>>, id: String) -> Resu
         }
         s.settings.voice_provider.clone()
     };
+    state.wake.ready(false);
     monitor
         .deliver(&provider, &id, |text| async move {
             super::system_speech::speak(&text).await
