@@ -17,6 +17,7 @@ pub struct Settings {
     pub hue: u16,
     pub voice_id: String,
     pub voice_provider: String,
+    pub speech_language: String,
     pub voice_name: String,
     pub memory_enabled: bool,
     pub initiative: crate::initiative::Policy,
@@ -38,6 +39,7 @@ impl Default for Settings {
             hue: 192,
             voice_id: String::new(),
             voice_provider: "elevenlabs".into(),
+            speech_language: "en".into(),
             voice_name: String::new(),
             memory_enabled: false,
             initiative: crate::initiative::Policy::default(),
@@ -74,7 +76,8 @@ impl Settings {
         }
     }
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        if self.model.is_empty()
+        if !matches!(self.speech_language.as_str(), "en" | "auto")
+            || self.model.is_empty()
             || self.model.len() > 200
             || self.effort.is_empty()
             || self.effort.len() > 32

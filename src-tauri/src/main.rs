@@ -3,6 +3,7 @@
 mod credentials;
 mod initiative;
 mod learning;
+mod memory_confirmation;
 mod quota;
 mod reset;
 mod startup;
@@ -227,10 +228,14 @@ fn capture_status(state: State<'_, Arc<AppState>>) -> wake::Status {
 }
 #[tauri::command]
 async fn start_capture(
+    window: tauri::WebviewWindow,
     state: State<'_, Arc<AppState>>,
     token: String,
     limit: u32,
 ) -> Result<(), String> {
+    if !window.is_visible().unwrap_or(false) || window.is_minimized().unwrap_or(true) {
+        return Err("Show notdot before speaking".into());
+    }
     let s = state.snapshot.lock().await;
     if s.phase != "idle"
         || s.active_turn.is_some()
@@ -601,9 +606,10 @@ async fn send_message(
     };
     let result = async {
         let bridge = state.bridge.lock().await.clone().ok_or("Agent is not connected")?;
-        if let Some(ticket)=memory_ticket {state.memory.remember_explicit_submission(ticket,&tid,&text).await?;}
-        state.learning.begin(memory_ticket, tid.clone(), text.clone());
-        let mut input = text.clone();
+        state.learning.begin_voice(memory_ticket, tid.clone(), text.clone());
+        let mut input = if memory_ticket.is_some() {
+            format!("Respond to this speech transcript, which may contain recognition errors. Personal facts in unverified transcripts are not confirmed memory. For claims about remembered preferences or facts, rely only on the saved notes supplied below; if none supports a claim, say it is not confirmed.\n\nSpeech transcript:\n{text}")
+        } else {text.clone()};
         if let Some(ticket) = memory_ticket {
             let notes = state.memory.recall_when_enabled(ticket, &text, 6).await?;
             if !notes.is_empty() {
@@ -665,10 +671,10 @@ async fn stop(state: State<'_, Arc<AppState>>, request_id: Option<String>) -> Re
         return Ok(());
     }
     state.initiative.cancel();
-    state.learning.cancel();
     let Some(turn) = snapshot.active_turn else {
         return Ok(());
     };
+    state.learning.cancel();
     if turn == "submission-pending" {
         drop(gate);
         return connect(state.inner().clone(), true).await;
@@ -676,6 +682,82 @@ async fn stop(state: State<'_, Arc<AppState>>, request_id: Option<String>) -> Re
     let tid = snapshot.settings.thread_id.ok_or("Not connected")?;
     let bridge = state.bridge.lock().await.clone().ok_or("Not connected")?;
     bridge.interrupt(&tid, &turn).await?;
+    Ok(())
+}
+async fn confirmation_evidence(app: &tauri::AppHandle, state: &AppState, event: &str) {
+    #[cfg(debug_assertions)]
+    if is_qa(app)
+        && let Ok(dir) = app.path().app_data_dir()
+    {
+        let count = state
+            .memory
+            .review("")
+            .await
+            .map(|records| records.len())
+            .unwrap_or(0);
+        let _ = std::fs::write(
+            dir.join("memory-confirmation-status.json"),
+            serde_json::json!({"event":event,"visible_records":count}).to_string(),
+        );
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = (app, state, event);
+}
+#[tauri::command]
+async fn memory_question(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<String, String> {
+    notdot_core::request_cancel::Requests::validate(&id)?;
+    let question = state.learning.confirmations.question(&state.memory, &id)?;
+    confirmation_evidence(&app, &state, "question").await;
+    Ok(question)
+}
+#[tauri::command]
+async fn answer_memory(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    text: String,
+) -> Result<String, String> {
+    notdot_core::request_cancel::Requests::validate(&id)?;
+    if text.len() > 24_000 {
+        return Err("Memory answer is too long".into());
+    }
+    let snapshot = state.snapshot.lock().await;
+    if snapshot.settings.microphone_muted || !snapshot.settings.memory_enabled {
+        state.learning.confirmations.cancel(Some(&id));
+        return Err("Nothing saved. Memory or microphone is off.".into());
+    }
+    drop(snapshot);
+    let answer = state
+        .learning
+        .confirmations
+        .answer(&state.memory, &id, &text)
+        .await?;
+    confirmation_evidence(
+        &app,
+        &state,
+        if answer.starts_with("Memory saved") {
+            "saved"
+        } else {
+            "discarded"
+        },
+    )
+    .await;
+    Ok(answer)
+}
+#[tauri::command]
+async fn cancel_memory(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<(), String> {
+    if notdot_core::request_cancel::Requests::validate(&id).is_ok() {
+        state.learning.confirmations.cancel(Some(&id));
+        confirmation_evidence(&app, &state, "cancelled").await;
+    }
     Ok(())
 }
 #[tauri::command]
@@ -729,8 +811,18 @@ async fn backend(
     } else {
         state.snapshot.lock().await.settings.voice_provider.clone()
     };
+    let language = state.snapshot.lock().await.settings.speech_language.clone();
     let key = state.credentials.read(&id, false).await?;
-    notdot_voice::provider(&id, key, state.voice_http.clone())
+    notdot_voice::provider_with_language(
+        &id,
+        key,
+        state.voice_http.clone(),
+        if language == "auto" {
+            None
+        } else {
+            Some(&language)
+        },
+    )
 }
 #[tauri::command]
 fn voice_providers() -> Vec<notdot_voice::ProviderInfo> {
@@ -947,6 +1039,9 @@ fn main() {
             send_message,
             stop,
             memories,
+            memory_question,
+            answer_memory,
+            cancel_memory,
             forget,
             edit_memory,
             initiative::followups,

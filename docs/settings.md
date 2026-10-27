@@ -18,6 +18,8 @@ With wake listening on, say your wake phrase. Orb clicks and Enter/Space do not 
 
 With wake listening off, click the orb once, speak, then pause. notdot sends the request after 1.4 seconds of silence. A second click sends sooner; Escape cancels. Silence without speech is discarded after eight seconds.
 
+**Spoken language** starts with English, which gives the service a language hint. Choose **Detect automatically** for other languages. This does not guarantee that every word will be recognised correctly.
+
 A **voice service** turns your recording into words and turns the reply into speech. With ElevenLabs, notdot starts sending your request after activation while you speak, so transcription can run sooner. Only the confirmed words are sent to the model. If live transcription fails, notdot can retry the captured request. Escape cancels and prevents that retry; audio already sent may still count toward usage. Replies are prepared a sentence at a time so speech can start sooner. Escape stops playback and discards queued speech; requests already sent to the service may still count toward usage. ElevenLabs is currently the available service. Save its API key, choose **Load voices**, and pick a voice. Use the play icon to hear a sample. Search is built into the voice picker when the list is long.
 
 An **API key** is a secret that lets notdot use your service account. It stays in your computer’s secure key store. macOS may ask you to allow access, especially after a development build changes. Do not put a key in an issue, screenshot or chat.
@@ -34,9 +36,11 @@ This feature is experimental and works in English. It can miss you or wake by mi
 
 ## Memory
 
-Turn on **Remember useful details** to let notdot save preferences, goals and important facts from chats. Memory checks use extra AI requests. New guesses need your confirmation or another chat that supports them before they are used in replies. You can also say “Remember that I prefer short answers.”
+Turn on **Remember useful details** to learn preferences, goals and important facts. Before saving a new fact from speech, notdot reads it back and listens for your answer. Say **“yes, save that”** to save it, or **“no”** if it heard you wrongly. “Yes” alone, silence or Escape saves nothing. You can then repeat the corrected detail. This also applies to “Remember…” requests. Memory checks and spoken confirmations use your selected AI and voice services.
 
 **Review memories** lets you read, confirm, correct and forget notes. **Tidy memories** reviews notes and makes shorter summaries. The review shows where a note came from and how sure the AI was; that confidence is an estimate, not a guarantee.
+
+Declining a proposed memory keeps it out of the memory ledger; it does not erase the original transcript from chat history. Unconfirmed proposals expire and are not kept across restarts.
 
 With memory off, notdot stops saving and using these separate memories. Existing notes stay on your computer. The current chat still has its own history, including anything already said or supplied to the model. Turning memory off does not erase that history.
 

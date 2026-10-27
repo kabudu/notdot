@@ -233,6 +233,7 @@ pub(crate) mod tests {
                 key: crate::sensitive_key("fake").unwrap(),
                 client: http_client().unwrap(),
                 endpoint: format!("http://{address}"),
+                language: None,
             },
             server,
         )

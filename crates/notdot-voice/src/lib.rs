@@ -69,11 +69,25 @@ pub fn provider(
     key: String,
     client: reqwest::Client,
 ) -> Result<Box<dyn VoiceBackend>, String> {
+    provider_with_language(id, key, client, None)
+}
+pub fn provider_with_language(
+    id: &str,
+    key: String,
+    client: reqwest::Client,
+    language: Option<&str>,
+) -> Result<Box<dyn VoiceBackend>, String> {
+    if language
+        .is_some_and(|l| !(2..=3).contains(&l.len()) || !l.bytes().all(|c| c.is_ascii_lowercase()))
+    {
+        return Err("Choose a supported spoken language".into());
+    }
     match id {
         "elevenlabs" => Ok(Box::new(ElevenLabs {
             key: sensitive_key(&key)?,
             client,
             endpoint: "https://api.elevenlabs.io".into(),
+            language: language.map(str::to_owned),
         })),
         _ => Err(format!("Voice backend {id:?} is not installed")),
     }
@@ -89,6 +103,7 @@ struct ElevenLabs {
     key: reqwest::header::HeaderValue,
     client: reqwest::Client,
     endpoint: String,
+    language: Option<String>,
 }
 fn sensitive_key(key: &str) -> Result<reqwest::header::HeaderValue, String> {
     let mut value = reqwest::header::HeaderValue::from_str(key)
@@ -248,7 +263,13 @@ impl VoiceBackend for ElevenLabs {
         sample_rate: u32,
     ) -> Result<Box<dyn realtime::StreamingTranscriber>, VoiceError> {
         Ok(Box::new(
-            realtime::ElevenStream::connect(&self.endpoint, self.key.clone(), sample_rate).await?,
+            realtime::ElevenStream::connect(
+                &self.endpoint,
+                self.key.clone(),
+                sample_rate,
+                self.language.as_deref(),
+            )
+            .await?,
         ))
     }
     async fn usage(&self) -> Result<UsageReport, VoiceError> {
@@ -299,16 +320,20 @@ impl VoiceBackend for ElevenLabs {
             .file_name(file)
             .mime_str(mime)
             .map_err(|e| e.to_string())?;
+        let mut form = reqwest::multipart::Form::new()
+            .text("model_id", "scribe_v2")
+            .text("timestamps_granularity", "none")
+            .text("tag_audio_events", "false")
+            .text("temperature", "0")
+            .part("file", part);
+        if let Some(language) = &self.language {
+            form = form.text("language_code", language.clone());
+        }
         let response = self
             .client
             .post(format!("{}/v1/speech-to-text", self.endpoint))
             .header("xi-api-key", self.key.clone())
-            .multipart(
-                reqwest::multipart::Form::new()
-                    .text("model_id", "scribe_v2")
-                    .text("timestamps_granularity", "none")
-                    .part("file", part),
-            )
+            .multipart(form)
             .send()
             .await
             .map_err(|_| {
@@ -450,10 +475,82 @@ mod tests {
             key: sensitive_key("fake").unwrap(),
             client: http_client().unwrap(),
             endpoint: format!("http://{addr}"),
+            language: None,
         };
         let page = p.voices("warm", None).await.unwrap();
         assert_eq!(page.voices[0].name, "Warm voice");
         assert_eq!(page.next_cursor.as_deref(), Some("next"));
         task.await.unwrap();
+    }
+    #[tokio::test]
+    async fn transcription_language_and_verbatim_options_reach_the_provider() {
+        for language in [None, Some("en")] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                loop {
+                    let mut chunk = [0; 4096];
+                    let n = socket.read(&mut chunk).await.unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&chunk[..n]);
+                    assert!(bytes.len() < 65536);
+                    if let Some(split) = bytes.windows(4).position(|s| s == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&bytes[..split]);
+                        let size: usize = headers
+                            .lines()
+                            .find_map(|line| {
+                                line.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|n| n.trim().parse().unwrap())
+                            })
+                            .unwrap();
+                        if bytes.len() >= split + 4 + size {
+                            break;
+                        }
+                    }
+                }
+                let request = String::from_utf8_lossy(&bytes);
+                assert!(request.contains("name=\"tag_audio_events\"\r\n\r\nfalse"));
+                assert!(request.contains("name=\"temperature\"\r\n\r\n0"));
+                assert_eq!(
+                    request.contains("name=\"language_code\""),
+                    language.is_some()
+                );
+                if language.is_some() {
+                    assert!(request.contains("name=\"language_code\"\r\n\r\nen"));
+                }
+                let body = r#"{"text":"I prefer peppermint tea."}"#;
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+            });
+            let provider = ElevenLabs {
+                key: sensitive_key("fake").unwrap(),
+                client: http_client().unwrap(),
+                endpoint: format!("http://{address}"),
+                language: language.map(str::to_owned),
+            };
+            assert_eq!(
+                provider
+                    .transcribe(AudioClip {
+                        bytes: vec![0; 8],
+                        mime: "audio/wav".into()
+                    })
+                    .await
+                    .unwrap(),
+                "I prefer peppermint tea."
+            );
+            server.await.unwrap();
+        }
+        assert!(
+            provider_with_language(
+                "elevenlabs",
+                "fake".into(),
+                http_client().unwrap(),
+                Some("en&token=bad")
+            )
+            .is_err()
+        );
     }
 }

@@ -41,6 +41,50 @@ pub struct LearningBatch {
     pub digest: Option<Digest>,
 }
 impl LearningBatch {
+    pub fn validate_for(&self, plan: &LearningPlan) -> Result<(), String> {
+        if self.notes.len() > 4 {
+            return Err("Too many learned notes".into());
+        }
+        let user = plan
+            .interaction
+            .as_ref()
+            .map(|i| i.user.as_str())
+            .unwrap_or("");
+        let mut keys = std::collections::BTreeSet::new();
+        for n in &self.notes {
+            if n.key.is_empty()
+                || n.key.len() > 80
+                || !n
+                    .key
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.')
+                || !keys.insert(n.key.clone())
+                || n.content.trim().is_empty()
+                || n.content.len() > 1000
+                || n.evidence.trim().len() < 8
+                || n.evidence.len() > 4000
+                || !user.contains(n.evidence.trim())
+                || !n.confidence.is_finite()
+                || n.confidence < 0.85
+                || n.confidence > 1.
+                || excluded(&n.content)
+                || excluded(&n.evidence)
+            {
+                return Err("Learned note failed source or retention checks".into());
+            }
+        }
+        if opted_out(user) {
+            return Err("This interaction opted out of memory".into());
+        }
+        if self
+            .digest
+            .as_ref()
+            .is_some_and(|digest| !valid_digest(plan, digest))
+        {
+            return Err("Memory digest failed provenance or compression checks".into());
+        }
+        Ok(())
+    }
     /// Drop only an invalid optional summary. Notes still require all normal
     /// source, policy and revision checks in `Memory::apply_learning`.
     pub fn discard_invalid_digest(&mut self, plan: &LearningPlan) -> bool {
@@ -327,6 +371,26 @@ impl Memory {
         plan: &LearningPlan,
         batch: LearningBatch,
     ) -> Result<usize, String> {
+        self.apply_learning_inner(plan, batch, false).await
+    }
+    /// Only for a native, unexpired read-back explicitly confirmed by the user.
+    pub async fn apply_confirmed_learning(
+        &self,
+        plan: &LearningPlan,
+        batch: LearningBatch,
+    ) -> Result<usize, String> {
+        self.apply_learning_inner(plan, batch, true).await
+    }
+    pub fn plan_is_current(&self, plan: &LearningPlan) -> bool {
+        self.learning_ticket() == Some(plan.ticket)
+            && self.revision.load(std::sync::atomic::Ordering::Relaxed) == plan.revision
+    }
+    async fn apply_learning_inner(
+        &self,
+        plan: &LearningPlan,
+        batch: LearningBatch,
+        user_confirmed: bool,
+    ) -> Result<usize, String> {
         let _gate = self.mutations.lock().await;
         if self.learning_ticket() != Some(plan.ticket) {
             return Ok(0);
@@ -334,47 +398,16 @@ impl Memory {
         if self.revision.load(std::sync::atomic::Ordering::Relaxed) != plan.revision {
             return Err("Memory changed during learning; result discarded".into());
         }
-        if batch.notes.len() > 4 {
-            return Err("Too many learned notes".into());
-        }
-        let user = plan
-            .interaction
-            .as_ref()
-            .map(|i| i.user.as_str())
-            .unwrap_or("");
-        let mut keys = std::collections::BTreeSet::new();
-        for n in &batch.notes {
-            if n.key.is_empty()
-                || n.key.len() > 80
-                || !n
-                    .key
-                    .chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.')
-                || !keys.insert(n.key.clone())
-                || n.content.trim().is_empty()
-                || n.content.len() > 1000
-                || n.evidence.trim().len() < 8
-                || n.evidence.len() > 4000
-                || !user.contains(n.evidence.trim())
-                || !n.confidence.is_finite()
-                || n.confidence < 0.85
-                || n.confidence > 1.
-                || excluded(&n.content)
-                || excluded(&n.evidence)
-            {
-                return Err("Learned note failed source or retention checks".into());
-            }
-        }
-        if opted_out(user) {
+        if opted_out(
+            plan.interaction
+                .as_ref()
+                .map_or("", |source| source.user.as_str()),
+        ) {
             return Ok(0);
         }
-        if batch
-            .digest
-            .as_ref()
-            .is_some_and(|digest| !valid_digest(plan, digest))
-        {
-            return Err("Memory digest failed provenance or compression checks".into());
-        }
+        batch.validate_for(plan)?;
+        let keys: std::collections::BTreeSet<_> =
+            batch.notes.iter().map(|note| note.key.clone()).collect();
         let package = self
             .store
             .export(ExportRequest {
@@ -402,9 +435,9 @@ impl Memory {
                     && r.metadata.get("semantic_key") == Some(&n.key)
                     && r.metadata
                         .get("origin")
-                        .is_some_and(|o| o == "user correction")
+                        .is_some_and(|o| o == "user correction" || o == "voice confirmation")
             });
-            if locked {
+            if locked && !user_confirmed {
                 continue;
             }
             let existing = current
@@ -417,11 +450,12 @@ impl Memory {
                 if prior
                     .metadata
                     .get("origin")
-                    .is_some_and(|o| o == "user correction")
+                    .is_some_and(|o| o == "user correction" || o == "voice confirmation")
+                    && !user_confirmed
                 {
                     continue; // Only another explicit edit can replace a user-authored correction.
                 }
-                if prior.content.trim().eq_ignore_ascii_case(n.content.trim()) {
+                if !user_confirmed && prior.content.trim().eq_ignore_ascii_case(n.content.trim()) {
                     if provisional(prior)
                         && (prior.source_id.as_deref() != Some(&origin.thread)
                             || prior.metadata.get("source_turn") != Some(&origin.turn))
@@ -480,16 +514,25 @@ impl Memory {
             record
                 .metadata
                 .insert("learning_state".into(), "provisional".into());
-            let correction = ["actually", "instead", "no longer", "correction:", "i now "]
-                .iter()
-                .any(|cue| origin.user.to_lowercase().contains(cue))
-                && !old.is_empty();
+            let correction = user_confirmed
+                || (["actually", "instead", "no longer", "correction:", "i now "]
+                    .iter()
+                    .any(|cue| origin.user.to_lowercase().contains(cue))
+                    && !old.is_empty());
             if correction {
                 record.quality_state = MemoryQualityState::Active;
                 record.expires_at_unix_ms = None;
                 record
                     .metadata
                     .insert("learning_state".into(), "explicit correction".into());
+            }
+            if user_confirmed {
+                record
+                    .metadata
+                    .insert("origin".into(), "voice confirmation".into());
+                record
+                    .metadata
+                    .insert("learning_state".into(), "confirmed by user".into());
             }
             record.importance_score = n.confidence;
             for prior in &old {

@@ -89,7 +89,16 @@ impl ElevenStream {
         endpoint: &str,
         key: reqwest::header::HeaderValue,
         rate: u32,
+        language: Option<&str>,
     ) -> Result<Self, VoiceError> {
+        if language.is_some_and(|l| {
+            !(2..=3).contains(&l.len()) || !l.bytes().all(|c| c.is_ascii_lowercase())
+        }) {
+            return Err(error(
+                VoiceErrorKind::InvalidInput,
+                "Invalid spoken language",
+            ));
+        }
         if ![8000, 16000, 22050, 24000, 44100, 48000].contains(&rate) {
             return Err(error(
                 VoiceErrorKind::Unsupported,
@@ -102,6 +111,11 @@ impl ElevenStream {
         let url = format!(
             "{base}/v1/speech-to-text/realtime?model_id=scribe_v2_realtime&audio_format=pcm_{rate}&commit_strategy=manual"
         );
+        let url = if let Some(language) = language {
+            format!("{url}&language_code={language}")
+        } else {
+            url
+        };
         let mut request = url.into_client_request().map_err(|_| {
             error(
                 VoiceErrorKind::InvalidInput,
@@ -325,13 +339,24 @@ impl Drop for ElevenStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Tungstenite fixes the handshake callback's HTTP error type.
+    #[allow(clippy::result_large_err)]
     #[tokio::test]
     async fn partial_rewrites_are_not_submitted_and_short_audio_is_committed_once() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (tcp, _) = listener.accept().await.unwrap();
-            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let mut ws = tokio_tungstenite::accept_hdr_async(
+                tcp,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+                    assert!(request.uri().query().unwrap().contains("language_code=en"));
+                    assert!(!request.uri().to_string().contains("fake-key"));
+                    Ok(response)
+                },
+            )
+            .await
+            .unwrap();
             ws.send(Message::Text(
                 json!({"message_type":"session_started"}).to_string().into(),
             ))
@@ -365,6 +390,7 @@ mod tests {
             &format!("http://{addr}"),
             crate::sensitive_key("test-key").unwrap(),
             16000,
+            Some("en"),
         )
         .await
         .unwrap();
