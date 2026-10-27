@@ -1,5 +1,6 @@
 //! On-device keyword spotting. One worker owns inference and microphone capture;
 //! the real-time callback only downmixes into a bounded queue. No network access.
+mod fallback;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use notdot_core::settings::Settings;
 use serde::Serialize;
@@ -164,6 +165,7 @@ fn config(settings: &Settings) -> Config {
 }
 
 struct Detector {
+    fallback: fallback::Fallback,
     kws: KeywordSpotter,
     stream: OnlineStream,
     require_hey: bool,
@@ -176,6 +178,7 @@ struct Detector {
 }
 impl Detector {
     fn new(models: &Path, phrase: &str) -> Result<Self, String> {
+        let fallback = fallback::Fallback::new(&models.join("ggml-tiny.en-q5_1.bin"), phrase)?;
         let lexicon = std::fs::read_to_string(models.join("phonetic/en.phone"))
             .map_err(|_| "Bundled wake pronunciation dictionary is unavailable")?;
         let pronunciations: std::collections::HashMap<&str, Vec<&str>> = lexicon
@@ -244,6 +247,7 @@ impl Detector {
         let kws = KeywordSpotter::create(&c).ok_or("Could not load the bundled wake model")?;
         let stream = kws.create_stream();
         Ok(Self {
+            fallback,
             kws,
             stream,
             require_hey,
@@ -256,9 +260,12 @@ impl Detector {
         })
     }
     fn accept(&mut self, rate: u32, samples: &[f32]) -> bool {
+        if self.fallback.accept(rate, samples) {
+            return true;
+        }
         // Bound the native feature history too. Prefer resetting in quiet audio.
         if self.elapsed >= 120. || (self.elapsed >= 60. && energy(samples) < 0.008) {
-            self.reset();
+            self.reset_keyword();
         }
         let start = self.elapsed;
         self.elapsed += samples.len() as f64 / rate as f64;
@@ -328,6 +335,10 @@ impl Detector {
     }
 
     fn reset(&mut self) {
+        self.fallback.reset();
+        self.reset_keyword();
+    }
+    fn reset_keyword(&mut self) {
         self.stream = self.kws.create_stream();
         self.elapsed = 0.;
         self.voiced.clear();
@@ -711,6 +722,14 @@ impl Worker {
                 return true;
             }
         }
+        if let Some(error) = self
+            .detector
+            .as_ref()
+            .and_then(|d| d.fallback.error.clone())
+        {
+            self.error(inner, error);
+            return true;
+        }
         let rms = energy(samples);
         if let Some(capture) = &mut self.capture {
             match capture.accept(samples, rate) {
@@ -851,7 +870,6 @@ mod tests {
         }
     }
     #[test]
-    #[ignore = "known idle-state recognition failure; run during wake diagnosis"]
     fn wake_after_extended_idle_and_rejected_candidates() {
         let _models = MODEL_FIXTURE.lock().unwrap();
         for idle in [2, 5, 25, 65] {
@@ -867,7 +885,17 @@ mod tests {
                 for _ in 0..60 {
                     detected |= d.accept(16000, &[0.; 320]);
                 }
+                for _ in 0..400 {
+                    if !d.fallback.is_busy() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                    detected |= d.accept(16000, &[0.; 320]);
+                }
                 assert_eq!(detected, name == "hey-ava.wav", "{name} after {idle}s idle");
+                if detected {
+                    d.reset();
+                }
             }
         }
     }

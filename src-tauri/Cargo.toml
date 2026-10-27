@@ -27,6 +27,8 @@ hound = "3"
 zeroize = "1"
 chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
+whisper-rs = { version = "=0.16.0", default-features = false }
+rubato = { version = "=0.16.2", default-features = false }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
