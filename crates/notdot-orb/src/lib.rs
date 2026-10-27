@@ -826,7 +826,10 @@ async fn voice(view: Shared) -> Result<(), String> {
     }
     if !view.borrow().snapshot.key_configured || view.borrow().snapshot.settings.voice_id.is_empty()
     {
-        return Err("Choose a voice and save your backend API key before recording".into());
+        return Err(
+            "Authorize your saved voice key or save a new key, and choose a voice in Settings"
+                .into(),
+        );
     }
     let generation = view.borrow().generation;
     view.borrow_mut().local_phase = Some("listening");
@@ -1084,21 +1087,31 @@ pub fn start() -> Result<(), JsValue> {
     let target = view.clone();
     on(window().as_ref(), "keydown", move |e| {
         if let Ok(e) = e.dyn_into::<web_sys::KeyboardEvent>() {
-            if e.repeat() && (e.key() == " " || e.key() == "Escape") {
+            let modal = dialog("panel").open()
+                || dialog("about").open()
+                || document()
+                    .get_element_by_id("composer")
+                    .is_some_and(|e| e.unchecked_into::<HtmlDialogElement>().open());
+            let action = interaction::keyboard_action(
+                &e.key(),
+                e.repeat(),
+                e.meta_key() || e.ctrl_key(),
+                e.alt_key(),
+                modal,
+                cfg!(feature = "debug-ui"),
+            );
+            if action == Some(interaction::KeyboardAction::Settings) {
+                e.prevent_default();
+                open_panel(&target);
                 return;
             }
-            if e.key() == "Escape" {
+            if action == Some(interaction::KeyboardAction::Cancel) {
                 stop_audio(&target);
                 spawn_local(async {
                     let _ = call("stop", json!({})).await;
                 });
             }
-            if e.key() == " "
-                && !dialog("panel").open()
-                && !document()
-                    .get_element_by_id("composer")
-                    .is_some_and(|e| e.unchecked_into::<HtmlDialogElement>().open())
-            {
+            if action == Some(interaction::KeyboardAction::Voice) {
                 e.prevent_default();
                 let _ = target.borrow_mut().meter.unlock();
                 let target = target.clone();
@@ -1442,6 +1455,9 @@ pub fn start() -> Result<(), JsValue> {
         if action == "edit" {
             if let Some(editor) = document().get_element_by_id(&format!("edit-{id}")) {
                 let _ = editor.remove_attribute("hidden");
+                if let Some(editor) = editor.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+                    let _ = editor.focus();
+                }
             }
             return;
         }
@@ -1855,9 +1871,7 @@ pub fn start() -> Result<(), JsValue> {
     Ok(())
 }
 fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
-    let reduced = window()
-        .match_media("(prefers-reduced-motion: reduce)")?
-        .is_some_and(|m| m.matches());
+    let reduced_query = window().match_media("(prefers-reduced-motion: reduce)")?;
     let context: Context = canvas
         .get_context("2d")?
         .ok_or("Canvas 2D unavailable")?
@@ -1866,6 +1880,7 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
     let callback: Frame = Rc::new(RefCell::new(None));
     let next = callback.clone();
     *callback.borrow_mut() = Some(Closure::new(move |now: f64| {
+        let reduced = reduced_query.as_ref().is_some_and(|m| m.matches());
         let mut v = view.borrow_mut();
         if v.initialized
             && v.snapshot.window_visible
@@ -2009,6 +2024,35 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                 v.peak_speaking_rms = v.peak_speaking_rms.max(level.rms);
             }
             v.frames += 1;
+            if mode != v.last_mode || v.frames == 1 {
+                let _ = canvas.set_attribute(
+                    "aria-pressed",
+                    if mode == visual_state::Mode::Listening {
+                        "true"
+                    } else {
+                        "false"
+                    },
+                );
+                let _ = canvas.set_attribute(
+                    "aria-busy",
+                    if mode == visual_state::Mode::Thinking {
+                        "true"
+                    } else {
+                        "false"
+                    },
+                );
+                element("orb-status").set_text_content(Some(match mode {
+                    visual_state::Mode::Idle => "Ready. Press Enter or Space to speak.",
+                    visual_state::Mode::Listening => {
+                        "Listening. Press Enter or Space to finish, or Escape to cancel."
+                    }
+                    visual_state::Mode::Thinking => "Thinking.",
+                    visual_state::Mode::Speaking => "Speaking. Press Escape to stop.",
+                    visual_state::Mode::Error => {
+                        "Unable to complete the request. Open Settings for details."
+                    }
+                }));
+            }
             if v.frames == 1
                 || v.last_mode != mode
                 || (matches!(

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Improve keyboard/assistive operation of the orb and Settings, block accidental recording from modal controls, focus revealed memory editors and observe live reduced-motion changes. Correct Save/switch contrast across the full hue range with static regressions.
+
 - Validate and atomically stage reset intents; reject malformed/symlink requests before touching data, with regressions for cleanup scope.
 
 - Fix legacy macOS keychain reads that could still block despite query-level UI skipping; scope legacy UI suppression and serialise all credential operations while preserving the prior policy.
