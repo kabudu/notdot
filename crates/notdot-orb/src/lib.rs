@@ -30,6 +30,7 @@ struct Settings {
     hue: u16,
     voice_id: String,
     voice_provider: String,
+    speech_language: String,
     voice_name: String,
     memory_enabled: bool,
     initiative: Value,
@@ -138,6 +139,7 @@ struct View {
     peak_speaking_rms: f64,
     update_announced: Option<String>,
     update_listening: Option<String>,
+    memory_listening: Option<String>,
     consent_heard_voice: bool,
     quota_display: Option<Value>,
     quota_retry_at: f64,
@@ -564,7 +566,7 @@ fn wake_ready(view: &Shared, snapshot: &Snapshot) -> bool {
         && !v.voice_pending
         && (v.local_phase.is_none() || (v.native_manual && v.local_phase == Some("listening")))
         && v.recording.is_none()
-        && (v.update_listening.is_none() || v.native_manual)
+        && ((v.update_listening.is_none() && v.memory_listening.is_none()) || v.native_manual)
         && !dialog("panel").open()
         && !dialog("about").open()
         && !matches!(
@@ -904,7 +906,7 @@ fn refresh_models(view: &Shared, model: String, effort: String) {
     });
 }
 fn open_panel(view: &Shared) {
-    if view.borrow().capture_token.is_some() {
+    if view.borrow().capture_token.is_some() || view.borrow().memory_listening.is_some() {
         stop_audio(view);
     }
     if !view.borrow().snapshot.settings.onboarding_complete {
@@ -921,6 +923,7 @@ fn open_panel(view: &Shared) {
     input("name").set_value(&s.name);
     input("hue").set_value(&s.hue.to_string());
     select("provider").set_value(&s.voice_provider);
+    select("speech-language").set_value(&s.speech_language);
     render_voice_options(view, &s.voice_id, &s.voice_name);
     apply_theme(s.hue);
     input("wake-enabled").set_checked(s.wake_enabled);
@@ -1035,6 +1038,11 @@ fn stop_audio(view: &Shared) {
         });
     }
     v.native_manual = false;
+    if let Some(id) = v.memory_listening.take() {
+        spawn_local(async move {
+            let _ = call("cancel_memory", json!({"id":id})).await;
+        });
+    }
     if let Some(request) = v.request_id.take() {
         spawn_local(async move {
             let _ = call("stop", json!({"requestId":request})).await;
@@ -1197,6 +1205,28 @@ async fn submit_transcript(view: Shared, text: String, generation: u64) -> Resul
     }
     view.borrow_mut().capture_token = None;
     view.borrow_mut().native_manual = false;
+    let memory_confirmation = view.borrow_mut().memory_listening.take();
+    if let Some(id) = memory_confirmation {
+        view.borrow_mut().local_phase = Some("synthesizing");
+        let result = call("answer_memory", json!({"id":id,"text":text})).await?;
+        if view.borrow().generation != generation {
+            return Ok(());
+        }
+        let answer = result
+            .as_string()
+            .ok_or("Memory check returned no answer")?;
+        let audio = call("speak", json!({"text":answer})).await?;
+        if view.borrow().generation != generation {
+            return Ok(());
+        }
+        play_encoded(view.clone(), audio, generation).await?;
+        let playback = view.borrow().audio.clone();
+        if let Some(audio) = playback {
+            wait_for_audio(&view, generation, &audio).await?;
+        }
+        view.borrow_mut().local_phase = None;
+        return Ok(());
+    }
     let confirmation = view.borrow_mut().update_listening.take();
     if let Some(version) = confirmation {
         view.borrow_mut().local_phase = None;
@@ -1222,6 +1252,9 @@ async fn submit_transcript(view: Shared, text: String, generation: u64) -> Resul
     Ok::<(), String>(())
 }
 async fn voice(view: Shared) -> Result<(), String> {
+    if dialog("panel").open() || dialog("about").open() || !view.borrow().snapshot.window_visible {
+        return Err("Close Settings before speaking.".into());
+    }
     if view.borrow().native_manual && view.borrow().local_phase == Some("listening") {
         let token = view
             .borrow()
@@ -1261,14 +1294,17 @@ async fn voice(view: Shared) -> Result<(), String> {
         let request_id = view.borrow().snapshot.request_id.clone();
         call("stop", json!({"requestId":request_id})).await?;
     }
+    let memory_confirmation = view.borrow_mut().memory_listening.take();
     stop_audio(&view);
+    view.borrow_mut().memory_listening = memory_confirmation;
     let generation = view.borrow().generation;
     let token = format!("capture-{:.0}-{generation}", js_sys::Date::now());
-    let limit = if view.borrow().update_listening.is_some() {
-        12
-    } else {
-        60
-    };
+    let limit =
+        if view.borrow().update_listening.is_some() || view.borrow().memory_listening.is_some() {
+            12
+        } else {
+            60
+        };
     {
         let mut v = view.borrow_mut();
         v.native_manual = true;
@@ -1311,13 +1347,17 @@ async fn browser_voice(view: Shared) -> Result<(), String> {
         return Ok(());
     }
     if view.borrow().local_phase.is_some() {
+        let memory_confirmation = view.borrow_mut().memory_listening.take();
         stop_audio(&view);
+        view.borrow_mut().memory_listening = memory_confirmation;
     }
     if view.borrow().snapshot.phase == "thinking" {
         let request_id = view.borrow().snapshot.request_id.clone();
         call("stop", json!({"requestId":request_id})).await?;
     }
+    let memory_confirmation = view.borrow_mut().memory_listening.take();
     stop_audio(&view);
+    view.borrow_mut().memory_listening = memory_confirmation;
     if view.borrow().snapshot.key_checking {
         return Err(
             "Waiting for OS keychain access. Check for a system permission prompt, then try again."
@@ -1414,7 +1454,7 @@ async fn browser_voice(view: Shared) -> Result<(), String> {
             v.stream = None;
             v.meter.clear_microphone();
             let discard = v.discard_capture
-                || (v.update_listening.is_none()
+                || ((v.update_listening.is_none() && v.memory_listening.is_none())
                     && v.speech_end
                         .as_ref()
                         .is_some_and(|capture| !capture.heard_speech()));
@@ -1473,11 +1513,12 @@ async fn browser_voice(view: Shared) -> Result<(), String> {
         v.stream = Some(stream);
         v.snapshot.phase = "listening".into();
     }
-    let recording_limit = if view.borrow().update_listening.is_some() {
-        12_000
-    } else {
-        60_000
-    };
+    let recording_limit =
+        if view.borrow().update_listening.is_some() || view.borrow().memory_listening.is_some() {
+            12_000
+        } else {
+            60_000
+        };
     let deadline = Closure::once(move || {
         if recorder.state() == web_sys::RecordingState::Recording {
             let _ = recorder.stop();
@@ -2004,6 +2045,7 @@ pub fn start() -> Result<(), JsValue> {
         if settings.voice_id.is_empty() {
             settings.voice_name.clear();
         }
+        settings.speech_language = select("speech-language").value();
         settings.memory_enabled = input("memory").checked();
         let minutes = |id: &str| {
             let value = input(id).value();
@@ -2290,6 +2332,9 @@ pub fn start() -> Result<(), JsValue> {
                 serde_wasm_bindgen::from_value::<Snapshot>(v).map_err(|e| e.to_string())
             }) {
                 Ok(mut snapshot) => {
+                    if !snapshot.window_visible && target.borrow().memory_listening.is_some() {
+                        stop_audio(&target);
+                    }
                     if snapshot.settings.microphone_muted
                         != target.borrow().snapshot.settings.microphone_muted
                     {
@@ -2483,6 +2528,36 @@ pub fn start() -> Result<(), JsValue> {
                             None
                         }
                     };
+                    let memory_check = {
+                        let v = target.borrow();
+                        if followup.is_none()
+                            && usage_notice.is_none()
+                            && !announce
+                            && snapshot.phase == "idle"
+                            && snapshot.window_visible
+                            && snapshot.key_configured
+                            && !matches!(
+                                snapshot.updates.phase.as_str(),
+                                "downloading" | "installing"
+                            )
+                            && !snapshot.settings.microphone_muted
+                            && !v.voice_pending
+                            && v.local_phase.is_none()
+                            && v.recording.is_none()
+                            && !v.native_manual
+                            && v.memory_listening.is_none()
+                            && snapshot.wake["phase"] != "capturing"
+                            && !dialog("panel").open()
+                            && !dialog("about").open()
+                            && v.audio.as_ref().is_none_or(|a| a.paused() || a.ended())
+                        {
+                            snapshot.learning["confirmation"]
+                                .as_str()
+                                .map(str::to_owned)
+                        } else {
+                            None
+                        }
+                    };
                     if dialog("panel").open()
                         && !target.borrow().model_refreshing
                         && js_sys::Date::now() >= target.borrow().model_refresh_at
@@ -2503,6 +2578,44 @@ pub fn start() -> Result<(), JsValue> {
                         if onboard {
                             open_panel(&target);
                         }
+                    }
+                    if let Some(id) = memory_check {
+                        let companion = target.clone();
+                        let generation = companion.borrow().generation;
+                        {
+                            let mut v = companion.borrow_mut();
+                            v.memory_listening = Some(id.clone());
+                            v.consent_heard_voice = false;
+                            v.consent_silence = None;
+                            v.local_phase = Some("announcing");
+                        }
+                        spawn_local(async move {
+                            let result = async {
+                                let question = call("memory_question", json!({"id":id}))
+                                    .await?
+                                    .as_string()
+                                    .ok_or("Memory check expired")?;
+                                let audio = call("speak", json!({"text":question})).await?;
+                                if companion.borrow().generation != generation {
+                                    return Ok(());
+                                }
+                                play_encoded(companion.clone(), audio, generation).await?;
+                                let audio = companion.borrow().audio.clone();
+                                if let Some(audio) = audio {
+                                    wait_for_audio(&companion, generation, &audio).await?;
+                                }
+                                if companion.borrow().generation != generation {
+                                    return Ok(());
+                                }
+                                companion.borrow_mut().local_phase = None;
+                                voice(companion.clone()).await
+                            }
+                            .await;
+                            if let Err(error) = result {
+                                stop_audio(&companion);
+                                message(error);
+                            }
+                        });
                     }
                     if let Some(id) = followup {
                         target.borrow_mut().local_phase = Some("announcing");
@@ -2667,7 +2780,7 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
             if v.snapshot.wake["phase"] == "capturing" && v.recording.is_none() {
                 level.rms = v.snapshot.wake["rms"].as_f64().unwrap_or(0.);
             }
-            if v.update_listening.is_none()
+            if (v.update_listening.is_none() && v.memory_listening.is_none())
                 && v.recording.is_some()
                 && let Some(capture) = &mut v.speech_end
             {
@@ -2681,7 +2794,9 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                     }
                 }
             }
-            if v.update_listening.is_some() && v.recording.is_some() {
+            if (v.update_listening.is_some() || v.memory_listening.is_some())
+                && v.recording.is_some()
+            {
                 if level.rms > 0.025 {
                     v.consent_heard_voice = true;
                     v.consent_silence = None;

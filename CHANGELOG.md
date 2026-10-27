@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Read back new voice memories before saving them, and add a spoken-language setting for clearer recognition.
+
 - Recognise ongoing projects consistently when suggesting check-ins.
 
 - Keep valid new memories when an optional summary cannot be verified.
