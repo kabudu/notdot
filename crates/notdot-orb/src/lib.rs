@@ -50,6 +50,7 @@ struct Snapshot {
     updates: UpdateStatus,
     quota: Value,
     wake: Value,
+    learning: Value,
 }
 #[derive(Clone, Default, Deserialize)]
 struct UpdateStatus {
@@ -1302,6 +1303,8 @@ pub fn start() -> Result<(), JsValue> {
                             "Stored in your OS keychain"
                         });
                     }
+                    element("memory-status")
+                        .set_text_content(snapshot.learning["message"].as_str());
                     element("about-version")
                         .set_text_content(Some(&format!("Version {}", snapshot.version)));
                     element("update-status").set_text_content(Some(&snapshot.updates.message));
@@ -1768,6 +1771,29 @@ async fn review_memories() -> Result<(), String> {
             let text = document().create_element("p").map_err(js_error)?;
             text.set_text_content(note["content"].as_str());
             card.append_child(&text).map_err(js_error)?;
+            let origin = document().create_element("p").map_err(js_error)?;
+            origin.set_class_name("hint");
+            let lineage = note["lineage"].as_array().map_or(0, Vec::len);
+            origin.set_text_content(Some(&format!(
+                "{}{}",
+                note["metadata"]["origin"].as_str().unwrap_or("Saved note"),
+                if lineage > 0 {
+                    format!(" · {lineage} source links")
+                } else {
+                    String::new()
+                }
+            )));
+            card.append_child(&origin).map_err(js_error)?;
+            if let Some(evidence) = note["metadata"]["evidence"].as_str() {
+                let details = document().create_element("details").map_err(js_error)?;
+                let summary = document().create_element("summary").map_err(js_error)?;
+                summary.set_text_content(Some("Why this was remembered"));
+                details.append_child(&summary).map_err(js_error)?;
+                let quote = document().create_element("p").map_err(js_error)?;
+                quote.set_text_content(Some(evidence));
+                details.append_child(&quote).map_err(js_error)?;
+                card.append_child(&details).map_err(js_error)?;
+            }
             let button = document().create_element("button").map_err(js_error)?;
             button.set_attribute("type", "button").map_err(js_error)?;
             button.set_text_content(Some("Forget this note"));
