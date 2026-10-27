@@ -81,3 +81,7 @@ The debug native binary also accepts `--voice-smoke`: it synthesizes a fixed tes
 The release profile explicitly disables symbol stripping to avoid Rust/LLVM's macOS 27 Mach-O proc-macro alignment issue ([upstream report](https://github.com/rust-lang/rust/issues/157750)). The optimized local app bundle was built successfully with this configuration.
 
 For animation diagnostics, `visual-status.json` in the app-data directory contains the current visual mode, a bounded recent transition list and peak speaking RMS. It contains no transcript or audio samples. Reports are local only and stop while idle; actual drawing pauses when the native window is hidden/minimized. Background webview suspension is disabled on supported macOS versions so a visible, unfocused orb remains animated.
+
+## Desktop lifecycle and releases
+
+The companion uses its own headless Codex runtime; the desktop window need not be foreground. Work/Chat conversations are not a supported bridge. Startup options, the branded About screen and updater implementation are described in [release readiness](docs/release-readiness.md). Public releases and installed cross-platform update acceptance remain gated. GitHub Actions is disabled while this repository is private; run `scripts/ci-local.sh` locally.

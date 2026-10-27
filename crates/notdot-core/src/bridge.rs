@@ -24,14 +24,19 @@ pub struct Bridge {
 }
 impl Bridge {
     pub async fn connect(binary: &Path) -> Result<Self, String> {
-        let mut child = Command::new(binary)
+        let mut command = Command::new(binary);
+        #[cfg(windows)]
+        command.creation_flags(0x08000000);
+        let mut child = command
             .args(["app-server", "--stdio"])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| format!("Start Codex runtime: {e}"))?;
+            .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound {
+                "Codex runtime was not found. Install a native Codex executable or set NOTDOT_CODEX_BIN to its full path, then reconnect.".to_string()
+            } else { format!("Start Codex runtime: {e}") })?;
         let input = Arc::new(Mutex::new(Some(
             child.stdin.take().ok_or("Runtime stdin missing")?,
         )));
@@ -178,8 +183,8 @@ impl Bridge {
             .map(str::to_owned)
             .ok_or("Runtime omitted turn ID".into())
     }
-    pub async fn interrupt(&self, tid: &str) -> Result<(), String> {
-        self.call("turn/interrupt", json!({"threadId":tid}))
+    pub async fn interrupt(&self, tid: &str, turn: &str) -> Result<(), String> {
+        self.call("turn/interrupt", json!({"threadId":tid,"turnId":turn}))
             .await
             .map(|_| ())
     }

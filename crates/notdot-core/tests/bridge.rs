@@ -52,3 +52,20 @@ async fn broken_runtime_fails_without_hanging() {
     assert!(result.is_ok());
     assert!(result.unwrap().is_err());
 }
+
+#[tokio::test]
+async fn interruption_identifies_both_thread_and_turn() {
+    let (_dir, path) = server(
+        r#"import json,sys
+for line in sys.stdin:
+ m=json.loads(line)
+ if m.get('method')=='initialize':print(json.dumps({'id':m['id'],'result':{}}),flush=True)
+ elif m.get('method')=='turn/interrupt':
+  assert m['params']=={'threadId':'thread-one','turnId':'turn-two'}
+  print(json.dumps({'id':m['id'],'result':{}}),flush=True)
+"#,
+    );
+    let bridge = Bridge::connect(&path).await.unwrap();
+    bridge.interrupt("thread-one", "turn-two").await.unwrap();
+    bridge.shutdown().await;
+}

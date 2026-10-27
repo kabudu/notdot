@@ -1,4 +1,7 @@
 #![forbid(unsafe_code)]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod startup;
+mod updates;
 use notdot_core::{bridge::Bridge, memory::Memory, settings::Settings};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -6,7 +9,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -23,8 +26,12 @@ struct Snapshot {
     reply: String,
     error: Option<String>,
     key_configured: bool,
+    key_checking: bool,
     window_visible: bool,
     active_turn: Option<String>,
+    updates: updates::Status,
+    version: String,
+    desktop_launch_supported: bool,
 }
 struct AppState {
     snapshot: Mutex<Snapshot>,
@@ -36,6 +43,7 @@ struct AppState {
     voice_http: reqwest::Client,
     voice_gate: tokio::sync::Semaphore,
     visual: Mutex<VisualLog>,
+    waiting_for_desktop: AtomicBool,
 }
 #[derive(Default)]
 struct VisualLog {
@@ -103,28 +111,29 @@ fn credential_for(provider: &str) -> Result<keyring::Entry, String> {
     }
     keyring::Entry::new("com.kabudu.notdot", provider).map_err(|e| e.to_string())
 }
-fn runtime() -> PathBuf {
-    std::env::var_os("NOTDOT_CODEX_BIN").map(PathBuf::from).unwrap_or_else(||{
-  let bundled=PathBuf::from("/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex");if bundled.exists(){bundled}else{PathBuf::from("codex")}
- })
-}
 #[tauri::command]
 async fn snapshot(
     window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
 ) -> Result<Snapshot, String> {
     let mut snapshot = state.snapshot.lock().await.clone();
     snapshot.window_visible =
         window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
+    snapshot.updates = app.state::<Arc<updates::Updates>>().status();
     Ok(snapshot)
 }
 
 #[tauri::command]
 async fn save_settings(
+    app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
     mut settings: Settings,
     key: Option<String>,
 ) -> Result<(), String> {
+    if settings.open_desktop && !cfg!(target_os = "macos") {
+        return Err("Automatic desktop launch is currently supported on macOS".into());
+    }
     let mut snap = state.snapshot.lock().await;
     let name_changed = settings.name != snap.settings.name;
     if name_changed && snap.active_turn.is_some() {
@@ -145,8 +154,14 @@ async fn save_settings(
             .set_password(&key)
             .map_err(|_| "Could not save voice key to OS keychain".to_string())?;
         snap.key_configured = true;
+        snap.key_checking = false;
     }
-    settings.save(&state.path)?;
+    let previous_startup = snap.settings.startup;
+    startup::configure(&app, settings.startup)?;
+    if let Err(e) = settings.save(&state.path) {
+        let _ = startup::configure(&app, previous_startup);
+        return Err(e);
+    }
     snap.settings = settings;
     drop(snap);
     if name_changed {
@@ -161,7 +176,9 @@ async fn clear_voice_key(state: State<'_, Arc<AppState>>) -> Result<(), String> 
         Ok(()) | Err(keyring::Error::NoEntry) => {}
         Err(e) => return Err(e.to_string()),
     }
-    state.snapshot.lock().await.key_configured = false;
+    let mut snapshot = state.snapshot.lock().await;
+    snapshot.key_configured = false;
+    snapshot.key_checking = false;
     Ok(())
 }
 async fn connect(state: Arc<AppState>, allow_interrupt: bool) -> Result<(), String> {
@@ -175,14 +192,18 @@ async fn connect(state: Arc<AppState>, allow_interrupt: bool) -> Result<(), Stri
     let generation = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
     state.snapshot.lock().await.phase = "connecting".into();
     if let Some(old) = state.bridge.lock().await.take() {
-        if allow_interrupt && let Some(tid) = state.snapshot.lock().await.settings.thread_id.clone()
-        {
-            let _ = old.interrupt(&tid).await;
+        if allow_interrupt {
+            let snapshot = state.snapshot.lock().await.clone();
+            if let (Some(tid), Some(turn)) = (snapshot.settings.thread_id, snapshot.active_turn)
+                && turn != "submission-pending"
+            {
+                let _ = old.interrupt(&tid, &turn).await;
+            }
         }
         old.shutdown().await;
     }
     state.snapshot.lock().await.active_turn = None;
-    let bridge = Arc::new(Bridge::connect(&runtime()).await?);
+    let bridge = Arc::new(Bridge::connect(&startup::runtime()).await?);
     let settings = state.snapshot.lock().await.settings.clone();
     let cwd = state.path.parent().ok_or("App data directory missing")?;
     let tid = bridge
@@ -353,16 +374,14 @@ async fn send_message(state: State<'_, Arc<AppState>>, text: String) -> Result<(
 }
 #[tauri::command]
 async fn stop(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    let tid = state
-        .snapshot
-        .lock()
-        .await
-        .settings
-        .thread_id
-        .clone()
-        .ok_or("Not connected")?;
+    let _gate = state.send_gate.lock().await;
+    let snapshot = state.snapshot.lock().await.clone();
+    let Some(turn) = snapshot.active_turn else {
+        return Ok(());
+    };
+    let tid = snapshot.settings.thread_id.ok_or("Not connected")?;
     let bridge = state.bridge.lock().await.clone().ok_or("Not connected")?;
-    bridge.interrupt(&tid).await?;
+    bridge.interrupt(&tid, &turn).await?;
     Ok(())
 }
 #[tauri::command]
@@ -434,6 +453,7 @@ async fn save_voice_key(
     let mut s = state.snapshot.lock().await;
     if selected == s.settings.voice_provider {
         s.key_configured = true;
+        s.key_checking = false;
     }
     Ok(())
 }
@@ -544,7 +564,15 @@ fn main() {
     }
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--startup"]),
+        ))
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            if let Some(state) = app.try_state::<Arc<AppState>>() {
+                state.waiting_for_desktop.store(false, Ordering::SeqCst);
+            }
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
                 let _ = w.set_focus();
@@ -566,7 +594,12 @@ fn main() {
             save_voice_key,
             voice_catalog,
             preview_voice,
-            report_visual
+            report_visual,
+            updates::check_updates,
+            updates::defer_update,
+            updates::announce_update,
+            updates::answer_update,
+            updates::install_update
         ])
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
@@ -578,9 +611,13 @@ fn main() {
             }
             let path = dir.join("settings.json");
             let settings = Settings::load(&path).map_err(std::io::Error::other)?;
-            let key_configured = credential_for(&settings.voice_provider)
-                .and_then(|e| e.get_password().map_err(|e| e.to_string()))
-                .is_ok();
+            let waiting_for_desktop = std::env::args().any(|a| a == "--startup")
+                && settings.startup == notdot_core::settings::Startup::WithCodex;
+            if waiting_for_desktop && let Some(w) = app.get_webview_window("main") {
+                w.hide()?;
+            }
+            let updater = Arc::new(updates::Updates::new(dir.join("updates.json")));
+            app.manage(updater.clone());
             let memory =
                 Arc::new(Memory::open(&dir.join("memory")).map_err(std::io::Error::other)?);
             let state = Arc::new(AppState {
@@ -590,8 +627,12 @@ fn main() {
                     reply: String::new(),
                     error: None,
                     active_turn: None,
-                    key_configured,
-                    window_visible: true,
+                    key_configured: false,
+                    key_checking: true,
+                    window_visible: !waiting_for_desktop,
+                    updates: updates::Status::default(),
+                    version: app.package_info().version.to_string(),
+                    desktop_launch_supported: cfg!(target_os = "macos"),
                 }),
                 bridge: Mutex::new(None),
                 memory,
@@ -601,8 +642,50 @@ fn main() {
                 voice_http: notdot_voice::http_client().map_err(std::io::Error::other)?,
                 voice_gate: tokio::sync::Semaphore::new(4),
                 visual: Mutex::new(VisualLog::default()),
+                waiting_for_desktop: AtomicBool::new(waiting_for_desktop),
             });
             app.manage(state.clone());
+            // Keychain access may wait for OS authorization. Never put it on the UI thread.
+            let key_state = state.clone();
+            tauri::async_runtime::spawn(async move {
+                let provider = key_state
+                    .snapshot
+                    .lock()
+                    .await
+                    .settings
+                    .voice_provider
+                    .clone();
+                let selected = provider.clone();
+                let available = tokio::task::spawn_blocking(move || {
+                    #[cfg(target_os = "macos")]
+                    {
+                        // Presence is metadata: do not decrypt a secret or prompt at launch.
+                        use security_framework::item::{ItemClass, ItemSearchOptions};
+                        ItemSearchOptions::new()
+                            .class(ItemClass::generic_password())
+                            .service("com.kabudu.notdot")
+                            .account(&provider)
+                            .load_attributes(true)
+                            .load_data(false)
+                            .search()
+                            .is_ok_and(|items| !items.is_empty())
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        credential_for(&provider)
+                            .and_then(|e| e.get_password().map_err(|e| e.to_string()))
+                            .is_ok()
+                    }
+                })
+                .await
+                .unwrap_or(false);
+                let mut snapshot = key_state.snapshot.lock().await;
+                if snapshot.key_checking && snapshot.settings.voice_provider == selected {
+                    snapshot.key_configured = available;
+                    snapshot.key_checking = false;
+                }
+            });
+            updates::spawn(app.handle().clone(), state.clone(), updater);
             let maintenance = state.clone();
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_secs(30 * 60));
@@ -623,28 +706,23 @@ fn main() {
             let settings_item = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
             let reconnect_item =
                 MenuItem::with_id(app, "reconnect", "Reconnect agent", true, None::<&str>)?;
+            let about_item = MenuItem::with_id(app, "about", "About notdot", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit notdot", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&settings_item, &reconnect_item, &quit])?;
-            let icon = tauri::image::Image::new_owned(
-                (0..32 * 32)
-                    .flat_map(|i| {
-                        let x = i % 32 - 16i32;
-                        let y = i / 32 - 16i32;
-                        if x * x + y * y < 180 {
-                            [100, 220, 235, 255]
-                        } else {
-                            [0, 0, 0, 0]
-                        }
-                    })
-                    .collect(),
-                32,
-                32,
-            );
+            let menu =
+                Menu::with_items(app, &[&settings_item, &reconnect_item, &about_item, &quit])?;
+            let icon = tauri::include_image!("icons/32x32.png");
             TrayIconBuilder::new()
                 .icon(icon)
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "quit" => app.exit(0),
+                    "about" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                            let _ = w.eval("window.dispatchEvent(new Event('notdot-about'))");
+                        }
+                    }
                     "settings" => {
                         if let Some(w) = app.get_webview_window("main") {
                             let _ = w.show();
@@ -665,7 +743,34 @@ fn main() {
                     _ => {}
                 })
                 .build(app)?;
+            let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                if waiting_for_desktop {
+                    loop {
+                        let watching = state.snapshot.lock().await.settings.startup
+                            == notdot_core::settings::Startup::WithCodex;
+                        let running = tokio::task::spawn_blocking(startup::desktop_running)
+                            .await
+                            .unwrap_or(false);
+                        if !watching || running || !state.waiting_for_desktop.load(Ordering::SeqCst)
+                        {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                    }
+                    if let Some(w) = app_handle.get_webview_window("main") {
+                        let _ = w.show();
+                    }
+                }
+                if state.snapshot.lock().await.settings.open_desktop
+                    && let Err(e) = startup::open_desktop().await
+                {
+                    state.snapshot.lock().await.error = Some(e);
+                }
+                // A manual reconnect may already have activated a waiting companion.
+                if state.bridge.lock().await.is_some() {
+                    return;
+                }
                 if let Err(e) = connect(state.clone(), false).await {
                     let mut s = state.snapshot.lock().await;
                     s.phase = "error".into();

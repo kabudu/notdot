@@ -1,0 +1,24 @@
+{
+  "bundle": {
+    "targets": [
+      "appimage",
+      "deb"
+    ],
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      },
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libayatana-appindicator3-1",
+          "libsecret-1-0",
+          "gstreamer1.0-plugins-good",
+          "gstreamer1.0-plugins-base",
+          "gstreamer1.0-libav",
+          "speech-dispatcher"
+        ]
+      }
+    }
+  }
+}

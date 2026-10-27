@@ -7,6 +7,7 @@ permissions:
   contents: read
 jobs:
   macos:
+    if: github.event.repository.private == false
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -15,7 +16,7 @@ jobs:
           targets: wasm32-unknown-unknown
           components: rustfmt, clippy
       - run: cargo fmt --all --check
-      - run: cargo test -p notdot-core -p notdot-voice --locked
+      - run: cargo test -p notdot-core -p notdot-voice -p notdot --locked
       - name: Orb gesture regression
         run: rustc --edition 2024 --test crates/notdot-orb/src/interaction.rs -o /tmp/notdot-gesture-tests && /tmp/notdot-gesture-tests
       - run: cargo clippy -p notdot-core -p notdot-voice -p notdot --all-targets --locked -- -D warnings
@@ -25,3 +26,5 @@ jobs:
         run: rustc --edition 2024 --test crates/notdot-orb/src/visual_state.rs -o /tmp/notdot-visual-tests && /tmp/notdot-visual-tests
       - name: No production conversation UI
         run: python3 -c "from pathlib import Path; s=Path('index.html').read_text(); assert 'composer' not in s and '<textarea' not in s"
+      - name: Release manifest regression
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'

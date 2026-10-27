@@ -1,0 +1,88 @@
+name: Prepare desktop release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable version already committed in Cargo.toml and tauri.conf.json
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: notdot-release
+  cancel-in-progress: false
+jobs:
+  build:
+    # Private development keeps Actions disabled at repository level. Both gates must
+    # be deliberately changed before this workflow can build release artifacts.
+    if: github.event.repository.private == false && vars.PUBLIC_RELEASES_ENABLED == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform: darwin-aarch64
+            bundles: app
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows-x86_64
+            bundles: nsis
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            platform: linux-x86_64
+            bundles: appimage,deb
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          targets: wasm32-unknown-unknown,${{ matrix.target }}
+          components: rustfmt,clippy
+      - name: Linux prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libssl-dev libdbus-1-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-base gstreamer1.0-libav speech-dispatcher
+      - name: Validate version and release configuration
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: python3 scripts/check_release_version.py "$RELEASE_VERSION"
+      - run: cargo fmt --all --check
+      - run: cargo test -p notdot-core -p notdot-voice -p notdot --locked
+      - run: cargo clippy -p notdot --all-targets --locked -- -D warnings
+      - run: cargo clippy -p notdot-orb --target wasm32-unknown-unknown --locked -- -D warnings
+      - run: cargo install trunk --version 0.22.1 --locked
+      - run: cargo install tauri-cli --version 2.12.4 --locked
+      - name: Build updater-signed platform bundles
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: cargo tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config src-tauri/tauri.release.conf.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ matrix.platform }}
+          if-no-files-found: error
+          path: |
+            target/${{ matrix.target }}/release/bundle/**/*.app.tar.gz*
+            target/${{ matrix.target }}/release/bundle/**/*-setup.exe*
+            target/${{ matrix.target }}/release/bundle/**/*.AppImage*
+            target/${{ matrix.target }}/release/bundle/**/*.deb
+  draft:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: incoming
+      - name: Stage complete updater manifest
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: python3 scripts/prepare_release.py --version "$RELEASE_VERSION" --input incoming --output staged
+      - name: Create draft for platform acceptance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: gh release create "v$RELEASE_VERSION" staged/* --draft --verify-tag --title "notdot $RELEASE_VERSION" --notes-file docs/release-notes.md

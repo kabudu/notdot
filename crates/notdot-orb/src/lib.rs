@@ -12,7 +12,7 @@ use web_sys::{
     HtmlInputElement,
 };
 #[wasm_bindgen(
-    inline_js = "export function invoke(c,a){return window.__TAURI__.core.invoke(c,a)} export function drag(){return window.__TAURI__.window.getCurrentWindow().startDragging()} export function resize(w,h){return window.__TAURI__.window.getCurrentWindow().setSize(new window.__TAURI__.dpi.LogicalSize(w,h))}"
+    inline_js = "export function invoke(c,a){return window.__TAURI__.core.invoke(c,a)} export function drag(){return window.__TAURI__.window.getCurrentWindow().startDragging()} export function resize(w,h){return window.__TAURI__.window.getCurrentWindow().setSize(new window.__TAURI__.dpi.LogicalSize(Math.min(w,screen.availWidth-32),Math.min(h,screen.availHeight-64)))}"
 )]
 extern "C" {
     fn invoke(c: &str, a: JsValue) -> js_sys::Promise;
@@ -29,6 +29,9 @@ struct Settings {
     memory_enabled: bool,
     onboarding_complete: bool,
     thread_id: Option<String>,
+    startup: String,
+    open_desktop: bool,
+    automatic_updates: bool,
 }
 #[derive(Clone, Default, Deserialize)]
 struct Snapshot {
@@ -37,7 +40,20 @@ struct Snapshot {
     reply: String,
     error: Option<String>,
     key_configured: bool,
+    key_checking: bool,
     window_visible: bool,
+    version: String,
+    desktop_launch_supported: bool,
+    updates: UpdateStatus,
+}
+#[derive(Clone, Default, Deserialize)]
+struct UpdateStatus {
+    phase: String,
+    version: Option<String>,
+    message: String,
+    received: u64,
+    total: Option<u64>,
+    prompt: bool,
 }
 #[derive(Clone, Deserialize)]
 struct VoiceChoice {
@@ -79,6 +95,10 @@ struct View {
     last_report: f64,
     frames: u64,
     peak_speaking_rms: f64,
+    update_announced: Option<String>,
+    update_listening: Option<String>,
+    consent_heard_voice: bool,
+    consent_silence: Option<f64>,
 }
 type Shared = Rc<RefCell<View>>;
 fn window() -> web_sys::Window {
@@ -263,6 +283,16 @@ fn open_panel(view: &Shared) {
     render_voice_options(view, &s.voice_id, &s.voice_name);
     apply_theme(s.hue);
     input("memory").set_checked(s.memory_enabled);
+    select("startup").set_value(&s.startup);
+    input("open-desktop").set_checked(s.open_desktop);
+    let supported = view.borrow().snapshot.desktop_launch_supported;
+    let _ = element("open-desktop").toggle_attribute_with_force("disabled", !supported);
+    element("desktop-launch-description").set_text_content(Some(if supported {
+        "Launch in the background. The bridge runs independently."
+    } else {
+        "Available on macOS. The bridge runs independently here."
+    }));
+    input("automatic-updates").set_checked(s.automatic_updates);
     input("key").set_value("");
     input("key").set_placeholder(if view.borrow().snapshot.key_configured {
         "Key saved · leave blank to keep"
@@ -374,6 +404,12 @@ async fn play_encoded(view: Shared, value: JsValue, generation: u64) -> Result<(
     Ok(())
 }
 async fn voice(view: Shared) -> Result<(), String> {
+    if matches!(
+        view.borrow().snapshot.updates.phase.as_str(),
+        "downloading" | "installing"
+    ) {
+        return Err("An update is being installed".into());
+    }
     if let Some(recorder) = view.borrow().recording.clone() {
         recorder.stop().map_err(js_error)?;
         return Ok(());
@@ -388,6 +424,12 @@ async fn voice(view: Shared) -> Result<(), String> {
         call("stop", json!({})).await?;
     }
     stop_audio(&view);
+    if view.borrow().snapshot.key_checking {
+        return Err(
+            "Waiting for OS keychain access. Check for a system permission prompt, then try again."
+                .into(),
+        );
+    }
     if !view.borrow().snapshot.key_configured || view.borrow().snapshot.settings.voice_id.is_empty()
     {
         return Err("Choose a voice and save your backend API key before recording".into());
@@ -495,6 +537,12 @@ async fn voice(view: Shared) -> Result<(), String> {
                 if view.borrow().generation != generation {
                     return Ok(());
                 }
+                let confirmation = view.borrow_mut().update_listening.take();
+                if let Some(version) = confirmation {
+                    view.borrow_mut().local_phase = None;
+                    call("answer_update", json!({"text":text,"version":version})).await?;
+                    return Ok(());
+                }
                 call("send_message", json!({"text":text})).await?;
                 {
                     let mut v = view.borrow_mut();
@@ -529,6 +577,11 @@ async fn voice(view: Shared) -> Result<(), String> {
         v.stream = Some(stream);
         v.snapshot.phase = "listening".into();
     }
+    let recording_limit = if view.borrow().update_listening.is_some() {
+        12_000
+    } else {
+        60_000
+    };
     let deadline = Closure::once(move || {
         if recorder.state() == web_sys::RecordingState::Recording {
             let _ = recorder.stop();
@@ -537,7 +590,7 @@ async fn voice(view: Shared) -> Result<(), String> {
     window()
         .set_timeout_with_callback_and_timeout_and_arguments_0(
             deadline.as_ref().unchecked_ref(),
-            60_000,
+            recording_limit,
         )
         .map_err(js_error)?;
     deadline.forget();
@@ -598,6 +651,42 @@ pub fn start() -> Result<(), JsValue> {
                 target.borrow_mut().local_phase = None;
                 message(&e);
                 open_panel(&target);
+            }
+        });
+    });
+    on(element("close-about").as_ref(), "click", |_| {
+        dialog("about").close();
+        if !dialog("panel").open() {
+            let _ = resize(360., 360.);
+        }
+    });
+    on(window().as_ref(), "notdot-about", |_| {
+        let _ = resize(430., 540.);
+        let _ = dialog("about").show_modal();
+    });
+    on(element("show-about").as_ref(), "click", |_| {
+        let _ = dialog("about").show_modal();
+    });
+    on(element("check-updates").as_ref(), "click", |_| {
+        spawn_local(async {
+            if let Err(e) = call("check_updates", json!({})).await {
+                message(e);
+            }
+        });
+    });
+    on(element("defer-update").as_ref(), "click", |_| {
+        spawn_local(async {
+            if let Err(e) = call("defer_update", json!({})).await {
+                message(e);
+            }
+        });
+    });
+    let update_target = view.clone();
+    on(element("install-update").as_ref(), "click", move |_| {
+        stop_audio(&update_target);
+        spawn_local(async {
+            if let Err(e) = call("install_update", json!({})).await {
+                message(e);
             }
         });
     });
@@ -829,6 +918,9 @@ pub fn start() -> Result<(), JsValue> {
             settings.voice_name.clear();
         }
         settings.memory_enabled = input("memory").checked();
+        settings.startup = select("startup").value();
+        settings.open_desktop = input("open-desktop").checked();
+        settings.automatic_updates = input("automatic-updates").checked();
         settings.onboarding_complete = true;
         let key = input("key").value();
         let target = target.clone();
@@ -933,6 +1025,51 @@ pub fn start() -> Result<(), JsValue> {
                     if let Some(error) = &snapshot.error {
                         element("error").set_text_content(Some(error));
                     }
+                    if input("key").value().is_empty() {
+                        input("key").set_placeholder(if snapshot.key_checking {
+                            "Checking OS keychain…"
+                        } else if snapshot.key_configured {
+                            "Key saved · leave blank to keep"
+                        } else {
+                            "Stored in your OS keychain"
+                        });
+                    }
+                    element("about-version")
+                        .set_text_content(Some(&format!("Version {}", snapshot.version)));
+                    element("update-status").set_text_content(Some(&snapshot.updates.message));
+                    let available = snapshot.updates.phase == "available";
+                    let _ =
+                        element("install-update").toggle_attribute_with_force("hidden", !available);
+                    let _ =
+                        element("defer-update").toggle_attribute_with_force("hidden", !available);
+                    let updating = matches!(
+                        snapshot.updates.phase.as_str(),
+                        "downloading" | "installing"
+                    );
+                    let _ =
+                        element("update-progress").toggle_attribute_with_force("hidden", !updating);
+                    element("update-progress-label")
+                        .set_text_content(Some(&snapshot.updates.message));
+                    if let Some(total) = snapshot.updates.total.filter(|t| *t > 0) {
+                        let percent =
+                            (snapshot.updates.received as f64 / total as f64 * 100.).min(100.);
+                        let _ = element("update-bar").set_attribute("value", &percent.to_string());
+                    } else {
+                        let _ = element("update-bar").remove_attribute("value");
+                    }
+                    let announce = {
+                        let v = target.borrow();
+                        snapshot.updates.prompt
+                            && snapshot.phase == "idle"
+                            && !speak
+                            && !v.voice_pending
+                            && v.local_phase.is_none()
+                            && v.recording.is_none()
+                            && !dialog("panel").open()
+                            && !dialog("about").open()
+                            && v.audio.as_ref().is_none_or(|a| a.paused() || a.ended())
+                            && v.update_announced != snapshot.updates.version
+                    };
                     let onboard = !snapshot.settings.onboarding_complete;
                     target.borrow_mut().snapshot = snapshot;
                     if !target.borrow().initialized {
@@ -945,6 +1082,37 @@ pub fn start() -> Result<(), JsValue> {
                         if onboard {
                             open_panel(&target);
                         }
+                    }
+                    if announce {
+                        let version = target.borrow().snapshot.updates.version.clone();
+                        {
+                            let mut v = target.borrow_mut();
+                            v.update_announced = version;
+                            v.local_phase = Some("announcing");
+                        }
+                        let companion = target.clone();
+                        spawn_local(async move {
+                            let result = async {
+                                let version = call("announce_update", json!({}))
+                                    .await?
+                                    .as_string()
+                                    .ok_or("Update announcement returned no version")?;
+                                {
+                                    let mut v = companion.borrow_mut();
+                                    v.local_phase = None;
+                                    v.update_listening = Some(version);
+                                    v.consent_heard_voice = false;
+                                    v.consent_silence = None;
+                                }
+                                voice(companion.clone()).await
+                            }
+                            .await;
+                            if let Err(e) = result {
+                                companion.borrow_mut().local_phase = None;
+                                companion.borrow_mut().update_listening = None;
+                                message(e);
+                            }
+                        });
                     }
                     if speak {
                         let (text, generation) = {
@@ -1017,6 +1185,19 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                 playing,
             );
             let level = v.meter.sample(mode == visual_state::Mode::Listening);
+            if v.update_listening.is_some() && v.recording.is_some() {
+                if level.rms > 0.025 {
+                    v.consent_heard_voice = true;
+                    v.consent_silence = None;
+                } else if v.consent_heard_voice {
+                    let since = *v.consent_silence.get_or_insert(now);
+                    if now - since > 1400.
+                        && let Some(recorder) = &v.recording
+                    {
+                        let _ = recorder.stop();
+                    }
+                }
+            }
             let energy = (level.rms * 4.5).min(1.);
             let target = match mode {
                 visual_state::Mode::Thinking => 0.65,

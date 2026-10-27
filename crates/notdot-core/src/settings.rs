@@ -1,5 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Startup {
+    #[default]
+    Manual,
+    Login,
+    WithCodex,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -11,6 +19,9 @@ pub struct Settings {
     pub memory_enabled: bool,
     pub onboarding_complete: bool,
     pub thread_id: Option<String>,
+    pub startup: Startup,
+    pub open_desktop: bool,
+    pub automatic_updates: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -23,6 +34,9 @@ impl Default for Settings {
             memory_enabled: false,
             onboarding_complete: false,
             thread_id: None,
+            startup: Startup::Manual,
+            open_desktop: false,
+            automatic_updates: true,
         }
     }
 }
@@ -77,6 +91,18 @@ mod tests {
         };
         s.save(&p).unwrap();
         assert_eq!(Settings::load(&p).unwrap().name, "Aster");
+        s.startup = Startup::WithCodex;
+        s.open_desktop = true;
+        s.automatic_updates = false;
+        s.save(&p).unwrap();
+        let restored = Settings::load(&p).unwrap();
+        assert_eq!(restored.startup, Startup::WithCodex);
+        assert!(restored.open_desktop);
+        assert!(!restored.automatic_updates);
+        let legacy: Settings = serde_json::from_str(r#"{"name":"Legacy"}"#).unwrap();
+        assert_eq!(legacy.startup, Startup::Manual);
+        assert!(legacy.automatic_updates);
+
         s.hue = 500;
         assert!(s.save(&p).is_err());
         assert_eq!(Settings::load(&p).unwrap().hue, 192);
