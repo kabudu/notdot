@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix legacy macOS keychain reads that could still block despite query-level UI skipping; scope legacy UI suppression and serialise all credential operations while preserving the prior policy.
+
 - Backport the upstream GLib string-iterator FFI safety fix for the GTK3 Linux stack, retaining provenance/licenses and validating optimized variant tests.
 
 - Remove unused legacy updater ZIP support and its vulnerable Windows ZIP dependency; retain current signed raw-installer/AppImage and macOS archive formats.

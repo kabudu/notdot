@@ -5,10 +5,13 @@ use std::{
     sync::{Arc, Mutex},
 };
 use zeroize::Zeroizing;
+// Legacy macOS keychain UI control is process-wide. Serialize all credential
+// reads/writes across vault instances, so an explicit approval cannot race a
+// scoped non-interactive read. The cache lock stays separate for UI snapshots.
+static OPERATIONS: Mutex<()> = Mutex::new(());
 #[derive(Default)]
 pub struct Credentials {
     cache: Mutex<HashMap<String, Zeroizing<String>>>,
-    operations: Mutex<()>,
 }
 impl Credentials {
     pub fn cached(&self, provider: &str) -> bool {
@@ -22,7 +25,7 @@ impl Credentials {
         provider: &str,
         load: impl FnOnce() -> Result<String, String>,
     ) -> Result<String, String> {
-        let _operation = self.operations.lock().expect("credential operation");
+        let _operation = OPERATIONS.lock().expect("credential operation");
         if let Some(key) = self.cache.lock().expect("credential cache").get(provider) {
             return Ok(key.to_string());
         }
@@ -55,7 +58,7 @@ impl Credentials {
         key: &str,
         save: impl FnOnce() -> Result<(), String>,
     ) -> Result<(), String> {
-        let _operation = self.operations.lock().expect("credential operation");
+        let _operation = OPERATIONS.lock().expect("credential operation");
         save()?;
         self.cache
             .lock()
@@ -85,7 +88,7 @@ impl Credentials {
         provider: &str,
         delete: impl FnOnce() -> Result<(), String>,
     ) -> Result<(), String> {
-        let _operation = self.operations.lock().expect("credential operation");
+        let _operation = OPERATIONS.lock().expect("credential operation");
         delete()?;
         self.cache
             .lock()
@@ -108,6 +111,18 @@ impl Credentials {
         .map_err(|e| e.to_string())?
     }
 }
+#[cfg(target_os = "macos")]
+fn non_interactive_keychain()
+-> Result<Option<security_framework::os::macos::keychain::KeychainUserInteractionLock>, String> {
+    use security_framework::os::macos::keychain::SecKeychain;
+    if SecKeychain::user_interaction_allowed().map_err(|_| "Could not verify keychain UI policy")? {
+        Ok(Some(SecKeychain::disable_user_interaction().map_err(
+            |_| "Could not prevent keychain authentication UI",
+        )?))
+    } else {
+        Ok(None)
+    }
+}
 fn os_read(provider: &str, interactive: bool) -> Result<String, String> {
     let entry = super::credential_for(provider)?;
     if interactive {
@@ -117,6 +132,9 @@ fn os_read(provider: &str, interactive: bool) -> Result<String, String> {
     {
         use security_framework::item::{ItemClass, ItemSearchOptions, SearchResult};
         use security_framework::os::macos::keychain::{SecKeychain, SecPreferencesDomain};
+        // kSecUseAuthenticationUISkip alone is ignored by some legacy reads.
+        // Preserve the existing process UI state and restore it on every exit.
+        let _no_ui = non_interactive_keychain()?;
         let keychain = SecKeychain::default_for_domain(SecPreferencesDomain::User)
             .map_err(|_| "The login keychain is unavailable".to_string())?;
         let values = ItemSearchOptions::new()
@@ -180,6 +198,28 @@ fn os_read(provider: &str, interactive: bool) -> Result<String, String> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn silent_keychain_scope_restores_prior_policy_and_preserves_an_existing_no_ui_scope() {
+        use security_framework::os::macos::keychain::SecKeychain;
+        let _operation = OPERATIONS.lock().unwrap();
+        let original = SecKeychain::user_interaction_allowed().unwrap();
+        {
+            let _guard = non_interactive_keychain().unwrap();
+            assert!(!SecKeychain::user_interaction_allowed().unwrap());
+        }
+        assert_eq!(SecKeychain::user_interaction_allowed().unwrap(), original);
+        if original {
+            let outer = SecKeychain::disable_user_interaction().unwrap();
+            {
+                let guard = non_interactive_keychain().unwrap();
+                assert!(guard.is_none());
+            }
+            assert!(!SecKeychain::user_interaction_allowed().unwrap());
+            drop(outer);
+            assert!(SecKeychain::user_interaction_allowed().unwrap());
+        }
+    }
     #[test]
     fn concurrent_reads_authorize_once_and_replacements_and_deletion_invalidate_cache() {
         let vault = Arc::new(Credentials::default());
