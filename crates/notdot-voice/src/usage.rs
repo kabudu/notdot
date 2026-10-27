@@ -100,7 +100,7 @@ pub(crate) fn elevenlabs_usage(value: &Value) -> Result<UsageReport, VoiceError>
         (Some(true), Value::String(s)) if s == "unlimited" => Overage::Enabled,
         _ => Overage::Unknown,
     };
-    Ok(UsageReport { account: format!("{account}:{workspace}"), meters: vec![UsageMeter { id: "subscription".into(), label: "Subscription allowance".into(), unit: "provider credits (legacy character fields)".into(), used, limit, reset_unix: subscription["next_character_count_reset_unix"].as_u64().filter(|n| *n > 0), overage }], note: "This provider-reported subscription pool is not a combined STT/TTS balance. Separate API/PAYG balances, API-key caps and remaining STT minutes are unavailable from this report.".into() })
+    Ok(UsageReport { account: format!("{account}:{workspace}"), meters: vec![UsageMeter { id: "subscription".into(), label: "Subscription allowance".into(), unit: "provider credits".into(), used, limit, reset_unix: subscription["next_character_count_reset_unix"].as_u64().filter(|n| *n > 0), overage }], note: "This is the provider’s subscription allowance. It does not show how many recording minutes or spoken replies remain. Separate speech-to-text charges, pay-as-you-go balances and key limits may apply.".into() })
 }
 pub(crate) fn response_error(status: u16, bytes: &[u8]) -> VoiceError {
     let body: Value = serde_json::from_slice(bytes).unwrap_or(Value::Null);
@@ -121,6 +121,16 @@ pub(crate) fn response_error(status: u16, bytes: &[u8]) -> VoiceError {
             VoiceErrorKind::Quota,
             "Voice service has insufficient credits or requires payment. Check the provider account; notdot will not enable extra spending.",
         )
+    } else if matches!(
+        code,
+        "missing_permissions" | "insufficient_permissions" | "permission_denied"
+    ) || kind == "authorization_error"
+        || status == 403
+    {
+        (
+            VoiceErrorKind::Permission,
+            "The API key lacks permission for this voice service operation.",
+        )
     } else if matches!(code, "invalid_api_key" | "missing_api_key" | "unauthorized")
         || kind == "authentication_error"
         || status == 401
@@ -128,11 +138,6 @@ pub(crate) fn response_error(status: u16, bytes: &[u8]) -> VoiceError {
         (
             VoiceErrorKind::Authentication,
             "Voice service rejected the API key. Check your saved key in Settings.",
-        )
-    } else if kind == "authorization_error" || status == 403 {
-        (
-            VoiceErrorKind::Permission,
-            "The API key lacks permission for this voice service operation.",
         )
     } else if kind == "rate_limit_error" || status == 429 {
         (
@@ -238,7 +243,7 @@ pub(crate) mod tests {
         let report = provider.usage().await.unwrap();
         assert_eq!(report.account, "a:w");
         assert_eq!(report.meters[0].threshold(), Some(90));
-        assert!(report.note.contains("remaining STT minutes"));
+        assert!(report.note.contains("recording minutes"));
         server.await.unwrap();
     }
     #[tokio::test]
@@ -247,6 +252,8 @@ pub(crate) mod tests {
             (402, "insufficient_credits", VoiceErrorKind::Quota),
             (401, "quota_exceeded", VoiceErrorKind::Quota),
             (401, "invalid_api_key", VoiceErrorKind::Authentication),
+            (401, "missing_permissions", VoiceErrorKind::Permission),
+            (401, "insufficient_permissions", VoiceErrorKind::Permission),
             (403, "insufficient_permissions", VoiceErrorKind::Permission),
             (429, "rate_limit_exceeded", VoiceErrorKind::RateLimit),
         ] {
@@ -264,16 +271,20 @@ pub(crate) mod tests {
     }
     #[tokio::test]
     async fn usage_permission_failure_is_explicitly_unavailable() {
-        let (provider, server) = fixture(
-            403,
-            json!({"detail":{"code":"insufficient_permissions"}}).to_string(),
-            "GET /v1/user ",
-        )
-        .await;
-        assert_eq!(
-            provider.usage().await.unwrap_err().kind,
-            VoiceErrorKind::Permission
-        );
-        server.await.unwrap();
+        for status in [401, 403] {
+            let (provider, server) = fixture(
+                status,
+                json!({"detail":{"status":"missing_permissions", "message":"PRIVATE_FIXTURE"}})
+                    .to_string(),
+                "GET /v1/user ",
+            )
+            .await;
+            let error = provider.usage().await.unwrap_err();
+            assert_eq!(error.kind, VoiceErrorKind::Permission);
+            assert!(error.to_string().contains("cannot read account usage"));
+            assert!(!error.to_string().contains("rejected"));
+            assert!(!error.to_string().contains("PRIVATE_FIXTURE"));
+            server.await.unwrap();
+        }
     }
 }

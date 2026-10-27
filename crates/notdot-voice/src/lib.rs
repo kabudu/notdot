@@ -238,7 +238,14 @@ impl VoiceBackend for ElevenLabs {
                 )
             })?;
         let value: Value =
-            serde_json::from_slice(&body(response, 256 * 1024).await?).map_err(|_| {
+            serde_json::from_slice(&body(response, 256 * 1024).await.map_err(|error| {
+                if error.kind == VoiceErrorKind::Permission {
+                    VoiceError::new(VoiceErrorKind::Permission,
+                        "This key cannot read account usage. Voice permissions are separate, so speech may still work. Allow read access to User in ElevenLabs key settings to show usage, or keep using voice without balance monitoring.")
+                } else {
+                    error
+                }
+            })?).map_err(|_| {
                 VoiceError::new(
                     VoiceErrorKind::Provider,
                     "Usage service returned invalid JSON",
