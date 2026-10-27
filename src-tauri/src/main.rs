@@ -987,7 +987,7 @@ fn main() {
             let about_item = MenuItem::with_id(app, "about", "About notdot", true, None::<&str>)?;
             let mute_item =
                 MenuItem::with_id(app, "mute", "Mute / unmute microphone", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit notdot", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit notdot", true, Some("CmdOrCtrl+Q"))?;
             let menu = Menu::with_items(
                 app,
                 &[
