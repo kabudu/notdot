@@ -301,7 +301,10 @@ for line in sys.stdin:
    model={'id':'picker-id','model':'actual-model','displayName':'Account Model','defaultReasoningEffort':'low','supportedReasoningEfforts':[{'reasoningEffort':'low','description':'Quick'},{'reasoningEffort':'high','description':'Deep'}]}
    hidden=dict(model,id='hidden',model='hidden',hidden=True)
    result={'data':([model,hidden] if not retired else []),'nextCursor':None}
+ elif method=='config/read':result={'config':{'apps':{'_default':{'default_tools_approval_mode':'auto'}}}}
  elif method in ['thread/start','thread/resume']:
+  assert p['config']['apps']['_default']['default_tools_approval_mode']=='writes'
+  assert p['config']['approvals_reviewer']=='user'
   assert p['model']=='actual-model' and p['config']['model_reasoning_effort']=='high'
   result={'thread':{'id':'same-history'},'model':p['model'],'reasoningEffort':p['config']['model_reasoning_effort']}
  elif method=='thread/name/set':result={}

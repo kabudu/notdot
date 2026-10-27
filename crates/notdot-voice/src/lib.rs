@@ -58,7 +58,7 @@ pub fn provider(
 ) -> Result<Box<dyn VoiceBackend>, String> {
     match id {
         "elevenlabs" => Ok(Box::new(ElevenLabs {
-            key,
+            key: sensitive_key(&key)?,
             client,
             endpoint: "https://api.elevenlabs.io".into(),
         })),
@@ -73,9 +73,15 @@ pub fn http_client() -> Result<reqwest::Client, String> {
         .map_err(|e| e.to_string())
 }
 struct ElevenLabs {
-    key: String,
+    key: reqwest::header::HeaderValue,
     client: reqwest::Client,
     endpoint: String,
+}
+fn sensitive_key(key: &str) -> Result<reqwest::header::HeaderValue, String> {
+    let mut value = reqwest::header::HeaderValue::from_str(key)
+        .map_err(|_| "Voice key contains invalid characters")?;
+    value.set_sensitive(true);
+    Ok(value)
 }
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
@@ -132,7 +138,7 @@ impl ElevenLabs {
         let mut request = self
             .client
             .get(format!("{}/v2/voices", self.endpoint))
-            .header("xi-api-key", &self.key)
+            .header("xi-api-key", self.key.clone())
             .query(&[
                 ("page_size", "100"),
                 ("include_total_count", "false"),
@@ -228,7 +234,7 @@ impl VoiceBackend for ElevenLabs {
             .client
             .get(format!("{}/v1/user", self.endpoint))
             .timeout(Duration::from_secs(15))
-            .header("xi-api-key", &self.key)
+            .header("xi-api-key", self.key.clone())
             .send()
             .await
             .map_err(|_| {
@@ -274,7 +280,7 @@ impl VoiceBackend for ElevenLabs {
         let response = self
             .client
             .post(format!("{}/v1/speech-to-text", self.endpoint))
-            .header("xi-api-key", &self.key)
+            .header("xi-api-key", self.key.clone())
             .multipart(
                 reqwest::multipart::Form::new()
                     .text("model_id", "scribe_v2")
@@ -307,7 +313,7 @@ impl VoiceBackend for ElevenLabs {
         let response = self
             .client
             .post(format!("{}/v1/text-to-speech/{voice}", self.endpoint))
-            .header("xi-api-key", &self.key)
+            .header("xi-api-key", self.key.clone())
             .json(&serde_json::json!({"text":text,"model_id":"eleven_flash_v2_5"}))
             .send()
             .await
@@ -368,6 +374,13 @@ fn safe_preview_url(value: &str) -> bool {
 mod tests {
     use super::*;
     #[test]
+    fn credentials_are_redacted_from_http_header_debug_output() {
+        let value = sensitive_key("synthetic-private-key").unwrap();
+        assert!(value.is_sensitive());
+        assert!(!format!("{value:?}").contains("synthetic-private-key"));
+        assert!(sensitive_key("bad\nkey").is_err());
+    }
+    #[test]
     fn preview_urls_cannot_reach_local_services() {
         for url in [
             "http://localhost/a",
@@ -412,7 +425,7 @@ mod tests {
             socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{json}",json.len()).as_bytes()).await.unwrap();
         });
         let p = ElevenLabs {
-            key: "fake".into(),
+            key: sensitive_key("fake").unwrap(),
             client: http_client().unwrap(),
             endpoint: format!("http://{addr}"),
         };

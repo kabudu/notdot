@@ -33,7 +33,6 @@ pub(crate) struct Meter {
 }
 pub(crate) struct Level {
     pub rms: f64,
-    pub waveform: [f64; 48],
     pub metered: bool,
 }
 impl Meter {
@@ -73,11 +72,13 @@ impl Meter {
     }
     pub fn microphone(&mut self, stream: &MediaStream) -> Result<(), JsValue> {
         self.microphone = None;
-        let Some(context) = &self.context else {
-            return Ok(());
-        };
+        let context = self.context.as_ref().ok_or_else(|| {
+            JsValue::from_str("Microphone level monitoring is unavailable. Try again.")
+        })?;
         if context.state() != AudioContextState::Running {
-            return Ok(());
+            return Err(JsValue::from_str(
+                "Microphone level monitoring has not started. Try again.",
+            ));
         }
         let source = context.create_media_stream_source(stream)?;
         let analyser = Self::analyser(context)?;
@@ -127,9 +128,6 @@ impl Meter {
         }
         Level {
             rms: crate::visual_state::rms(&bytes),
-            waveform: std::array::from_fn(|i| {
-                ((f64::from(bytes[i * bytes.len() / 48]) - 128.) / 128.).abs()
-            }),
             metered: analyser.is_some(),
         }
     }

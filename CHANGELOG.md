@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Speak after one click; a short pause sends your request automatically. Remove spike-style listening feedback and keep the orb thinking throughout the wait.
+- Strengthen cancellation and tool approvals, and protect voice credentials in diagnostic output.
+
 - Meet notdot: a voice-only desktop companion with a personalisable orb, local wake phrases and a continuing Codex conversation.
 - Choose your voice, model and thinking level, with optional memory, reminders and quiet hours.
 - Manage everything in clearer, collapsible Settings with a combined model picker and compact voice-usage display.

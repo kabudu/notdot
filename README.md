@@ -10,7 +10,7 @@ Talk to a small, expressive orb that listens, thinks and speaks. Built with Rust
 
 ## Meet your orb
 
-- **Voice first:** click or press Space to talk; Escape cancels. Optional local name-based wake phrases are experimental.
+- **Voice first:** click once or press Space, speak, then pause to send; Escape cancels. Optional local name-based wake phrases are experimental.
 - **Continuity:** one saved chat. Send requests through notdot; use Desktop to read its saved history. Sending from both apps at once is not supported.
 - **Memory you control:** optional memories linked to the chats they came from, review, correction, forgetting and a complete local memory reset. This changes what the AI knows about you; it does not retrain the model.
 - **Make it yours:** name, live colour preview, searchable voices with previews, one model-and-thinking-level picker.

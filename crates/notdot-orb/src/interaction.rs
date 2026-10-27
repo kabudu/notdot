@@ -100,3 +100,84 @@ mod keyboard_tests {
         );
     }
 }
+
+/// A bounded local end-of-speech detector; it never transcribes background audio.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CaptureDecision {
+    Continue,
+    Submit,
+    Discard,
+}
+pub(crate) struct SpeechEnd {
+    started: f64,
+    last_sample: f64,
+    last_voice: f64,
+    voiced_ms: f64,
+}
+impl SpeechEnd {
+    pub(crate) fn new(now: f64) -> Self {
+        Self {
+            started: now,
+            last_sample: now,
+            last_voice: now,
+            voiced_ms: 0.,
+        }
+    }
+    pub(crate) fn heard_speech(&self) -> bool {
+        self.voiced_ms >= 180.
+    }
+    pub(crate) fn observe(&mut self, now: f64, rms: f64, metered: bool) -> CaptureDecision {
+        let elapsed = (now - self.last_sample).clamp(0., 100.);
+        self.last_sample = now;
+        if metered && rms.is_finite() && rms >= 0.015 {
+            self.voiced_ms += elapsed;
+            self.last_voice = now;
+        }
+        if self.heard_speech() && now - self.last_voice >= 1400. {
+            CaptureDecision::Submit
+        } else if now - self.started >= 8000. && !self.heard_speech() {
+            CaptureDecision::Discard
+        } else {
+            CaptureDecision::Continue
+        }
+    }
+}
+#[cfg(test)]
+mod speech_end_tests {
+    use super::*;
+    #[test]
+    fn speech_submits_after_a_pause_and_a_short_pause_does_not_cut_off_words() {
+        let mut capture = SpeechEnd::new(0.);
+        for tick in 1..=12 {
+            assert_eq!(
+                capture.observe(tick as f64 * 33., 0.06, true),
+                CaptureDecision::Continue
+            );
+        }
+        assert!(capture.heard_speech());
+        assert_eq!(capture.observe(1000., 0., true), CaptureDecision::Continue);
+        assert_eq!(
+            capture.observe(1100., 0.05, true),
+            CaptureDecision::Continue
+        );
+        assert_eq!(capture.observe(2400., 0., true), CaptureDecision::Continue);
+        assert_eq!(capture.observe(2500., 0., true), CaptureDecision::Submit);
+    }
+    #[test]
+    fn silence_clicks_and_missing_meter_are_discarded_without_a_paid_request() {
+        for metered in [true, false] {
+            let mut capture = SpeechEnd::new(0.);
+            for tick in 1..240 {
+                assert_eq!(
+                    capture.observe(tick as f64 * 33., if tick == 3 { 0.1 } else { 0. }, metered),
+                    CaptureDecision::Continue
+                );
+            }
+            assert!(!capture.heard_speech());
+            assert_eq!(
+                capture.observe(8000., 0., metered),
+                CaptureDecision::Discard
+            );
+        }
+    }
+}

@@ -90,6 +90,8 @@ struct View {
     audio: Option<web_sys::HtmlAudioElement>,
     audio_url: Option<String>,
     voice_pending: bool,
+    speech_end: Option<interaction::SpeechEnd>,
+    discard_capture: bool,
     spoken: String,
     polling: bool,
     generation: u64,
@@ -987,6 +989,8 @@ fn stop_audio(view: &Shared) {
     let mut v = view.borrow_mut();
     v.generation += 1;
     v.voice_pending = false;
+    v.speech_end = None;
+    v.discard_capture = false;
     v.local_phase = None;
     v.meter.clear_microphone();
     v.meter.clear_playback();
@@ -1072,6 +1076,9 @@ async fn submit_transcript(view: Shared, text: String, generation: u64) -> Resul
         return Ok(());
     }
     call("send_message", json!({"text":text})).await?;
+    if view.borrow().generation != generation {
+        return Ok(());
+    }
     {
         let mut v = view.borrow_mut();
         v.voice_pending = true;
@@ -1154,6 +1161,12 @@ async fn voice(view: Shared) -> Result<(), String> {
         }
         return Ok(());
     }
+    if let Err(error) = view.borrow_mut().meter.microphone(&stream) {
+        for track in stream.get_tracks() {
+            track.unchecked_into::<web_sys::MediaStreamTrack>().stop();
+        }
+        return Err(js_error(error));
+    }
     let options = web_sys::MediaRecorderOptions::new();
     let mime = if web_sys::MediaRecorder::is_type_supported("audio/mp4") {
         "audio/mp4"
@@ -1198,7 +1211,17 @@ async fn voice(view: Shared) -> Result<(), String> {
             v.recording = None;
             v.stream = None;
             v.meter.clear_microphone();
-            v.local_phase = Some("transcribing");
+            let discard = v.discard_capture
+                || (v.update_listening.is_none()
+                    && v.speech_end
+                        .as_ref()
+                        .is_some_and(|capture| !capture.heard_speech()));
+            v.speech_end = None;
+            v.discard_capture = false;
+            v.local_phase = if discard { None } else { Some("transcribing") };
+            if discard {
+                return;
+            }
         }
         let pieces = js_sys::Array::new();
         for blob in chunks.borrow_mut().drain(..) {
@@ -1240,7 +1263,10 @@ async fn voice(view: Shared) -> Result<(), String> {
     }
     {
         let mut v = view.borrow_mut();
-        let _ = v.meter.microphone(&stream);
+        v.speech_end = Some(interaction::SpeechEnd::new(
+            window().performance().map_or(0., |p| p.now()),
+        ));
+        v.discard_capture = false;
         v.recording = Some(recorder.clone());
         v.stream = Some(stream);
         v.snapshot.phase = "listening".into();
@@ -2314,11 +2340,25 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                         v.snapshot.phase.as_str()
                     }),
                 playing,
+                v.voice_pending,
             );
             let mut level = v.meter.sample(mode == visual_state::Mode::Listening);
             if v.snapshot.wake["phase"] == "capturing" && v.recording.is_none() {
                 level.rms = v.snapshot.wake["rms"].as_f64().unwrap_or(0.);
-                level.waveform.fill(level.rms.min(1.));
+            }
+            if v.update_listening.is_none()
+                && v.recording.is_some()
+                && let Some(capture) = &mut v.speech_end
+            {
+                match capture.observe(now, level.rms, level.metered) {
+                    interaction::CaptureDecision::Continue => {}
+                    decision => {
+                        v.discard_capture = decision == interaction::CaptureDecision::Discard;
+                        if let Some(recorder) = &v.recording {
+                            let _ = recorder.stop();
+                        }
+                    }
+                }
             }
             if v.update_listening.is_some() && v.recording.is_some() {
                 if level.rms > 0.025 {
@@ -2334,7 +2374,10 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                 }
             }
             let energy = (level.rms * 4.5).min(1.);
-            let speech_target = if mode == visual_state::Mode::Speaking {
+            let speech_target = if matches!(
+                mode,
+                visual_state::Mode::Speaking | visual_state::Mode::Listening
+            ) {
                 if level.metered { energy } else { 0.25 }
             } else {
                 0.
@@ -2344,7 +2387,7 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
             let target = match mode {
                 visual_state::Mode::Thinking => 0.65,
                 visual_state::Mode::Speaking => 0.22 + v.speech_energy * 0.78,
-                visual_state::Mode::Listening => 0.22 + energy * 0.78,
+                visual_state::Mode::Listening => 0.22 + v.speech_energy * 0.78,
                 _ => 0.08,
             };
             v.amplitude += (target - v.amplitude) * 0.22;
@@ -2358,7 +2401,9 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                 visual_state::Mode::Speaking => {
                     1. + v.speech_energy * if reduced { 0.01 } else { 0.07 }
                 }
-                visual_state::Mode::Listening => 1. + energy * if reduced { 0.035 } else { 0.12 },
+                visual_state::Mode::Listening => {
+                    1. + v.speech_energy * if reduced { 0.01 } else { 0.07 }
+                }
                 visual_state::Mode::Thinking => {
                     1. + if reduced {
                         0.
@@ -2389,7 +2434,6 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                     reduced,
                     speech_energy: v.speech_energy,
                 },
-                &level,
             );
             if v.keyboard_navigation
                 && document()
@@ -2470,7 +2514,7 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                 element("orb-status").set_text_content(Some(match mode {
                     visual_state::Mode::Idle => "Ready. Press Enter or Space to speak.",
                     visual_state::Mode::Listening => {
-                        "Listening. Press Enter or Space to finish, or Escape to cancel."
+                        "Listening. Speak, then pause to send. Escape cancels."
                     }
                     visual_state::Mode::Thinking => "Thinking.",
                     visual_state::Mode::Speaking => "Speaking. Press Escape to stop.",
@@ -2798,7 +2842,7 @@ struct ActivityFrame {
     reduced: bool,
     speech_energy: f64,
 }
-fn draw_activity(c: &Context, frame: ActivityFrame, level: &audio_meter::Level) {
+fn draw_activity(c: &Context, frame: ActivityFrame) {
     let ActivityFrame {
         center: (x, y),
         radius: r,
@@ -2821,8 +2865,9 @@ fn draw_activity(c: &Context, frame: ActivityFrame, level: &audio_meter::Level) 
             let _ = c.arc(x, y, r * 2.02, a, a + 0.06);
             c.stroke();
         }
-    } else if mode == Mode::Speaking {
-        for layer in 0..2 {
+    } else if matches!(mode, Mode::Speaking | Mode::Listening) {
+        let layers = if mode == Mode::Listening { 1 } else { 2 };
+        for layer in 0..layers {
             c.set_line_width(if layer == 0 { 2.2 } else { 1.2 });
             c.set_shadow_color(&format!("hsla({hue},85%,65%,.4)"));
             c.set_shadow_blur(if reduced { 0. } else { 10. });
@@ -2845,23 +2890,6 @@ fn draw_activity(c: &Context, frame: ActivityFrame, level: &audio_meter::Level) 
             }
             c.close_path();
             c.fill();
-            c.stroke();
-        }
-    } else if mode == Mode::Listening {
-        c.set_line_width(3.);
-        c.set_stroke_style_str(&format!("hsla({hue},90%,48%,.9)"));
-        for i in 0..48 {
-            let a = i as f64 / 48. * TAU;
-            let sample = if level.metered {
-                level.waveform[i] * 4.5
-            } else {
-                0.15 + 0.12 * (t * 8. + i as f64 * 0.7).sin().abs()
-            };
-            let height = 3. + sample.min(1.) * if reduced { 12. } else { 30. };
-            let base = r * 1.78;
-            c.begin_path();
-            c.move_to(x + a.cos() * base, y + a.sin() * base);
-            c.line_to(x + a.cos() * (base + height), y + a.sin() * (base + height));
             c.stroke();
         }
     }
