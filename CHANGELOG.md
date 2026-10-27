@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add Reactive, Suggestions and Proactive modes with a separate persisted reminder/follow-up journal, silent orb indicator, per-item interruption permission, local quiet hours and configurable delivery limits.
+- Support explicit relative voice reminders independently of memory, spoken reminder review, recent source-linked project/goal suggestions, snooze and dismissal. Keep all scheduling local; external actions remain separately authorised.
+- Stage new inferred memories until independent corroboration or user confirmation. Add memory editing, user-correction precedence, provisional expiry and correction provenance; exclude provisional notes from recall and semantic digests.
+
+
 - Add opt-in automatic learning of source-linked user facts/preferences, corrections and model-generated memory digests, using isolated ephemeral Terra Medium analysis.
 - Make memory-off and forgetting invalidate pending learning; expose origin/evidence, learning status and bounded-queue skips in Settings.
 - Reject unresolved cancellation identities and recover timed-out submissions without sending an invalid interrupt request.

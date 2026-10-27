@@ -4,3 +4,5 @@ pub mod settings;
 pub mod update_consent;
 
 pub mod memory;
+
+pub mod initiative;

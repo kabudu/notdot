@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod initiative;
 mod learning;
 mod quota;
 mod startup;
@@ -37,6 +38,7 @@ struct Snapshot {
     quota: notdot_voice::quota::Status,
     wake: wake::Status,
     learning: learning::Status,
+    initiative: initiative::Status,
     version: String,
     desktop_launch_supported: bool,
 }
@@ -54,6 +56,7 @@ struct AppState {
     quota: Arc<quota::Monitor>,
     wake: wake::Wake,
     learning: learning::Learning,
+    initiative: initiative::Initiative,
 }
 #[derive(Default)]
 struct VisualLog {
@@ -133,6 +136,7 @@ async fn snapshot(
     snapshot.updates = app.state::<Arc<updates::Updates>>().status();
     snapshot.wake = state.wake.status();
     snapshot.learning = state.learning.status();
+    snapshot.initiative = state.initiative.status(&snapshot.settings.initiative).await;
     snapshot.quota = state.quota.status(&snapshot.settings.voice_provider).await;
     Ok(snapshot)
 }
@@ -215,6 +219,9 @@ async fn save_settings(
             .map_err(|_| "Could not save voice key to OS keychain".to_string())?;
         snap.key_configured = true;
         snap.key_checking = false;
+    }
+    if !settings.memory_enabled {
+        state.initiative.remove_inferred(None).await?;
     }
     let previous_startup = snap.settings.startup;
     if let Err(e) = startup::configure(&app, settings.startup) {
@@ -408,6 +415,20 @@ async fn send_message(state: State<'_, Arc<AppState>>, text: String) -> Result<(
     if text.trim().is_empty() || text.len() > 24_000 {
         return Err("Enter a message of at most 24,000 bytes".into());
     }
+    {
+        let s = state.snapshot.lock().await;
+        if s.active_turn.is_some() || s.phase == "thinking" {
+            return Err("Wait for the current turn".into());
+        }
+    }
+    let behaviour = state.snapshot.lock().await.settings.initiative.behaviour;
+    if let Some(reply) = state.initiative.command(&text, behaviour).await {
+        let mut s = state.snapshot.lock().await;
+        s.reply = reply;
+        s.phase = "idle".into();
+        s.error = None;
+        return Ok(());
+    }
     let (tid, memory_ticket) = {
         let mut s = state.snapshot.lock().await;
         if s.active_turn.is_some() || s.phase == "thinking" {
@@ -485,6 +506,7 @@ async fn send_message(state: State<'_, Arc<AppState>>, text: String) -> Result<(
 }
 #[tauri::command]
 async fn stop(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    state.initiative.cancel();
     let gate = state.send_gate.lock().await;
     state.learning.cancel();
     let snapshot = state.snapshot.lock().await.clone();
@@ -506,7 +528,17 @@ async fn memories(state: State<'_, Arc<AppState>>, query: Option<String>) -> Res
         .map_err(|e| e.to_string())
 }
 #[tauri::command]
+async fn edit_memory(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    content: String,
+) -> Result<(), String> {
+    state.initiative.remove_inferred(Some(&id)).await?;
+    state.memory.edit(&id, &content).await
+}
+#[tauri::command]
 async fn forget(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+    state.initiative.remove_inferred(Some(&id)).await?;
     state.memory.forget(&id).await
 }
 #[tauri::command]
@@ -739,6 +771,10 @@ fn main() {
             stop,
             memories,
             forget,
+            edit_memory,
+            initiative::followups,
+            initiative::followup_action,
+            initiative::announce_followup,
             maintain_memory,
             transcribe,
             speak,
@@ -804,6 +840,7 @@ fn main() {
                     quota: notdot_voice::quota::Ledger::default().status("", 0),
                     wake: wake::Status::default(),
                     learning: learning::Status::default(),
+                    initiative: initiative::Status::default(),
                     version: app.package_info().version.to_string(),
                     desktop_launch_supported: cfg!(target_os = "macos"),
                 }),
@@ -819,9 +856,12 @@ fn main() {
                 quota: quota_monitor,
                 wake,
                 learning,
+                initiative: initiative::Initiative::open(dir.join("followups.json"))
+                    .map_err(std::io::Error::other)?,
             });
             app.manage(state.clone());
             quota::spawn(state.clone());
+            initiative::spawn(state.clone());
             // Keychain access may wait for OS authorization. Never put it on the UI thread.
             let key_state = state.clone();
             tauri::async_runtime::spawn(async move {

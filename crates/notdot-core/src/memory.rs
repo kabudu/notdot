@@ -131,7 +131,18 @@ impl Memory {
                 include_explanation: true,
             })
             .await
-            .map(|r| r.hits.into_iter().map(|h| h.record).collect())
+            .map(|r| {
+                r.hits
+                    .into_iter()
+                    .map(|h| h.record)
+                    .filter(|r| {
+                        matches!(
+                            r.quality_state,
+                            MemoryQualityState::Active | MemoryQualityState::Verified
+                        )
+                    })
+                    .collect()
+            })
             .map_err(|e| e.to_string())
     }
     pub async fn review(&self, query: &str) -> Result<Vec<MemoryRecord>, String> {
@@ -152,10 +163,9 @@ impl Memory {
             .filter(|r| {
                 !matches!(
                     r.quality_state,
-                    MemoryQualityState::Deleted
-                        | MemoryQualityState::Suppressed
-                        | MemoryQualityState::Archived
-                ) && r.content.to_lowercase().contains(&query)
+                    MemoryQualityState::Deleted | MemoryQualityState::Archived
+                ) && (r.quality_state != MemoryQualityState::Suppressed || learning::provisional(r))
+                    && r.content.to_lowercase().contains(&query)
             })
             .collect();
         records.sort_by_key(|r| std::cmp::Reverse(r.updated_at_unix_ms));

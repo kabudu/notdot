@@ -24,6 +24,8 @@ sherpa-onnx = "=2.0.0"
 sentencepiece-rs = "=0.2.2"
 cpal = "=0.18.2"
 hound = "3"
+chrono = "0.4"
+uuid = { version = "1", features = ["v4"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
