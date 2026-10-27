@@ -445,7 +445,13 @@ fn open_panel(view: &Shared) {
             .unwrap_or(60)
             .to_string(),
     );
-    select("startup").set_value(&s.startup);
+    input("start-at-login").set_checked(s.startup != "manual");
+    select("startup").set_value(if s.startup == "with_codex" {
+        "with_codex"
+    } else {
+        "login"
+    });
+    select("startup").set_disabled(s.startup == "manual");
     input("open-desktop").set_checked(s.open_desktop);
     let supported = view.borrow().snapshot.desktop_launch_supported;
     let _ = element("open-desktop").toggle_attribute_with_force("disabled", !supported);
@@ -1119,6 +1125,9 @@ pub fn start() -> Result<(), JsValue> {
         }
     });
     let target = view.clone();
+    on(element("start-at-login").as_ref(), "change", |_| {
+        select("startup").set_disabled(!input("start-at-login").checked());
+    });
     on(element("settings").as_ref(), "submit", move |e| {
         e.prevent_default();
         let mut settings = target.borrow().snapshot.settings.clone();
@@ -1137,7 +1146,11 @@ pub fn start() -> Result<(), JsValue> {
             h.parse::<u16>().unwrap_or(0) * 60 + m.parse::<u16>().unwrap_or(0)
         };
         settings.initiative = json!({"behaviour":select("behaviour").value(),"quiet_start":minutes("quiet-start"),"quiet_end":minutes("quiet-end"),"daily_limit":input("daily-limit").value().parse::<u8>().unwrap_or(3),"gap_minutes":input("followup-gap").value().parse::<u16>().unwrap_or(60)});
-        settings.startup = select("startup").value();
+        settings.startup = if input("start-at-login").checked() {
+            select("startup").value()
+        } else {
+            "manual".into()
+        };
         settings.open_desktop = input("open-desktop").checked();
         settings.automatic_updates = input("automatic-updates").checked();
         settings.wake_enabled = input("wake-enabled").checked();

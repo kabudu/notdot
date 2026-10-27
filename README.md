@@ -119,3 +119,7 @@ The **Mute microphone** switch and tray **Mute / unmute microphone** action stop
 Sherpa-onnx 2.0.0 is statically linked, with approximately 15 MiB of bundled models/tokenisers/notices; there is no runtime model download, access key or Python dependency. Dictionary-covered phrases use the local English pronunciation model; other English spellings use a BPE fallback. Build-time checksums pin the resources. Linux builds need `libasound2-dev` and runtime access to ALSA/PipeWire/PulseAudio routing.
 
 Detection is experimental: two UK synthetic recordings pass, while the retained US synthetic recording misses. Some names, accents, noise and nearby speech may trigger accidentally or fail to trigger. These fixtures do not establish reliable room-scale detection; live hardware/accent acceptance remains open. See docs/VALIDATION.md and the bundled model NOTICE.
+
+### Start at sign-in
+
+In **Settings → Startup & updates**, enable **Start notdot when I sign in**, leave **Start immediately — desktop app not required** selected, and Save. Disable the switch and Save to remove automatic startup. This uses the OS login mechanism on macOS, Windows and Linux; a graphical companion starts after user sign-in rather than before login. The setting is off by default and preserves existing startup preferences. The optional **Wait until I open Codex / ChatGPT** behavior keeps the existing background watcher. **Open desktop app too** remains a separate macOS option; it is unnecessary for notdot’s runtime.

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Expose automatic sign-in startup as an explicit switch, with immediate independent startup or optional waiting for the desktop app. Preserve existing startup preferences and OS registration behavior.
+
 - Add Reactive, Suggestions and Proactive modes with a separate persisted reminder/follow-up journal, silent orb indicator, per-item interruption permission, local quiet hours and configurable delivery limits.
 - Support explicit relative voice reminders independently of memory, spoken reminder review, recent source-linked project/goal suggestions, snooze and dismissal. Keep all scheduling local; external actions remain separately authorised.
 - Stage new inferred memories until independent corroboration or user confirmation. Add memory editing, user-correction precedence, provisional expiry and correction provenance; exclude provisional notes from recall and semantic digests.

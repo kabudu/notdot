@@ -108,6 +108,11 @@ mod tests {
         assert_eq!(restored.startup, Startup::WithCodex);
         assert!(restored.open_desktop);
         assert!(!restored.automatic_updates);
+        for mode in [Startup::Login, Startup::Manual] {
+            s.startup = mode;
+            s.save(&p).unwrap();
+            assert_eq!(Settings::load(&p).unwrap().startup, mode);
+        }
         let legacy: Settings = serde_json::from_str(r#"{"name":"Legacy"}"#).unwrap();
         assert_eq!(legacy.startup, Startup::Manual);
         assert_eq!(
