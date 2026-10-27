@@ -27,6 +27,7 @@ struct Settings {
     voice_provider: String,
     voice_name: String,
     memory_enabled: bool,
+    initiative: Value,
     onboarding_complete: bool,
     thread_id: Option<String>,
     startup: String,
@@ -51,6 +52,7 @@ struct Snapshot {
     quota: Value,
     wake: Value,
     learning: Value,
+    initiative: Value,
 }
 #[derive(Clone, Default, Deserialize)]
 struct UpdateStatus {
@@ -426,6 +428,23 @@ fn open_panel(view: &Shared) {
         let _ = call("wake_activity", json!({"ready":false})).await;
     });
     input("memory").set_checked(s.memory_enabled);
+    select("behaviour").set_value(s.initiative["behaviour"].as_str().unwrap_or("reactive"));
+    for (id, key) in [("quiet-start", "quiet_start"), ("quiet-end", "quiet_end")] {
+        let minutes = s.initiative[key].as_u64().unwrap_or(0);
+        input(id).set_value(&format!("{:02}:{:02}", minutes / 60, minutes % 60));
+    }
+    input("daily-limit").set_value(
+        &s.initiative["daily_limit"]
+            .as_u64()
+            .unwrap_or(3)
+            .to_string(),
+    );
+    input("followup-gap").set_value(
+        &s.initiative["gap_minutes"]
+            .as_u64()
+            .unwrap_or(60)
+            .to_string(),
+    );
     select("startup").set_value(&s.startup);
     input("open-desktop").set_checked(s.open_desktop);
     let supported = view.borrow().snapshot.desktop_launch_supported;
@@ -1112,6 +1131,12 @@ pub fn start() -> Result<(), JsValue> {
             settings.voice_name.clear();
         }
         settings.memory_enabled = input("memory").checked();
+        let minutes = |id: &str| {
+            let value = input(id).value();
+            let (h, m) = value.split_once(':').unwrap_or(("0", "0"));
+            h.parse::<u16>().unwrap_or(0) * 60 + m.parse::<u16>().unwrap_or(0)
+        };
+        settings.initiative = json!({"behaviour":select("behaviour").value(),"quiet_start":minutes("quiet-start"),"quiet_end":minutes("quiet-end"),"daily_limit":input("daily-limit").value().parse::<u8>().unwrap_or(3),"gap_minutes":input("followup-gap").value().parse::<u16>().unwrap_or(60)});
         settings.startup = select("startup").value();
         settings.open_desktop = input("open-desktop").checked();
         settings.automatic_updates = input("automatic-updates").checked();
@@ -1140,6 +1165,37 @@ pub fn start() -> Result<(), JsValue> {
             }
         });
     });
+    on(element("review-followups").as_ref(), "click", |_| {
+        spawn_local(async {
+            if let Err(e) = review_followups().await {
+                message(e);
+            }
+        });
+    });
+    on(element("followups").as_ref(), "click", |e| {
+        let Some(t) = e
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+        else {
+            return;
+        };
+        let (Some(id), Some(action)) = (
+            t.get_attribute("data-followup-id"),
+            t.get_attribute("data-action"),
+        ) else {
+            return;
+        };
+        spawn_local(async move {
+            match call("followup_action", json!({"id":id,"action":action})).await {
+                Ok(_) => {
+                    if let Err(e) = review_followups().await {
+                        message(e);
+                    }
+                }
+                Err(e) => message(e),
+            }
+        });
+    });
     on(element("notes").as_ref(), "click", |e| {
         let Some(target) = e
             .target()
@@ -1150,10 +1206,37 @@ pub fn start() -> Result<(), JsValue> {
         let Some(id) = target.get_attribute("data-memory-id") else {
             return;
         };
+        let action = target
+            .get_attribute("data-action")
+            .unwrap_or_else(|| "forget".into());
+        if action == "edit" {
+            if let Some(editor) = document().get_element_by_id(&format!("edit-{id}")) {
+                let _ = editor.remove_attribute("hidden");
+            }
+            return;
+        }
+        let content = document()
+            .get_element_by_id(&format!("edit-{id}"))
+            .and_then(|e| e.dyn_into::<web_sys::HtmlTextAreaElement>().ok())
+            .map(|e| e.value())
+            .unwrap_or_default();
         spawn_local(async move {
-            match call("forget", json!({"id":id})).await {
+            match call(
+                if action == "save" {
+                    "edit_memory"
+                } else {
+                    "forget"
+                },
+                json!({"id":id,"content":content}),
+            )
+            .await
+            {
                 Ok(_) => {
-                    message("Note and derived summaries forgotten.");
+                    message(if action == "save" {
+                        "Memory corrected. Your version takes precedence."
+                    } else {
+                        "Note and derived summaries forgotten."
+                    });
                     if let Err(e) = review_memories().await {
                         message(e);
                     }
@@ -1303,6 +1386,11 @@ pub fn start() -> Result<(), JsValue> {
                             "Stored in your OS keychain"
                         });
                     }
+                    element("followup-status").set_text_content(Some(&format!(
+                        "{} available follow-ups. {}",
+                        snapshot.initiative["available"].as_u64().unwrap_or(0),
+                        snapshot.initiative["error"].as_str().unwrap_or("")
+                    )));
                     element("memory-status")
                         .set_text_content(snapshot.learning["message"].as_str());
                     element("about-version")
@@ -1366,6 +1454,25 @@ pub fn start() -> Result<(), JsValue> {
                             && v.audio.as_ref().is_none_or(|a| a.paused() || a.ended())
                             && v.update_announced != snapshot.updates.version
                     };
+                    let followup = {
+                        let v = target.borrow();
+                        if usage_notice.is_none()
+                            && !announce
+                            && snapshot.phase == "idle"
+                            && snapshot.wake["phase"] != "capturing"
+                            && !speak
+                            && !v.voice_pending
+                            && v.local_phase.is_none()
+                            && v.recording.is_none()
+                            && !dialog("panel").open()
+                            && !dialog("about").open()
+                            && v.audio.as_ref().is_none_or(|a| a.paused() || a.ended())
+                        {
+                            snapshot.initiative["announce"].as_str().map(str::to_owned)
+                        } else {
+                            None
+                        }
+                    };
                     let onboard = !snapshot.settings.onboarding_complete;
                     target.borrow_mut().snapshot = snapshot;
                     if !target.borrow().initialized {
@@ -1378,6 +1485,19 @@ pub fn start() -> Result<(), JsValue> {
                         if onboard {
                             open_panel(&target);
                         }
+                    }
+                    if let Some(id) = followup {
+                        target.borrow_mut().local_phase = Some("announcing");
+                        let companion = target.clone();
+                        let generation = companion.borrow().generation;
+                        spawn_local(async move {
+                            if let Err(e) = call("announce_followup", json!({"id":id})).await {
+                                message(e);
+                            }
+                            if companion.borrow().generation == generation {
+                                companion.borrow_mut().local_phase = None;
+                            }
+                        });
                     }
                     if let Some(id) = usage_notice {
                         target.borrow_mut().local_phase = Some("announcing");
@@ -1583,6 +1703,14 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                 context.stroke();
                 context.restore();
             }
+            if v.snapshot.initiative["available"].as_u64().unwrap_or(0) > 0 {
+                context.save();
+                context.set_fill_style_str(&format!("hsl({hue},90%,75%)"));
+                context.begin_path();
+                let _ = context.arc(w / 2. + radius * 1.55, h / 2. - radius * 1.55, 5., 0., TAU);
+                context.fill();
+                context.restore();
+            }
             if v.snapshot.settings.microphone_muted {
                 context.save();
                 context.set_stroke_style_str("#a7aeb8");
@@ -1757,6 +1885,62 @@ fn mount_debug(view: &Shared) {
     });
 }
 
+async fn review_followups() -> Result<(), String> {
+    let value = call("followups", json!({})).await?;
+    let entries: Value = serde_wasm_bindgen::from_value(value).map_err(|e| e.to_string())?;
+    let container = element("followups");
+    container.set_text_content(None);
+    for e in entries.as_array().into_iter().flatten() {
+        let card = document().create_element("article").map_err(js_error)?;
+        let p = document().create_element("p").map_err(js_error)?;
+        p.set_text_content(e["message"].as_str());
+        card.append_child(&p).map_err(js_error)?;
+        let detail = document().create_element("p").map_err(js_error)?;
+        detail.set_class_name("hint");
+        let due = e["due"].as_f64().unwrap_or(0.);
+        let date = js_sys::Date::new(&JsValue::from_f64(due * 1000.));
+        detail.set_text_content(Some(&format!(
+            "{} · {} · {}",
+            date.to_locale_string("en-GB", &JsValue::UNDEFINED),
+            if e["permitted"] == true {
+                "Spoken permission granted"
+            } else {
+                "Silent until allowed"
+            },
+            if e["delivered"] == true {
+                "Announced"
+            } else {
+                "Pending"
+            }
+        )));
+        card.append_child(&detail).map_err(js_error)?;
+        let evidence = document().create_element("p").map_err(js_error)?;
+        evidence.set_class_name("hint");
+        evidence.set_text_content(e["evidence"].as_str());
+        card.append_child(&evidence).map_err(js_error)?;
+        for (label, action) in [
+            ("Allow spoken check-in", "allow"),
+            ("Snooze one hour", "snooze"),
+            ("Done / dismiss", "dismiss"),
+        ] {
+            if action == "allow" && e["permitted"] == true {
+                continue;
+            }
+            let b = document().create_element("button").map_err(js_error)?;
+            b.set_attribute("type", "button").map_err(js_error)?;
+            b.set_attribute(
+                "data-followup-id",
+                e["id"].as_str().ok_or("Follow-up ID missing")?,
+            )
+            .map_err(js_error)?;
+            b.set_attribute("data-action", action).map_err(js_error)?;
+            b.set_text_content(Some(label));
+            card.append_child(&b).map_err(js_error)?;
+        }
+        container.append_child(&card).map_err(js_error)?;
+    }
+    Ok(())
+}
 async fn review_memories() -> Result<(), String> {
     let value = call("memories", json!({})).await?;
     let records: Value = serde_wasm_bindgen::from_value(value).map_err(|e| e.to_string())?;
@@ -1793,6 +1977,44 @@ async fn review_memories() -> Result<(), String> {
                 quote.set_text_content(Some(evidence));
                 details.append_child(&quote).map_err(js_error)?;
                 card.append_child(&details).map_err(js_error)?;
+            }
+            let id = note["id"].as_str().ok_or("Memory ID missing")?;
+            let state = document().create_element("p").map_err(js_error)?;
+            state.set_class_name("hint");
+            state.set_text_content(Some(&format!(
+                "{} · confidence {} · updated {}",
+                note["metadata"]["learning_state"]
+                    .as_str()
+                    .unwrap_or("explicit note"),
+                note["metadata"]["confidence"]
+                    .as_str()
+                    .unwrap_or("user supplied"),
+                js_sys::Date::new(&JsValue::from_f64(
+                    note["updated_at_unix_ms"].as_f64().unwrap_or(0.)
+                ))
+                .to_locale_string("en-GB", &JsValue::UNDEFINED)
+            )));
+            card.append_child(&state).map_err(js_error)?;
+            let editor = document()
+                .create_element("textarea")
+                .map_err(js_error)?
+                .dyn_into::<web_sys::HtmlTextAreaElement>()
+                .map_err(|_| "Memory editor unavailable")?;
+            editor.set_id(&format!("edit-{id}"));
+            editor.set_class_name("note-editor");
+            editor.set_value(note["content"].as_str().unwrap_or(""));
+            editor
+                .set_attribute("aria-label", "Correct this memory")
+                .map_err(js_error)?;
+            editor.set_attribute("hidden", "").map_err(js_error)?;
+            card.append_child(&editor).map_err(js_error)?;
+            for (label, action) in [("Edit", "edit"), ("Confirm / save correction", "save")] {
+                let b = document().create_element("button").map_err(js_error)?;
+                b.set_attribute("type", "button").map_err(js_error)?;
+                b.set_attribute("data-memory-id", id).map_err(js_error)?;
+                b.set_attribute("data-action", action).map_err(js_error)?;
+                b.set_text_content(Some(label));
+                card.append_child(&b).map_err(js_error)?;
             }
             let button = document().create_element("button").map_err(js_error)?;
             button.set_attribute("type", "button").map_err(js_error)?;

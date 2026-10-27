@@ -186,6 +186,23 @@ async fn live_semantic_learning_and_distillation() {
             .any(|n| n.content.to_lowercase().contains("rust")
                 || n.content.to_lowercase().contains("british"))
     );
+    // A separate completed observation confirms the model's grounded proposals.
+    let confirmation = m
+        .plan(
+            m.learning_ticket().unwrap(),
+            Some(Interaction {
+                thread: "synthetic-proof".into(),
+                turn: "synthetic-corroboration".into(),
+                user: text.into(),
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let proposals = serde_json::json!({"notes":facts.iter().map(|r|serde_json::json!({"key":r.metadata["semantic_key"],"content":r.content,"evidence":r.metadata["evidence"],"confidence":0.95})).collect::<Vec<_>>(),"digest":null});
+    m.apply_learning(&confirmation, serde_json::from_value(proposals).unwrap())
+        .await
+        .unwrap();
     let plan = m
         .plan(m.learning_ticket().unwrap(), None)
         .await

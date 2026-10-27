@@ -17,6 +17,7 @@ pub struct Settings {
     pub voice_provider: String,
     pub voice_name: String,
     pub memory_enabled: bool,
+    pub initiative: crate::initiative::Policy,
     pub onboarding_complete: bool,
     pub thread_id: Option<String>,
     pub startup: Startup,
@@ -35,6 +36,7 @@ impl Default for Settings {
             voice_provider: "elevenlabs".into(),
             voice_name: String::new(),
             memory_enabled: false,
+            initiative: crate::initiative::Policy::default(),
             onboarding_complete: false,
             thread_id: None,
             startup: Startup::Manual,
@@ -62,7 +64,8 @@ impl Settings {
         }
     }
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        if self.name.chars().any(char::is_control)
+        if !self.initiative.valid()
+            || self.name.chars().any(char::is_control)
             || self.name.trim().is_empty()
             || self.name.len() > 80
             || self.hue > 360
@@ -107,6 +110,11 @@ mod tests {
         assert!(!restored.automatic_updates);
         let legacy: Settings = serde_json::from_str(r#"{"name":"Legacy"}"#).unwrap();
         assert_eq!(legacy.startup, Startup::Manual);
+        assert_eq!(
+            legacy.initiative.behaviour,
+            crate::initiative::Behaviour::Reactive
+        );
+        assert!(legacy.initiative.valid());
         assert!(legacy.automatic_updates);
         assert!(!legacy.wake_enabled);
         assert!(!legacy.wake_name_only);
