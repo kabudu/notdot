@@ -7,6 +7,8 @@ mod memory_confirmation;
 mod quota;
 mod reset;
 mod startup;
+#[cfg(debug_assertions)]
+mod stt_eval;
 mod system_speech;
 mod transcription;
 mod updates;
@@ -39,6 +41,7 @@ struct Snapshot {
     key_configured: bool,
     key_checking: bool,
     key_authorized: bool,
+    stt_ready: bool,
     window_visible: bool,
     active_turn: Option<String>,
     updates: updates::Status,
@@ -134,11 +137,40 @@ fn app_context() -> tauri::Context<tauri::Wry> {
 fn is_qa(app: &tauri::AppHandle) -> bool {
     cfg!(debug_assertions) && app.config().identifier == "com.kabudu.notdot.qa"
 }
+fn isolated_stt_vault() -> bool {
+    cfg!(debug_assertions) && app_context().config().identifier == "com.kabudu.notdot.qa"
+}
+fn credential_service(provider: &str, qa: bool) -> &'static str {
+    if provider == "deepgram" && qa {
+        "com.kabudu.notdot.qa"
+    } else {
+        "com.kabudu.notdot"
+    }
+}
+#[cfg(test)]
+mod credential_policy_tests {
+    #[test]
+    fn new_qa_recognition_key_cannot_replace_the_production_recognition_or_voice_key() {
+        assert_eq!(
+            super::credential_service("deepgram", true),
+            "com.kabudu.notdot.qa"
+        );
+        assert_eq!(
+            super::credential_service("deepgram", false),
+            "com.kabudu.notdot"
+        );
+        assert_eq!(
+            super::credential_service("elevenlabs", true),
+            "com.kabudu.notdot"
+        );
+    }
+}
 fn credential_for(provider: &str) -> Result<keyring::Entry, String> {
-    if !notdot_voice::providers().iter().any(|p| p.id == provider) {
+    if provider != "deepgram" && !notdot_voice::providers().iter().any(|p| p.id == provider) {
         return Err("Voice backend is not installed".into());
     }
-    keyring::Entry::new("com.kabudu.notdot", provider).map_err(|e| e.to_string())
+    let service = credential_service(provider, isolated_stt_vault());
+    keyring::Entry::new(service, provider).map_err(|e| e.to_string())
 }
 #[tauri::command]
 async fn snapshot(
@@ -160,6 +192,13 @@ async fn snapshot(
             serde_json::to_vec(&state.streaming.report().await).unwrap_or_default(),
         );
     }
+    snapshot.key_authorized = state.credentials.cached(&snapshot.settings.voice_provider);
+    snapshot.stt_ready = state
+        .credentials
+        .cached(snapshot.settings.transcription_id());
+    if snapshot.settings.stt_provider == "deepgram" && !snapshot.stt_ready {
+        snapshot.wake.message = "Add or allow the Deepgram recognition key in Settings.".into();
+    }
     // QA-only, bounded diagnostics. Never contains samples, transcripts or keys.
     #[cfg(debug_assertions)]
     if is_qa(&app)
@@ -167,11 +206,10 @@ async fn snapshot(
     {
         let diagnostic = serde_json::json!({"wake": &snapshot.wake,
             "phase": &snapshot.phase, "key_configured": snapshot.key_configured,
-            "key_checking": snapshot.key_checking});
+            "key_checking": snapshot.key_checking,"stt_ready":snapshot.stt_ready,"stt_provider":snapshot.settings.stt_provider});
         let _ = std::fs::write(dir.join("wake-diagnostics.json"), diagnostic.to_string());
     }
 
-    snapshot.key_authorized = state.credentials.cached(&snapshot.settings.voice_provider);
     snapshot.learning = state.learning.status();
     snapshot.initiative = state.initiative.status(&snapshot.settings.initiative).await;
     snapshot.quota = state.quota.status(&snapshot.settings.voice_provider).await;
@@ -185,6 +223,7 @@ async fn wake_activity(state: State<'_, Arc<AppState>>, ready: bool) -> Result<(
         && s.active_turn.is_none()
         && s.phase == "idle"
         && s.key_configured
+        && state.credentials.cached(s.settings.transcription_id())
         && !s.key_checking
         && !s.settings.voice_id.is_empty()
         && s.settings.onboarding_complete;
@@ -206,7 +245,7 @@ async fn transcribe_wake(state: State<'_, Arc<AppState>>, id: u64) -> Result<Str
             .ok_or("Voice capture is no longer active")?;
         let audio = state.wake.take(id)?;
         (
-            s.settings.voice_provider.clone(),
+            s.settings.transcription_id().to_owned(),
             state.quota.generation(),
             token,
             audio,
@@ -217,6 +256,7 @@ async fn transcribe_wake(state: State<'_, Arc<AppState>>, id: u64) -> Result<Str
             return quota::finish(&state, &provider, generation, "stt", Ok(text)).await;
         }
         Err(error) => return quota::finish(&state, &provider, generation, "stt", Err(error)).await,
+        Ok(None) if provider=="deepgram" => return Err("Deepgram live recognition could not finish. Check its saved key and connection, then try again.".into()),
         Ok(None) => {}
     }
     transcribe_audio(&state, audio, "audio/wav".into()).await
@@ -240,6 +280,7 @@ async fn start_capture(
     if s.phase != "idle"
         || s.active_turn.is_some()
         || !s.key_configured
+        || !state.credentials.cached(s.settings.transcription_id())
         || s.settings.microphone_muted
     {
         return Err("Voice capture is not ready".into());
@@ -299,6 +340,7 @@ async fn save_settings(
     state: State<'_, Arc<AppState>>,
     mut settings: Settings,
     key: Option<String>,
+    stt_key: Option<String>,
     validate_model: Option<bool>,
 ) -> Result<(), String> {
     if settings.open_desktop && !cfg!(target_os = "macos") {
@@ -320,6 +362,17 @@ async fn save_settings(
             serde_json::from_value(model_catalog(state.clone()).await?)
                 .map_err(|e| e.to_string())?;
         notdot_core::models::validate(&models, &settings.selection())?;
+    }
+    if !matches!(settings.stt_provider.as_str(), "voice" | "deepgram")
+        || (settings.stt_provider == "deepgram" && settings.speech_language != "en")
+    {
+        return Err("Deepgram recognition currently needs English selected".into());
+    }
+    if let Some(stt_key) = stt_key.filter(|s| !s.trim().is_empty()) {
+        if settings.stt_provider != "deepgram" {
+            return Err("Select Deepgram before saving its key".into());
+        }
+        state.credentials.save("deepgram", &stt_key).await?;
     }
     let key_changed = key.as_ref().is_some_and(|key| !key.is_empty());
     let mut snap = state.snapshot.lock().await;
@@ -824,6 +877,25 @@ async fn backend(
         },
     )
 }
+async fn recognition_backend(
+    state: &AppState,
+) -> Result<Box<dyn notdot_voice::VoiceBackend>, String> {
+    let settings = state.snapshot.lock().await.settings.clone();
+    let key = state
+        .credentials
+        .read(settings.transcription_id(), false)
+        .await?;
+    notdot_voice::transcription_provider(
+        settings.transcription_id(),
+        key,
+        state.voice_http.clone(),
+        if settings.speech_language == "auto" {
+            None
+        } else {
+            Some(&settings.speech_language)
+        },
+    )
+}
 #[tauri::command]
 fn voice_providers() -> Vec<notdot_voice::ProviderInfo> {
     notdot_voice::providers()
@@ -933,10 +1005,16 @@ async fn transcribe_audio(
     if state.snapshot.lock().await.settings.microphone_muted {
         return Err("Microphone is muted".into());
     }
-    let provider = state.snapshot.lock().await.settings.voice_provider.clone();
+    let provider = state
+        .snapshot
+        .lock()
+        .await
+        .settings
+        .transcription_id()
+        .to_owned();
     state.wake.pause_all();
     let generation = state.quota.generation();
-    let result = backend(state, Some(provider.clone()))
+    let result = recognition_backend(state)
         .await?
         .transcribe(notdot_voice::AudioClip { bytes: audio, mime })
         .await;
@@ -1003,6 +1081,21 @@ async fn voice_smoke() -> Result<(), String> {
     Ok(())
 }
 fn main() {
+    #[cfg(debug_assertions)]
+    if let Some(path) = std::env::args()
+        .skip_while(|a| a != "--stt-evaluate")
+        .nth(1)
+    {
+        if let Err(error) = tokio::runtime::Runtime::new()
+            .expect("test runtime")
+            .block_on(stt_eval::run(path.into()))
+        {
+            eprintln!("Speech evaluation failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     #[cfg(debug_assertions)]
     if std::env::args().any(|a| a == "--voice-smoke") {
         let result = tokio::runtime::Runtime::new()
@@ -1124,6 +1217,7 @@ fn main() {
                     key_configured: false,
                     key_checking: true,
                     key_authorized: false,
+                    stt_ready: false,
                     window_visible: !waiting_for_desktop,
                     updates: updates::Status::default(),
                     quota: notdot_voice::quota::Ledger::default().status("", 0),
@@ -1167,6 +1261,16 @@ fn main() {
                     .clone();
                 let selected = provider.clone();
                 let available = key_state.credentials.read(&provider, false).await.is_ok();
+                let recognition = key_state
+                    .snapshot
+                    .lock()
+                    .await
+                    .settings
+                    .transcription_id()
+                    .to_owned();
+                if recognition != selected {
+                    let _ = key_state.credentials.read(&recognition, false).await;
+                }
                 let mut snapshot = key_state.snapshot.lock().await;
                 if snapshot.key_checking && snapshot.settings.voice_provider == selected {
                     snapshot.key_configured = available;

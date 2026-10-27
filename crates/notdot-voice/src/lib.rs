@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 //! Voice-provider boundary. Providers own HTTP protocols and audio formats; the app owns credentials.
+mod deepgram;
 pub mod quota;
 pub mod realtime;
 pub mod usage;
@@ -91,6 +92,26 @@ pub fn provider_with_language(
         })),
         _ => Err(format!("Voice backend {id:?} is not installed")),
     }
+}
+/// Recognition may use a different service from speech playback.
+pub fn transcription_provider(
+    id: &str,
+    key: String,
+    client: reqwest::Client,
+    language: Option<&str>,
+) -> Result<Box<dyn VoiceBackend>, String> {
+    if id == "deepgram" {
+        if language != Some("en") {
+            return Err(
+                "Deepgram Flux currently supports English in notdot. Choose English in Settings."
+                    .into(),
+            );
+        }
+        return Ok(Box::new(deepgram::Deepgram {
+            key: sensitive_key(&format!("Token {key}"))?,
+        }));
+    }
+    provider_with_language(id, key, client, language)
 }
 pub fn http_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()

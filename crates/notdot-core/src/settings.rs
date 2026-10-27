@@ -18,6 +18,7 @@ pub struct Settings {
     pub voice_id: String,
     pub voice_provider: String,
     pub speech_language: String,
+    pub stt_provider: String,
     pub voice_name: String,
     pub memory_enabled: bool,
     pub initiative: crate::initiative::Policy,
@@ -40,6 +41,7 @@ impl Default for Settings {
             voice_id: String::new(),
             voice_provider: "elevenlabs".into(),
             speech_language: "en".into(),
+            stt_provider: "voice".into(),
             voice_name: String::new(),
             memory_enabled: false,
             initiative: crate::initiative::Policy::default(),
@@ -55,6 +57,13 @@ impl Default for Settings {
     }
 }
 impl Settings {
+    pub fn transcription_id(&self) -> &str {
+        if self.stt_provider == "voice" {
+            &self.voice_provider
+        } else {
+            &self.stt_provider
+        }
+    }
     pub fn selection(&self) -> crate::models::Selection {
         crate::models::Selection {
             model: self.model.clone(),
@@ -76,7 +85,9 @@ impl Settings {
         }
     }
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        if !matches!(self.speech_language.as_str(), "en" | "auto")
+        if !matches!(self.stt_provider.as_str(), "voice" | "deepgram")
+            || (self.stt_provider == "deepgram" && self.speech_language != "en")
+            || !matches!(self.speech_language.as_str(), "en" | "auto")
             || self.model.is_empty()
             || self.model.len() > 200
             || self.effort.is_empty()
@@ -132,6 +143,8 @@ mod tests {
         }
         let legacy: Settings = serde_json::from_str(r#"{"name":"Legacy"}"#).unwrap();
         assert_eq!(legacy.startup, Startup::Manual);
+        assert_eq!(legacy.stt_provider, "voice");
+        assert_eq!(legacy.transcription_id(), legacy.voice_provider);
         assert_eq!(legacy.selection(), crate::models::Selection::default());
         s.model = "runtime-model".into();
         s.effort = "high".into();
@@ -153,6 +166,15 @@ mod tests {
         let restored = Settings::load(&p).unwrap();
         assert!(restored.wake_enabled && restored.wake_name_only && restored.microphone_muted);
 
+        s.stt_provider = "deepgram".into();
+        s.speech_language = "en".into();
+        s.save(&p).unwrap();
+        assert_eq!(Settings::load(&p).unwrap().transcription_id(), "deepgram");
+        s.speech_language = "auto".into();
+        assert!(s.save(&p).is_err());
+        assert_eq!(Settings::load(&p).unwrap().speech_language, "en");
+        s.stt_provider = "voice".into();
+        s.speech_language = "en".into();
         s.hue = 500;
         assert!(s.save(&p).is_err());
         assert_eq!(Settings::load(&p).unwrap().hue, 192);

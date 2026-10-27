@@ -1107,6 +1107,13 @@ mod tests {
         for _ in 0..40 {
             detected |= detector.accept(rate, &vec![0.; rate as usize / 50]);
         }
+        for _ in 0..350 {
+            if detected || !detector.fallback.is_busy() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+            detected |= detector.accept(rate, &vec![0.; rate as usize / 50]);
+        }
         detected
     }
     #[test]

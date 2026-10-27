@@ -92,7 +92,7 @@ impl Confirmations {
             .collect::<Vec<_>>()
             .join(". ");
         Ok(format!(
-            "Please check this memory: {details}. Say yes, save that to keep it, or no to discard it."
+            "Please check this memory: {details}. Say yes, remember that to keep it, or no to discard it."
         ))
     }
     pub fn cancel(&self, id: Option<&str>) {

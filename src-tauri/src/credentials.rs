@@ -74,7 +74,7 @@ impl Credentials {
         Ok(())
     }
     pub async fn save(self: &Arc<Self>, provider: &str, key: &str) -> Result<(), String> {
-        if self.read_only {
+        if self.read_only && !(provider == "deepgram" && super::isolated_stt_vault()) {
             return Err("QA profile cannot change OS credentials. Use Authorize saved key for read-only access.".into());
         }
         let vault = self.clone();

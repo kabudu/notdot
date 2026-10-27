@@ -187,3 +187,7 @@ Completed targeted macOS voice/UI acceptance on `fd980d6`: extraction, provision
 ## Voice-memory confirmation follow-up
 
 `a0efdc1` adds a transcription-language setting and requires read-back confirmation before the app stores new voice-derived facts. Automated real-ledger and authenticated learner tests pass. Microphone acceptance completed on macOS: read-back rejection, strict approval, later recall, bare-yes refusal, silence and Escape checks. Original QA profile restored; production hashes unchanged. The earlier memory run covers the previous ingestion behaviour. See [bounded results and limitations](validation/2026-10-27-stt-memory-safety.md).
+
+## Recognition comparison and alternate service
+
+The wider synthetic corpus found no measured gain from ElevenLabs rumble/background-filter experiments; those were removed. Wake-pause segmentation and the spoken approval prompt were corrected and checked acoustically. Optional Deepgram recognition/key setup is implemented and passes silent mock/compile checks; actual provider and microphone acceptance are deferred at the user’s request until tomorrow. See [results, rejected approaches and remaining gates](validation/2026-10-27-stt-recognition.md).
