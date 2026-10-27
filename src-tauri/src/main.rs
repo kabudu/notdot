@@ -184,17 +184,52 @@ async fn set_microphone_muted(state: State<'_, Arc<AppState>>, muted: bool) -> R
 }
 
 #[tauri::command]
+async fn model_catalog(state: State<'_, Arc<AppState>>) -> Result<Value, String> {
+    let connected = state.bridge.lock().await.clone();
+    let owned = if connected.is_none() {
+        Some(Arc::new(Bridge::connect(&startup::runtime()).await?))
+    } else {
+        None
+    };
+    let bridge = connected
+        .or_else(|| owned.clone())
+        .expect("catalog runtime");
+    let result = bridge
+        .models()
+        .await
+        .and_then(|models| serde_json::to_value(models).map_err(|e| e.to_string()));
+    if let Some(owned) = owned {
+        owned.shutdown().await;
+    }
+    result
+}
+#[tauri::command]
 async fn save_settings(
     app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
     mut settings: Settings,
     key: Option<String>,
+    validate_model: Option<bool>,
 ) -> Result<(), String> {
     if settings.open_desktop && !cfg!(target_os = "macos") {
         return Err("Automatic desktop launch is currently supported on macOS".into());
     }
     if settings.wake_enabled {
         wake::phrase(&settings.name, settings.wake_name_only)?;
+    }
+    let _submission = state
+        .send_gate
+        .try_lock()
+        .map_err(|_| "Wait for the current submission before saving Settings")?;
+    let model_changed = state.snapshot.lock().await.settings.selection() != settings.selection();
+    if model_changed || validate_model.unwrap_or(false) {
+        if model_changed && state.snapshot.lock().await.active_turn.is_some() {
+            return Err("Stop the active turn before changing model or effort".into());
+        }
+        let models: Vec<notdot_core::models::Model> =
+            serde_json::from_value(model_catalog(state.clone()).await?)
+                .map_err(|e| e.to_string())?;
+        notdot_core::models::validate(&models, &settings.selection())?;
     }
     let key_changed = key.as_ref().is_some_and(|key| !key.is_empty());
     let mut snap = state.snapshot.lock().await;
@@ -243,14 +278,20 @@ async fn save_settings(
         .memory
         .set_learning_enabled(settings.memory_enabled)
         .await;
+    state.learning.configure(settings.selection());
     snap.settings = settings;
     state.wake.configure(&snap.settings);
     drop(snap);
     if key_changed || provider_changed {
         state.quota.invalidate().await?;
     }
-    if name_changed {
-        connect(state.inner().clone(), false).await?;
+    if (name_changed || model_changed)
+        && let Err(error) = connect(state.inner().clone(), false).await
+    {
+        let mut s = state.snapshot.lock().await;
+        s.phase = "error".into();
+        s.error = Some(error.clone());
+        return Err(error);
     }
     Ok(())
 }
@@ -295,7 +336,12 @@ async fn connect(state: Arc<AppState>, allow_interrupt: bool) -> Result<(), Stri
     let settings = state.snapshot.lock().await.settings.clone();
     let cwd = state.path.parent().ok_or("App data directory missing")?;
     let tid = bridge
-        .thread(settings.thread_id.as_deref(), cwd, &settings.name)
+        .thread_with_selection(
+            settings.thread_id.as_deref(),
+            cwd,
+            &settings.name,
+            &settings.selection(),
+        )
         .await?;
     {
         let mut snap = state.snapshot.lock().await;
@@ -468,7 +514,8 @@ async fn send_message(state: State<'_, Arc<AppState>>, text: String) -> Result<(
             }
         }
         if memory_ticket != state.memory.learning_ticket() { input = text.clone(); state.learning.cancel(); }
-        bridge.send(&tid, &input).await
+        let selection=state.snapshot.lock().await.settings.selection();
+        bridge.send_with_selection(&tid, &input, &selection).await
     }.await;
     match result {
         Ok(turn) => {
@@ -765,6 +812,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             snapshot,
             save_settings,
+            model_catalog,
             clear_voice_key,
             reconnect,
             send_message,
@@ -826,6 +874,7 @@ fn main() {
             std::fs::create_dir_all(&analysis_dir)?;
             let learning =
                 learning::Learning::new(memory.clone(), analysis_dir, startup::runtime());
+            learning.configure(settings.selection());
             let state = Arc::new(AppState {
                 snapshot: Mutex::new(Snapshot {
                     settings,

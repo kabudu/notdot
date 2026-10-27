@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add live account/runtime model and effort selectors with descriptions, automatic catalog refresh and an availability-gated Terra/Medium reset. Preserve history when changing selection and apply it to background learning.
+- Validate selections before inference and on Save, reject retired/hidden models or unsupported efforts, and preserve preferences on catalog failures. Bound catalog pagination/timeouts and release pending request slots after timeout.
+
+
 - Expose automatic sign-in startup as an explicit switch, with immediate independent startup or optional waiting for the desktop app. Preserve existing startup preferences and OS registration behavior.
 
 - Add Reactive, Suggestions and Proactive modes with a separate persisted reminder/follow-up journal, silent orb indicator, per-item interruption permission, local quiet hours and configurable delivery limits.

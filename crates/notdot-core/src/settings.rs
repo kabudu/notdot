@@ -12,6 +12,8 @@ pub enum Startup {
 #[serde(default)]
 pub struct Settings {
     pub name: String,
+    pub model: String,
+    pub effort: String,
     pub hue: u16,
     pub voice_id: String,
     pub voice_provider: String,
@@ -31,6 +33,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             name: "notdot".into(),
+            model: crate::models::Selection::default().model,
+            effort: crate::models::Selection::default().effort,
             hue: 192,
             voice_id: String::new(),
             voice_provider: "elevenlabs".into(),
@@ -49,6 +53,12 @@ impl Default for Settings {
     }
 }
 impl Settings {
+    pub fn selection(&self) -> crate::models::Selection {
+        crate::models::Selection {
+            model: self.model.clone(),
+            effort: self.effort.clone(),
+        }
+    }
     pub fn load(path: &Path) -> Result<Self, String> {
         match std::fs::read(path) {
             Ok(bytes) => {
@@ -64,7 +74,11 @@ impl Settings {
         }
     }
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        if !self.initiative.valid()
+        if self.model.is_empty()
+            || self.model.len() > 200
+            || self.effort.is_empty()
+            || self.effort.len() > 32
+            || !self.initiative.valid()
             || self.name.chars().any(char::is_control)
             || self.name.trim().is_empty()
             || self.name.len() > 80
@@ -115,6 +129,11 @@ mod tests {
         }
         let legacy: Settings = serde_json::from_str(r#"{"name":"Legacy"}"#).unwrap();
         assert_eq!(legacy.startup, Startup::Manual);
+        assert_eq!(legacy.selection(), crate::models::Selection::default());
+        s.model = "runtime-model".into();
+        s.effort = "high".into();
+        s.save(&p).unwrap();
+        assert_eq!(Settings::load(&p).unwrap().selection(), s.selection());
         assert_eq!(
             legacy.initiative.behaviour,
             crate::initiative::Behaviour::Reactive
