@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add opt-in local wake phrases derived from the companion name, with recommended “Hey + name” and optional name-only activation.
+- Bundle sherpa-onnx keyword models/tokenisation, automatic silence stopping, bounded post-activation capture, listening/mute orb indicators, and Settings/tray microphone mute.
+- Pause wake capture around voice processing, playback and announcements; discard pending audio after mute, rename, cancellation or frontend timeout.
+
 - Add pluggable provider usage reporting, cached ElevenLabs allowance/reset details and Settings refresh.
 - Announce 80/90/100% thresholds using local system speech between turns, with durable per-cycle deduplication and orb warning states.
 - Distinguish credit exhaustion, authentication, permissions and temporary limits; preserve unknown/separate STT and API billing boundaries.

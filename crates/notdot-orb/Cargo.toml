@@ -12,7 +12,7 @@ js-sys = "0.3"
 serde.workspace = true
 serde_json.workspace = true
 serde-wasm-bindgen = "0.6"
-web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "CanvasRenderingContext2d", "CanvasGradient", "EventTarget", "MouseEvent", "KeyboardEvent", "HtmlInputElement", "HtmlTextAreaElement", "HtmlDialogElement", "HtmlButtonElement", "HtmlSelectElement", "Performance", "MediaQueryList", "MediaDevices", "Navigator", "MediaStream", "MediaStreamConstraints", "MediaStreamTrack", "MediaRecorder", "MediaRecorderOptions", "RecordingState", "BlobEvent", "Blob", "BlobPropertyBag", "Url", "HtmlAudioElement", "HtmlMediaElement", "AudioContext", "AudioContextState", "AudioNode", "AudioDestinationNode", "AnalyserNode", "MediaElementAudioSourceNode", "MediaStreamAudioSourceNode", "GainNode", "AudioParam", "Node", "Event", "console"] }
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "CanvasRenderingContext2d", "CanvasGradient", "EventTarget", "MouseEvent", "KeyboardEvent", "HtmlInputElement", "HtmlTextAreaElement", "HtmlDialogElement", "HtmlButtonElement", "HtmlSelectElement", "Performance", "MediaQueryList", "MediaDevices", "Navigator", "MediaStream", "MediaStreamConstraints", "MediaStreamTrack", "MediaRecorder", "MediaRecorderOptions", "RecordingState", "BlobEvent", "Blob", "BlobPropertyBag", "Url", "HtmlAudioElement", "HtmlMediaElement", "AudioContext", "AudioContextState", "AudioNode", "AudioDestinationNode", "AnalyserNode", "MediaElementAudioSourceNode", "MediaStreamAudioSourceNode", "GainNode", "AudioParam", "OscillatorNode", "OscillatorType", "AudioScheduledSourceNode", "Node", "Event", "console"] }
 
 [features]
 default = []

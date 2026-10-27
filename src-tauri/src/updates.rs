@@ -202,6 +202,9 @@ pub async fn announce_update(
     state: State<'_, Arc<AppState>>,
     updates: State<'_, Arc<Updates>>,
 ) -> Result<String, String> {
+    if state.wake.status().phase == "capturing" {
+        return Err("Wait for the current voice request".into());
+    }
     if state.snapshot.lock().await.active_turn.is_some() {
         return Err("Wait for the current response before updating".into());
     }
@@ -213,6 +216,7 @@ pub async fn announce_update(
         i.status.prompt = false;
         i.status.version.clone().ok_or("No update version")?
     };
+    state.wake.ready(false);
     // Fixed local speech works even when the paid TTS provider has run out of quota.
     super::system_speech::speak(
         "A notdot update is available. May I install it and restart? Say install update, or later.",

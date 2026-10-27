@@ -4,6 +4,7 @@ name = "notdot"
 version.workspace = true
 edition.workspace = true
 [build-dependencies]
+sha2 = "0.10"
 tauri-build = { version = "2", features = [] }
 [dependencies]
 notdot-core = { path = "../crates/notdot-core" }
@@ -19,6 +20,10 @@ base64 = "0.22"
 tauri-plugin-updater = "2"
 tauri-plugin-autostart = "2"
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+sherpa-onnx = "=2.0.0"
+sentencepiece-rs = "=0.2.2"
+cpal = "=0.18.2"
+hound = "3"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

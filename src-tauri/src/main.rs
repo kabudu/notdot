@@ -4,6 +4,7 @@ mod quota;
 mod startup;
 mod system_speech;
 mod updates;
+mod wake;
 use notdot_core::{bridge::Bridge, memory::Memory, settings::Settings};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -33,6 +34,7 @@ struct Snapshot {
     active_turn: Option<String>,
     updates: updates::Status,
     quota: notdot_voice::quota::Status,
+    wake: wake::Status,
     version: String,
     desktop_launch_supported: bool,
 }
@@ -48,6 +50,7 @@ struct AppState {
     visual: Mutex<VisualLog>,
     waiting_for_desktop: AtomicBool,
     quota: Arc<quota::Monitor>,
+    wake: wake::Wake,
 }
 #[derive(Default)]
 struct VisualLog {
@@ -125,8 +128,51 @@ async fn snapshot(
     snapshot.window_visible =
         window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
     snapshot.updates = app.state::<Arc<updates::Updates>>().status();
+    snapshot.wake = state.wake.status();
     snapshot.quota = state.quota.status(&snapshot.settings.voice_provider).await;
     Ok(snapshot)
+}
+
+#[tauri::command]
+async fn wake_activity(state: State<'_, Arc<AppState>>, ready: bool) -> Result<(), String> {
+    let s = state.snapshot.lock().await;
+    let allowed = ready
+        && s.active_turn.is_none()
+        && s.phase == "idle"
+        && s.key_configured
+        && !s.key_checking
+        && !s.settings.voice_id.is_empty()
+        && s.settings.onboarding_complete;
+    state.wake.ready(allowed);
+    Ok(())
+}
+#[tauri::command]
+async fn transcribe_wake(state: State<'_, Arc<AppState>>, id: u64) -> Result<String, String> {
+    {
+        let s = state.snapshot.lock().await;
+        if s.active_turn.is_some() || s.phase != "idle" || s.settings.microphone_muted {
+            state.wake.ready(false);
+            return Err("Wake request cancelled while companion is busy or muted".into());
+        }
+    }
+    let audio = state.wake.take(id)?;
+    transcribe_audio(&state, audio, "audio/wav".into()).await
+}
+
+async fn mute_microphone(state: &AppState, muted: bool) -> Result<(), String> {
+    let mut s = state.snapshot.lock().await;
+    let mut settings = s.settings.clone();
+    settings.microphone_muted = muted;
+    // Stop capture immediately, including if persisting the mute preference fails.
+    state.wake.ready(false);
+    s.settings = settings;
+    state.wake.configure(&s.settings);
+    s.settings.save(&state.path)?;
+    Ok(())
+}
+#[tauri::command]
+async fn set_microphone_muted(state: State<'_, Arc<AppState>>, muted: bool) -> Result<(), String> {
+    mute_microphone(&state, muted).await
 }
 
 #[tauri::command]
@@ -138,6 +184,9 @@ async fn save_settings(
 ) -> Result<(), String> {
     if settings.open_desktop && !cfg!(target_os = "macos") {
         return Err("Automatic desktop launch is currently supported on macOS".into());
+    }
+    if settings.wake_enabled {
+        wake::phrase(&settings.name, settings.wake_name_only)?;
     }
     let key_changed = key.as_ref().is_some_and(|key| !key.is_empty());
     let mut snap = state.snapshot.lock().await;
@@ -180,6 +229,7 @@ async fn save_settings(
         return Err(e);
     }
     snap.settings = settings;
+    state.wake.configure(&snap.settings);
     drop(snap);
     if key_changed || provider_changed {
         state.quota.invalidate().await?;
@@ -508,6 +558,7 @@ async fn preview_voice(
         .voice_gate
         .try_acquire()
         .map_err(|_| "Voice service is busy")?;
+    state.wake.ready(false);
     let generation = state.quota.generation();
     let result = backend(&state, Some(provider.clone()))
         .await?
@@ -523,17 +574,28 @@ async fn transcribe(
     audio: Vec<u8>,
     mime: String,
 ) -> Result<String, String> {
+    transcribe_audio(&state, audio, mime).await
+}
+async fn transcribe_audio(
+    state: &AppState,
+    audio: Vec<u8>,
+    mime: String,
+) -> Result<String, String> {
     let _permit = state
         .voice_gate
         .try_acquire()
         .map_err(|_| "Voice service is busy")?;
+    if state.snapshot.lock().await.settings.microphone_muted {
+        return Err("Microphone is muted".into());
+    }
     let provider = state.snapshot.lock().await.settings.voice_provider.clone();
+    state.wake.ready(false);
     let generation = state.quota.generation();
-    let result = backend(&state, Some(provider.clone()))
+    let result = backend(state, Some(provider.clone()))
         .await?
         .transcribe(notdot_voice::AudioClip { bytes: audio, mime })
         .await;
-    quota::finish(&state, &provider, generation, "stt", result).await
+    quota::finish(state, &provider, generation, "stt", result).await
 }
 #[tauri::command]
 async fn speak(state: State<'_, Arc<AppState>>, text: String) -> Result<EncodedAudio, String> {
@@ -543,6 +605,7 @@ async fn speak(state: State<'_, Arc<AppState>>, text: String) -> Result<EncodedA
         .map_err(|_| "Voice service is busy")?;
     let voice = state.snapshot.lock().await.settings.voice_id.clone();
     let provider = state.snapshot.lock().await.settings.voice_provider.clone();
+    state.wake.ready(false);
     let generation = state.quota.generation();
     let result = backend(&state, Some(provider.clone()))
         .await?
@@ -640,7 +703,10 @@ fn main() {
             updates::answer_update,
             updates::install_update,
             quota::refresh_usage,
-            quota::announce_usage
+            quota::announce_usage,
+            wake_activity,
+            transcribe_wake,
+            set_microphone_muted
         ])
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
@@ -662,6 +728,12 @@ fn main() {
             let memory =
                 Arc::new(Memory::open(&dir.join("memory")).map_err(std::io::Error::other)?);
             let quota_monitor = Arc::new(quota::Monitor::new(dir.join("voice-usage.json")));
+            let models = if cfg!(debug_assertions) {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/wake")
+            } else {
+                app.path().resource_dir()?.join("wake")
+            };
+            let wake = wake::Wake::new(models, &settings);
             let state = Arc::new(AppState {
                 snapshot: Mutex::new(Snapshot {
                     settings,
@@ -674,6 +746,7 @@ fn main() {
                     window_visible: !waiting_for_desktop,
                     updates: updates::Status::default(),
                     quota: notdot_voice::quota::Ledger::default().status("", 0),
+                    wake: wake::Status::default(),
                     version: app.package_info().version.to_string(),
                     desktop_launch_supported: cfg!(target_os = "macos"),
                 }),
@@ -687,6 +760,7 @@ fn main() {
                 visual: Mutex::new(VisualLog::default()),
                 waiting_for_desktop: AtomicBool::new(waiting_for_desktop),
                 quota: quota_monitor,
+                wake,
             });
             app.manage(state.clone());
             quota::spawn(state.clone());
@@ -752,15 +826,39 @@ fn main() {
             let reconnect_item =
                 MenuItem::with_id(app, "reconnect", "Reconnect agent", true, None::<&str>)?;
             let about_item = MenuItem::with_id(app, "about", "About notdot", true, None::<&str>)?;
+            let mute_item =
+                MenuItem::with_id(app, "mute", "Mute / unmute microphone", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit notdot", true, None::<&str>)?;
-            let menu =
-                Menu::with_items(app, &[&settings_item, &reconnect_item, &about_item, &quit])?;
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &settings_item,
+                    &reconnect_item,
+                    &mute_item,
+                    &about_item,
+                    &quit,
+                ],
+            )?;
             let icon = tauri::include_image!("icons/32x32.png");
             TrayIconBuilder::new()
                 .icon(icon)
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "quit" => app.exit(0),
+                    "mute" => {
+                        let state = app.state::<Arc<AppState>>().inner().clone();
+                        let app = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let muted = !state.snapshot.lock().await.settings.microphone_muted;
+                            let result = mute_microphone(&state, muted).await;
+                            if muted && let Some(w) = app.get_webview_window("main") {
+                                let _ = w.eval("window.dispatchEvent(new Event('notdot-mute'))");
+                            }
+                            if let Err(e) = result {
+                                state.snapshot.lock().await.error = Some(e);
+                            }
+                        });
+                    }
                     "about" => {
                         if let Some(w) = app.get_webview_window("main") {
                             let _ = w.show();
