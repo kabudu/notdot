@@ -1,9 +1,19 @@
 import tempfile
 import unittest
+import json
+import plistlib
 from pathlib import Path
 from prepare_release import stage, PLATFORMS
 
 class ReleaseTests(unittest.TestCase):
+    def test_hardened_mac_bundle_declares_only_microphone_entitlement(self):
+        native = Path(__file__).resolve().parent.parent / 'src-tauri'
+        config = json.loads((native / 'tauri.conf.json').read_text())
+        entitlements = plistlib.loads((native / config['bundle']['macOS']['entitlements']).read_bytes())
+        self.assertEqual(entitlements, {'com.apple.security.device.audio-input': True})
+        info = plistlib.loads((native / config['bundle']['macOS']['infoPlist']).read_bytes())
+        self.assertTrue(info['NSMicrophoneUsageDescription'])
+
     def test_complete_manifest_and_missing_platform_rejection(self):
         fixture = Path(__file__).resolve().parent.parent / 'src-tauri/tests/fixtures'
         with tempfile.TemporaryDirectory() as directory:
