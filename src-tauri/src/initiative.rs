@@ -284,6 +284,10 @@ pub async fn announce_followup(state: State<'_, Arc<AppState>>, id: String) -> R
 }
 /// Discover only source-grounded ongoing goals/projects. Discovery grants no
 /// interruption permission; each inferred check-in requires an explicit Allow.
+fn ongoing_key(key: &str) -> bool {
+    key.split(['_', '.'])
+        .any(|word| matches!(word, "project" | "goal" | "commitment" | "ongoing"))
+}
 pub fn spawn(state: Arc<AppState>) {
     tauri::async_runtime::spawn(async move {
         let mut ticks = tokio::time::interval(std::time::Duration::from_secs(30));
@@ -318,10 +322,7 @@ pub fn spawn(state: Arc<AppState>) {
                         .get("semantic_key")
                         .map(String::as_str)
                         .unwrap_or("");
-                    if !["project_", "goal_", "commitment_", "ongoing_"]
-                        .iter()
-                        .any(|prefix| key.starts_with(prefix))
-                    {
+                    if !ongoing_key(key) {
                         continue;
                     }
                     if note
@@ -376,6 +377,30 @@ pub fn spawn(state: Arc<AppState>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ongoing_category_matches_complete_words_in_any_key_position() {
+        for key in [
+            "project_birdhouse",
+            "garden_birdhouse_project",
+            "garden.project.birdhouse",
+            "goal_fitness",
+            "fitness_goal",
+            "commitment_call",
+            "ongoing_task",
+        ] {
+            assert!(ongoing_key(key), "{key}");
+        }
+        for key in [
+            "",
+            "preferred_drink",
+            "projection",
+            "goalkeeper",
+            "commitmentphobia",
+            "ongoingly",
+        ] {
+            assert!(!ongoing_key(key), "{key}");
+        }
+    }
     #[tokio::test]
     async fn spoken_reminder_and_inferred_permission_survive_restart_without_memory() {
         let dir = tempfile::tempdir().unwrap();
