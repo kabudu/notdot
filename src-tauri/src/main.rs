@@ -925,7 +925,7 @@ fn main() {
             app.manage(state.clone());
             quota::spawn(state.clone());
             initiative::spawn(state.clone());
-            // Keychain access may wait for OS authorization. Never put it on the UI thread.
+            // Restore silently off the UI thread. Explicit authorization belongs in Settings.
             let key_state = state.clone();
             tauri::async_runtime::spawn(async move {
                 let provider = key_state
@@ -936,31 +936,7 @@ fn main() {
                     .voice_provider
                     .clone();
                 let selected = provider.clone();
-                let unlocked = key_state.credentials.read(&provider, false).await.is_ok();
-                let available = unlocked
-                    || tokio::task::spawn_blocking(move || {
-                        #[cfg(target_os = "macos")]
-                        {
-                            // Presence is metadata: do not decrypt a secret or prompt at launch.
-                            use security_framework::item::{ItemClass, ItemSearchOptions};
-                            ItemSearchOptions::new()
-                                .class(ItemClass::generic_password())
-                                .service("com.kabudu.notdot")
-                                .account(&provider)
-                                .load_attributes(true)
-                                .load_data(false)
-                                .skip_authenticated_items(true)
-                                .search()
-                                .is_ok_and(|items| !items.is_empty())
-                        }
-                        #[cfg(not(target_os = "macos"))]
-                        {
-                            let _ = provider;
-                            false
-                        }
-                    })
-                    .await
-                    .unwrap_or(false);
+                let available = key_state.credentials.read(&provider, false).await.is_ok();
                 let mut snapshot = key_state.snapshot.lock().await;
                 if snapshot.key_checking && snapshot.settings.voice_provider == selected {
                     snapshot.key_configured = available;
