@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Prevent startup, voice and background quota checks from opening keychain authentication dialogs. Add explicit saved-key authorisation in Settings and silent trusted-key restoration.
+- Cache authorised keys per provider in native session memory, serialise access and update/clear the cache after successful replacement/removal; retain OS-protected persistence and existing key identities.
+
+
 - Add live account/runtime model and effort selectors with descriptions, automatic catalog refresh and an availability-gated Terra/Medium reset. Preserve history when changing selection and apply it to background learning.
 - Validate selections before inference and on Save, reject retired/hidden models or unsupported efforts, and preserve preferences on catalog failures. Bound catalog pagination/timeouts and release pending request slots after timeout.
 

@@ -1,0 +1,238 @@
+//! OS-protected persistence plus a native-only session cache. Background work
+//! must never request authentication UI. Stored secrets are never returned through Tauri IPC.
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
+use zeroize::Zeroizing;
+#[derive(Default)]
+pub struct Credentials {
+    cache: Mutex<HashMap<String, Zeroizing<String>>>,
+    operations: Mutex<()>,
+}
+impl Credentials {
+    pub fn cached(&self, provider: &str) -> bool {
+        self.cache
+            .lock()
+            .expect("credential cache")
+            .contains_key(provider)
+    }
+    fn read_with(
+        &self,
+        provider: &str,
+        load: impl FnOnce() -> Result<String, String>,
+    ) -> Result<String, String> {
+        let _operation = self.operations.lock().expect("credential operation");
+        if let Some(key) = self.cache.lock().expect("credential cache").get(provider) {
+            return Ok(key.to_string());
+        }
+        let key = Zeroizing::new(load()?);
+        if key.is_empty() || key.len() > 512 {
+            return Err("The saved voice key is invalid; update it in Settings".into());
+        }
+        self.cache
+            .lock()
+            .expect("credential cache")
+            .insert(provider.into(), key.clone());
+        Ok(key.to_string())
+    }
+    pub async fn read(
+        self: &Arc<Self>,
+        provider: &str,
+        interactive: bool,
+    ) -> Result<String, String> {
+        let vault = self.clone();
+        let provider = provider.to_string();
+        tokio::task::spawn_blocking(move || {
+            vault.read_with(&provider, || os_read(&provider, interactive))
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+    fn write_with(
+        &self,
+        provider: &str,
+        key: &str,
+        save: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        let _operation = self.operations.lock().expect("credential operation");
+        save()?;
+        self.cache
+            .lock()
+            .expect("credential cache")
+            .insert(provider.into(), Zeroizing::new(key.to_string()));
+        Ok(())
+    }
+    pub async fn save(self: &Arc<Self>, provider: &str, key: &str) -> Result<(), String> {
+        let vault = self.clone();
+        let provider = provider.to_string();
+        let key = Zeroizing::new(key.trim().to_string());
+        if key.is_empty() || key.len() > 512 {
+            return Err("Enter a valid API key".into());
+        }
+        tokio::task::spawn_blocking(move || {
+            vault.write_with(&provider, &key, || {
+                super::credential_for(&provider)?
+                    .set_password(&key)
+                    .map_err(|_| "Could not save voice key to OS keychain".into())
+            })
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+    fn remove_with(
+        &self,
+        provider: &str,
+        delete: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        let _operation = self.operations.lock().expect("credential operation");
+        delete()?;
+        self.cache
+            .lock()
+            .expect("credential cache")
+            .remove(provider);
+        Ok(())
+    }
+    pub async fn remove(self: &Arc<Self>, provider: &str) -> Result<(), String> {
+        let vault = self.clone();
+        let provider = provider.to_string();
+        tokio::task::spawn_blocking(move || {
+            vault.remove_with(&provider, || {
+                match super::credential_for(&provider)?.delete_credential() {
+                    Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+                    Err(_) => Err("Could not remove voice key from OS keychain".into()),
+                }
+            })
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+}
+fn os_read(provider: &str, interactive: bool) -> Result<String, String> {
+    let entry = super::credential_for(provider)?;
+    if interactive {
+        return entry.get_password().map_err(|_|"Voice key access was not granted. Authorize the saved key in Settings, or enter a new key.".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use security_framework::item::{ItemClass, ItemSearchOptions, SearchResult};
+        use security_framework::os::macos::keychain::{SecKeychain, SecPreferencesDomain};
+        let keychain = SecKeychain::default_for_domain(SecPreferencesDomain::User)
+            .map_err(|_| "The login keychain is unavailable".to_string())?;
+        let values = ItemSearchOptions::new()
+            .keychains(&[keychain])
+            .class(ItemClass::generic_password())
+            .service("com.kabudu.notdot")
+            .account(provider)
+            .load_data(true)
+            .skip_authenticated_items(true)
+            .search()
+            .map_err(|_| "Saved voice key needs authorization in Settings".to_string())?;
+        for value in values {
+            if let SearchResult::Data(bytes) = value {
+                return String::from_utf8(bytes)
+                    .map_err(|_| "Saved voice key is not valid text".into());
+            }
+        }
+        Err("Saved voice key needs authorization in Settings".into())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        entry
+            .get_password()
+            .map_err(|_| "Saved voice key is unavailable in Windows Credential Manager".into())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // Reuse keyring's exact search attributes, but never invoke Unlock or a
+        // Secret Service prompt. A lock racing GetSecret simply returns an error.
+        let credential = entry
+            .get_credential()
+            .downcast_ref::<keyring::secret_service::SsCredential>()
+            .ok_or("Unsupported Linux credential store")?;
+        let service =
+            dbus_secret_service::SecretService::connect(dbus_secret_service::EncryptionType::Plain)
+                .map_err(|_| "Linux secret service is unavailable")?;
+        let mut attributes = HashMap::new();
+        for key in ["service", "username", "target"] {
+            if let Some(value) = credential.attributes.get(key) {
+                attributes.insert(key, value.as_str());
+            }
+        }
+        let matches = service
+            .search_items(attributes)
+            .map_err(|_| "Saved voice key is unavailable")?;
+        if !matches.locked.is_empty() || matches.unlocked.len() != 1 {
+            return Err("Saved voice key needs authorization in Settings".into());
+        }
+        let bytes = matches.unlocked[0]
+            .get_secret()
+            .map_err(|_| "Saved voice key needs authorization in Settings")?;
+        String::from_utf8(bytes).map_err(|_| "Saved voice key is not valid text".into())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        let _ = entry;
+        Err("Authorize the saved voice key in Settings".into())
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[test]
+    fn concurrent_reads_authorize_once_and_replacements_and_deletion_invalidate_cache() {
+        let vault = Arc::new(Credentials::default());
+        let calls = Arc::new(AtomicUsize::new(0));
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let vault = vault.clone();
+                let calls = calls.clone();
+                scope.spawn(move || {
+                    assert_eq!(
+                        vault
+                            .read_with("a", || {
+                                calls.fetch_add(1, Ordering::SeqCst);
+                                Ok("test-key".into())
+                            })
+                            .unwrap(),
+                        "test-key"
+                    )
+                });
+            }
+        });
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(!vault.cached("b"));
+        vault.write_with("a", "replacement", || Ok(())).unwrap();
+        assert_eq!(
+            vault
+                .read_with("a", || panic!("must reuse authorized session"))
+                .unwrap(),
+            "replacement"
+        );
+        assert!(
+            vault
+                .write_with("a", "bad", || Err("denied".into()))
+                .is_err()
+        );
+        assert_eq!(vault.read_with("a", || panic!()).unwrap(), "replacement");
+        vault.remove_with("a", || Ok(())).unwrap();
+        assert!(!vault.cached("a"));
+        assert!(
+            vault
+                .read_with("a", || Err("authorization required".into()))
+                .is_err()
+        );
+        assert!(!vault.cached("a"));
+    }
+    #[test]
+    fn a_restart_does_not_persist_secrets_or_turn_a_denial_into_access() {
+        let vault = Credentials::default();
+        assert!(vault.read_with("a", || Err("denied".into())).is_err());
+        assert!(!vault.cached("a"));
+        vault.read_with("a", || Ok("session".into())).unwrap();
+        assert!(vault.cached("a"));
+        drop(vault);
+        assert!(!Credentials::default().cached("a"));
+    }
+}

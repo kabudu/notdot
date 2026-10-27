@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod credentials;
 mod initiative;
 mod learning;
 mod quota;
@@ -32,6 +33,7 @@ struct Snapshot {
     error: Option<String>,
     key_configured: bool,
     key_checking: bool,
+    key_authorized: bool,
     window_visible: bool,
     active_turn: Option<String>,
     updates: updates::Status,
@@ -57,6 +59,7 @@ struct AppState {
     wake: wake::Wake,
     learning: learning::Learning,
     initiative: initiative::Initiative,
+    credentials: Arc<credentials::Credentials>,
 }
 #[derive(Default)]
 struct VisualLog {
@@ -135,6 +138,7 @@ async fn snapshot(
         window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
     snapshot.updates = app.state::<Arc<updates::Updates>>().status();
     snapshot.wake = state.wake.status();
+    snapshot.key_authorized = state.credentials.cached(&snapshot.settings.voice_provider);
     snapshot.learning = state.learning.status();
     snapshot.initiative = state.initiative.status(&snapshot.settings.initiative).await;
     snapshot.quota = state.quota.status(&snapshot.settings.voice_provider).await;
@@ -249,9 +253,10 @@ async fn save_settings(
         if key.len() > 512 {
             return Err("API key is too long".into());
         }
-        credential_for(&settings.voice_provider)?
-            .set_password(&key)
-            .map_err(|_| "Could not save voice key to OS keychain".to_string())?;
+        state
+            .credentials
+            .save(&settings.voice_provider, &key)
+            .await?;
         snap.key_configured = true;
         snap.key_checking = false;
     }
@@ -298,10 +303,7 @@ async fn save_settings(
 #[tauri::command]
 async fn clear_voice_key(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let id = state.snapshot.lock().await.settings.voice_provider.clone();
-    match credential_for(&id)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => {}
-        Err(e) => return Err(e.to_string()),
-    }
+    state.credentials.remove(&id).await?;
     let mut snapshot = state.snapshot.lock().await;
     snapshot.key_configured = false;
     snapshot.key_checking = false;
@@ -620,15 +622,8 @@ async fn backend(
     } else {
         state.snapshot.lock().await.settings.voice_provider.clone()
     };
-    let key = tokio::task::spawn_blocking(move || {
-        credential_for(&id)?
-            .get_password()
-            .map(|key| (id, key))
-            .map_err(|_| "Add your voice backend API key in Settings".to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-    notdot_voice::provider(&key.0, key.1, state.voice_http.clone())
+    let key = state.credentials.read(&id, false).await?;
+    notdot_voice::provider(&id, key, state.voice_http.clone())
 }
 #[tauri::command]
 fn voice_providers() -> Vec<notdot_voice::ProviderInfo> {
@@ -644,13 +639,7 @@ async fn save_voice_key(
         return Err("Enter a valid API key".into());
     }
     let selected = provider.clone();
-    tokio::task::spawn_blocking(move || {
-        credential_for(&provider)?
-            .set_password(key.trim())
-            .map_err(|_| "Could not save key in OS keychain".to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())??;
+    state.credentials.save(&provider, &key).await?;
     let mut s = state.snapshot.lock().await;
     if selected == s.settings.voice_provider {
         s.key_configured = true;
@@ -658,6 +647,21 @@ async fn save_voice_key(
         drop(s);
         state.quota.invalidate().await?;
     }
+    Ok(())
+}
+#[tauri::command]
+async fn authorize_voice_key(
+    state: State<'_, Arc<AppState>>,
+    provider: String,
+) -> Result<(), String> {
+    let _ = state.credentials.read(&provider, true).await?;
+    let mut s = state.snapshot.lock().await;
+    if s.settings.voice_provider == provider {
+        s.key_configured = true;
+        s.key_checking = false;
+    }
+    drop(s);
+    state.quota.invalidate().await?;
     Ok(())
 }
 #[tauri::command]
@@ -828,6 +832,7 @@ fn main() {
             speak,
             voice_providers,
             save_voice_key,
+            authorize_voice_key,
             voice_catalog,
             preview_voice,
             report_visual,
@@ -884,6 +889,7 @@ fn main() {
                     active_turn: None,
                     key_configured: false,
                     key_checking: true,
+                    key_authorized: false,
                     window_visible: !waiting_for_desktop,
                     updates: updates::Status::default(),
                     quota: notdot_voice::quota::Ledger::default().status("", 0),
@@ -893,6 +899,7 @@ fn main() {
                     version: app.package_info().version.to_string(),
                     desktop_launch_supported: cfg!(target_os = "macos"),
                 }),
+                credentials: Arc::new(credentials::Credentials::default()),
                 bridge: Mutex::new(None),
                 memory,
                 path,
@@ -922,29 +929,31 @@ fn main() {
                     .voice_provider
                     .clone();
                 let selected = provider.clone();
-                let available = tokio::task::spawn_blocking(move || {
-                    #[cfg(target_os = "macos")]
-                    {
-                        // Presence is metadata: do not decrypt a secret or prompt at launch.
-                        use security_framework::item::{ItemClass, ItemSearchOptions};
-                        ItemSearchOptions::new()
-                            .class(ItemClass::generic_password())
-                            .service("com.kabudu.notdot")
-                            .account(&provider)
-                            .load_attributes(true)
-                            .load_data(false)
-                            .search()
-                            .is_ok_and(|items| !items.is_empty())
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        credential_for(&provider)
-                            .and_then(|e| e.get_password().map_err(|e| e.to_string()))
-                            .is_ok()
-                    }
-                })
-                .await
-                .unwrap_or(false);
+                let unlocked = key_state.credentials.read(&provider, false).await.is_ok();
+                let available = unlocked
+                    || tokio::task::spawn_blocking(move || {
+                        #[cfg(target_os = "macos")]
+                        {
+                            // Presence is metadata: do not decrypt a secret or prompt at launch.
+                            use security_framework::item::{ItemClass, ItemSearchOptions};
+                            ItemSearchOptions::new()
+                                .class(ItemClass::generic_password())
+                                .service("com.kabudu.notdot")
+                                .account(&provider)
+                                .load_attributes(true)
+                                .load_data(false)
+                                .skip_authenticated_items(true)
+                                .search()
+                                .is_ok_and(|items| !items.is_empty())
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            let _ = provider;
+                            false
+                        }
+                    })
+                    .await
+                    .unwrap_or(false);
                 let mut snapshot = key_state.snapshot.lock().await;
                 if snapshot.key_checking && snapshot.settings.voice_provider == selected {
                     snapshot.key_configured = available;
