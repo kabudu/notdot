@@ -24,3 +24,11 @@ The endpoint detector uses local audio level and duration, not semantic understa
 On the one-click QA build from 27b3c89, capture cancellation passed: a click reached Listening and Escape returned to Ready without a submitted turn or late playback. The saved key was authorised locally. A new one-click human request was requested but no submitted turn was observed in the bounded three-minute watch; transcription accuracy, automatic submission and model-wait cancellation remain pending live input. No success is inferred from the timeout.
 
 The final security bundle from a8bc6c7 builds successfully. Its additional local-tool restrictions were verified separately in the real-runtime canary and denied-MCP-write probes. The currently running QA process remains the one-click build for the requested spoken retest; restart into the final bundle after that retest. Production data/settings were untouched.
+
+## Successful one-click microphone turn
+
+The owner confirmed automatic submission after a single click and the correct spoken reply. The stored transcript was “Play five plus seven and answer shortly.” and the answer was “12.” The wording was imperfect, but the addition request was preserved.
+
+Telemetry recorded listening → thinking → speaking → idle, without the earlier intermediate idle flash. Listening lasted 5.310 seconds, including the end-of-speech pause; stop-to-playback-state latency was **4.332 seconds**, followed by 1.175 seconds of playback. Audio was metered and the owner confirmed actual speaker output. This is one successful warm sample and is not a performance improvement benchmark against the earlier, incorrectly transcribed request.
+
+Microphone capture cancellation has passed; model-wait cancellation is being tested separately. No promotional recorder ran.
