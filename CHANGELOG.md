@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Make forgetting free current-record capacity instead of accumulating tombstones that prevent future learning at the ledger limit.
+
 - Improve keyboard/assistive operation of the orb and Settings, block accidental recording from modal controls, focus revealed memory editors and observe live reduced-motion changes. Correct Save/switch contrast across the full hue range with static regressions.
 
 - Validate and atomically stage reset intents; reject malformed/symlink requests before touching data, with regressions for cleanup scope.

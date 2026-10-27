@@ -241,7 +241,7 @@ impl Memory {
                     tenant_id: "local".into(),
                     namespace: "notdot".into(),
                     record_id,
-                    hard_delete: false,
+                    hard_delete: true,
                     audit_reason: "User requested forgetting note and derived summaries".into(),
                 })
                 .await
@@ -296,6 +296,38 @@ impl Memory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn forgetting_releases_current_record_capacity_instead_of_accumulating_tombstones() {
+        let _fixture = TEST_STORE.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let memory = Memory::open(dir.path()).unwrap();
+        let id = memory
+            .remember("Synthetic preference to forget", "fixture")
+            .await
+            .unwrap();
+        memory
+            .remember("Independent retained preference", "fixture")
+            .await
+            .unwrap();
+        memory.forget(&id).await.unwrap();
+        let stats = memory
+            .store
+            .stats(StoreStatsRequest {
+                tenant_id: Some("local".into()),
+                namespace: Some("notdot".into()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            stats.total_records, 1,
+            "Forgetting must free a current-record slot so a full ledger can accept a replacement"
+        );
+        memory
+            .remember("Replacement preference", "fixture")
+            .await
+            .unwrap();
+        assert_eq!(memory.review("").await.unwrap().len(), 2);
+    }
     #[tokio::test]
     async fn recall_reopen_forget() {
         let _store_fixture = TEST_STORE.lock().await;
