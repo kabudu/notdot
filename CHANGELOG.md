@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Recognise ongoing projects consistently when suggesting check-ins.
+
 - Keep valid new memories when an optional summary cannot be verified.
 
 - Respond to the wake phrase sooner, show immediate orb feedback and transcribe requests while you speak.
