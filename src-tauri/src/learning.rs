@@ -31,11 +31,14 @@ pub struct Learning {
     sender: mpsc::Sender<Job>,
     status: Arc<Mutex<Status>>,
     memory: Arc<Memory>,
+    selection: tokio::sync::watch::Sender<notdot_core::models::Selection>,
 }
 impl Learning {
     pub fn new(memory: Arc<Memory>, cwd: PathBuf, runtime: PathBuf) -> Self {
         let (sender, mut receiver) = mpsc::channel::<Job>(8);
         let status = Arc::new(Mutex::new(Status::default()));
+        let (selection, mut selected) =
+            tokio::sync::watch::channel(notdot_core::models::Selection::default());
         let report = status.clone();
         let ledger = memory.clone();
         tauri::async_runtime::spawn(async move {
@@ -51,6 +54,7 @@ impl Learning {
                     s.phase = "learning".into();
                     s.message = "Reviewing useful context in the background…".into();
                 }
+                let current_selection = selected.borrow_and_update().clone();
                 let result = async {
                     if let Some(source) = &job.source {
                         ledger.remember_explicit(job.ticket, source).await?;
@@ -80,11 +84,12 @@ impl Learning {
                     let prompt = plan.prompt()?;
                     let run = async {
                         if client.is_none() { client = Some(Arc::new(Bridge::connect(&runtime).await?)); }
-                        client.as_ref().expect("learning client initialized").analyze(&cwd, &prompt, memory::schema(), std::future::pending()).await
+                        client.as_ref().expect("learning client initialized").analyze_with_selection(&cwd, &prompt, memory::schema(), std::future::pending(), &current_selection).await
                     };
                     let response = tokio::select! {
                         result = tokio::time::timeout(std::time::Duration::from_secs(90), run) => result.map_err(|_| "Memory analysis timed out".to_string()).and_then(|r|r),
-                        _ = cancel => Err("Memory learning cancelled".into())
+                        _ = cancel => Err("Memory learning cancelled".into()),
+                        _ = selected.changed() => Err("Memory model selection changed".into())
                     };
                     if response.is_err() && let Some(bridge) = client.take() { bridge.shutdown().await; }
                     let response = response?;
@@ -127,7 +132,18 @@ impl Learning {
             sender,
             status,
             memory,
+            selection,
         }
+    }
+    pub fn configure(&self, selection: notdot_core::models::Selection) {
+        self.selection.send_if_modified(|current| {
+            if *current == selection {
+                false
+            } else {
+                *current = selection;
+                true
+            }
+        });
     }
     pub fn status(&self) -> Status {
         let mut s = self.status.lock().expect("learning status").clone();
@@ -135,7 +151,7 @@ impl Learning {
             s.phase = "off".into();
             s.message="Ledger saving and recall are off. Existing notes and conversation history are kept.".into();
         } else if s.message.is_empty() {
-            s.message="Automatically learn useful context after completed interactions. Uses additional Terra model calls.".into();
+            s.message="Automatically learn useful context after completed interactions. Uses additional calls with your selected model.".into();
         }
         if s.skipped > 0 {
             s.message.push_str(&format!(
@@ -243,6 +259,7 @@ mod tests {
             sender,
             status: Arc::new(Mutex::new(Status::default())),
             memory,
+            selection: tokio::sync::watch::channel(notdot_core::models::Selection::default()).0,
         };
         (dir, learning, receiver)
     }

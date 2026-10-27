@@ -96,6 +96,7 @@ unloaded=False
 for line in sys.stdin:
  m=json.loads(line);method=m.get('method')
  if method=='initialize':result={}
+ elif method=='model/list':result={'data':[{'id':'gpt-6.1-terra','model':'gpt-6.1-terra','displayName':'Terra','defaultReasoningEffort':'medium','supportedReasoningEfforts':[{'reasoningEffort':'medium','description':'Balanced'}]}],'nextCursor':None}
  elif method=='config/read':result={'config':{'mcp_servers':{'private':{}},'plugins':{'private':{}}}}
  elif method=='thread/start':
   p=m['params'];assert p['ephemeral'] is True
@@ -279,5 +280,124 @@ async fn live_semantic_learning_and_distillation() {
             .iter()
             .any(|r| r.id == corrected)
     );
+    b.shutdown().await;
+}
+
+#[tokio::test]
+async fn live_catalog_pagination_selection_and_retirement_are_enforced() {
+    use notdot_core::models::Selection;
+    let (_dir, path) = server(
+        r#"import json,sys
+retired=False
+for line in sys.stdin:
+ m=json.loads(line);method=m.get('method');p=m.get('params',{})
+ if method=='initialize':result={}
+ elif method=='model/list':
+  assert p['includeHidden'] is False
+  if p.get('cursor') is None:
+   result={'data':[],'nextCursor':'second'}
+  else:
+   assert p['cursor']=='second'
+   model={'id':'picker-id','model':'actual-model','displayName':'Account Model','defaultReasoningEffort':'low','supportedReasoningEfforts':[{'reasoningEffort':'low','description':'Quick'},{'reasoningEffort':'high','description':'Deep'}]}
+   hidden=dict(model,id='hidden',model='hidden',hidden=True)
+   result={'data':([model,hidden] if not retired else []),'nextCursor':None}
+ elif method in ['thread/start','thread/resume']:
+  assert p['model']=='actual-model' and p['config']['model_reasoning_effort']=='high'
+  result={'thread':{'id':'same-history'},'model':p['model'],'reasoningEffort':p['config']['model_reasoning_effort']}
+ elif method=='thread/name/set':result={}
+ elif method=='turn/start':
+  assert not retired and p['threadId']=='same-history' and p['model']=='actual-model' and p['effort']=='high'
+  result={'turn':{'id':'selected-turn'}}
+ elif method=='retire':retired=True;result={}
+ else:continue
+ if 'id' in m:print(json.dumps({'id':m['id'],'result':result}),flush=True)
+"#,
+    );
+    let b = Bridge::connect(&path).await.unwrap();
+    let selection = Selection {
+        model: "actual-model".into(),
+        effort: "high".into(),
+    };
+    let models = b.models().await.unwrap();
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0].model, "actual-model");
+    let tid = b
+        .thread_with_selection(Some("same-history"), _dir.path(), "Test", &selection)
+        .await
+        .unwrap();
+    assert_eq!(
+        b.send_with_selection(&tid, "Hello", &selection)
+            .await
+            .unwrap(),
+        "selected-turn"
+    );
+    assert!(
+        b.validate_selection(&Selection {
+            model: "actual-model".into(),
+            effort: "medium".into()
+        })
+        .await
+        .is_err()
+    );
+    b.call("retire", json!({})).await.unwrap();
+    assert!(b.models().await.unwrap().is_empty());
+    assert!(
+        b.send_with_selection(&tid, "Don't submit", &selection)
+            .await
+            .unwrap_err()
+            .contains("no longer available")
+    );
+    b.shutdown().await;
+}
+
+#[tokio::test]
+#[ignore = "authenticated live catalog and non-default inference; synthetic ephemeral data"]
+async fn live_catalog_and_nondefault_ephemeral_selection() {
+    let binary = std::env::var_os("NOTDOT_MEMORY_LIVE_RUNTIME").expect("set runtime path");
+    let b = Bridge::connect(std::path::Path::new(&binary))
+        .await
+        .unwrap();
+    let catalog = b.models().await.unwrap();
+    assert!(!catalog.is_empty());
+    b.validate_selection(&notdot_core::models::Selection::default())
+        .await
+        .unwrap();
+    let alternative = catalog.iter().find(|m| m.model != "gpt-6.1-terra").unwrap();
+    let effort = alternative
+        .supported_reasoning_efforts
+        .iter()
+        .find(|e| e.reasoning_effort == "low")
+        .unwrap_or(&alternative.supported_reasoning_efforts[0]);
+    let selected = notdot_core::models::Selection {
+        model: alternative.model.clone(),
+        effort: effort.reasoning_effort.clone(),
+    };
+    eprintln!(
+        "Runtime offers {} models; testing {} / {}",
+        catalog.len(),
+        selected.model,
+        selected.effort
+    );
+    let d = tempfile::tempdir().unwrap();
+    let output=b.analyze_with_selection(d.path(),r#"{"interaction":null,"existing_facts":[],"task":"Review these empty facts. Return notes=[] and digest=null."}"#,notdot_core::memory::schema(),std::future::pending(),&selected).await.unwrap();
+    let result: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(result["notes"], json!([]));
+    assert!(result["digest"].is_null());
+    b.shutdown().await;
+}
+#[tokio::test]
+async fn malformed_catalog_pagination_fails_closed() {
+    let (_d, path) = server(
+        r#"import json,sys
+for line in sys.stdin:
+ m=json.loads(line)
+ if m.get('method')=='initialize':r={}
+ elif m.get('method')=='model/list':r={'data':[],'nextCursor':'loop'}
+ else:continue
+ print(json.dumps({'id':m['id'],'result':r}),flush=True)
+"#,
+    );
+    let b = Bridge::connect(&path).await.unwrap();
+    assert!(b.models().await.unwrap_err().contains("Repeated"));
     b.shutdown().await;
 }

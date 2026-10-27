@@ -22,6 +22,8 @@ extern "C" {
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Settings {
     name: String,
+    model: String,
+    effort: String,
     hue: u16,
     voice_id: String,
     voice_provider: String,
@@ -96,6 +98,9 @@ struct View {
     voices: Vec<VoiceChoice>,
     next_cursor: Option<String>,
     catalog_generation: u64,
+    models: Vec<Value>,
+    model_refreshing: bool,
+    model_refresh_at: f64,
     preview_hue: Option<u16>,
     initialized: bool,
     meter: audio_meter::Meter,
@@ -412,8 +417,168 @@ async fn wake_request(view: Shared, id: u64, generation: u64) -> Result<(), Stri
         .ok_or("Transcription returned no text")?;
     submit_transcript(view, text, generation).await
 }
+fn model_option(id: &str, value: &str, label: &str) {
+    if let Ok(option) = document().create_element("option") {
+        let _ = option.set_attribute("value", value);
+        option.set_text_content(Some(label));
+        let _ = element(id).append_child(&option);
+    }
+}
+fn render_efforts(view: &Shared, preferred: &str, choose_default: bool) {
+    let model = select("model").value();
+    let choice = view
+        .borrow()
+        .models
+        .iter()
+        .find(|m| m["model"] == model)
+        .cloned();
+    element("effort").set_text_content(None);
+    let Some(choice) = choice else {
+        model_option("effort", "", "Choose an available model");
+        select("effort").set_disabled(true);
+        element("model-description").set_text_content(None);
+        element("effort-description").set_text_content(None);
+        return;
+    };
+    element("model-description").set_text_content(choice["description"].as_str());
+    let efforts = choice["supportedReasoningEfforts"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let valid = efforts.iter().any(|e| e["reasoningEffort"] == preferred);
+    let selected = if valid {
+        preferred.to_string()
+    } else if choose_default {
+        choice["defaultReasoningEffort"]
+            .as_str()
+            .unwrap_or("")
+            .to_string()
+    } else {
+        String::new()
+    };
+    if selected.is_empty() {
+        model_option("effort", "", "Choose an available effort");
+    }
+    for effort in efforts {
+        if let Some(value) = effort["reasoningEffort"].as_str() {
+            let mut label = match value {
+                "xhigh" => "Extra high",
+                "max" => "Maximum",
+                _ => value,
+            }
+            .to_string();
+            if let Some(first) = label.get_mut(..1) {
+                first.make_ascii_uppercase();
+            }
+            model_option("effort", value, &label);
+        }
+    }
+    select("effort").set_value(&selected);
+    select("effort").set_disabled(false);
+    render_effort_description(view);
+}
+fn render_effort_description(view: &Shared) {
+    let model = select("model").value();
+    let effort = select("effort").value();
+    let description = view
+        .borrow()
+        .models
+        .iter()
+        .find(|m| m["model"] == model)
+        .and_then(|m| m["supportedReasoningEfforts"].as_array())
+        .and_then(|es| es.iter().find(|e| e["reasoningEffort"] == effort))
+        .and_then(|e| e["description"].as_str())
+        .unwrap_or("Choose an effort supported by this model.")
+        .to_string();
+    element("effort-description").set_text_content(Some(&description));
+}
+fn refresh_models(view: &Shared, model: String, effort: String) {
+    if view.borrow().model_refreshing {
+        return;
+    }
+    let _ = element("default-model").set_attribute("disabled", "");
+    view.borrow_mut().model_refreshing = true;
+    view.borrow_mut().model_refresh_at = js_sys::Date::now() + 60_000.;
+    select("model").set_disabled(true);
+    select("effort").set_disabled(true);
+    element("effort").set_text_content(None);
+    model_option("effort", "", "Checking available efforts…");
+    let _ = element("refresh-models").set_attribute("disabled", "");
+    element("model").set_text_content(None);
+    model_option("model", "", "Checking available models…");
+    element("model-status")
+        .set_text_content(Some("Checking your runtime’s current model offering…"));
+    let view = view.clone();
+    spawn_local(async move {
+        let result = async {
+            let value = call("model_catalog", json!({})).await?;
+            serde_wasm_bindgen::from_value::<Vec<Value>>(value).map_err(|e| e.to_string())
+        }
+        .await;
+        view.borrow_mut().model_refreshing = false;
+        let _ = element("refresh-models").remove_attribute("disabled");
+        element("model").set_text_content(None);
+        match result {
+            Ok(models) => {
+                let valid = models.iter().any(|m| m["model"] == model);
+                model_option(
+                    "model",
+                    "",
+                    if valid {
+                        "Choose a model"
+                    } else {
+                        "Select an available model"
+                    },
+                );
+                for m in &models {
+                    if let Some(value) = m["model"].as_str() {
+                        let label = m["displayName"].as_str().unwrap_or(value);
+                        model_option(
+                            "model",
+                            value,
+                            &format!(
+                                "{label}{}",
+                                if value == "gpt-6.1-terra" {
+                                    " · notdot default"
+                                } else {
+                                    ""
+                                }
+                            ),
+                        );
+                    }
+                }
+                let default_available = models.iter().any(|m| {
+                    m["model"] == "gpt-6.1-terra"
+                        && m["supportedReasoningEfforts"]
+                            .as_array()
+                            .is_some_and(|es| es.iter().any(|e| e["reasoningEffort"] == "medium"))
+                });
+                let _ = element("default-model")
+                    .toggle_attribute_with_force("disabled", !default_available);
+                view.borrow_mut().models = models;
+                select("model").set_value(if valid { &model } else { "" });
+                select("model").set_disabled(false);
+                render_efforts(&view, &effort, false);
+                let available = valid && !select("effort").value().is_empty();
+                element("model-status").set_text_content(Some(if available {"Live catalog checked. Refreshes every minute while Settings is open; checked again on Save and before inference."} else {"The saved model or effort is unavailable. Choose from the current options; no automatic substitution will be made."}));
+            }
+            Err(e) => {
+                view.borrow_mut().models.clear();
+                model_option("model", "", "Model catalog unavailable");
+                element("effort").set_text_content(None);
+                model_option("effort", "", "Unavailable");
+                element("model-description").set_text_content(None);
+                element("effort-description").set_text_content(None);
+                element("model-status").set_text_content(Some(&format!(
+                    "{e}. Retry Refresh; existing preferences are kept."
+                )));
+            }
+        }
+    });
+}
 fn open_panel(view: &Shared) {
     let s = view.borrow().snapshot.settings.clone();
+    refresh_models(view, s.model.clone(), s.effort.clone());
     close_voice_picker();
     input("name").set_value(&s.name);
     input("hue").set_value(&s.hue.to_string());
@@ -1125,6 +1290,27 @@ pub fn start() -> Result<(), JsValue> {
         }
     });
     let target = view.clone();
+    let models_view = view.clone();
+    on(element("default-model").as_ref(), "click", move |_| {
+        select("model").set_value("gpt-6.1-terra");
+        render_efforts(&models_view, "medium", false);
+        element("model-status").set_text_content(Some("Terra · Medium selected. Save to apply."));
+    });
+    let models_view = view.clone();
+    on(element("model").as_ref(), "change", move |_| {
+        let effort = select("effort").value();
+        render_efforts(&models_view, &effort, true);
+    });
+    let models_view = view.clone();
+    on(element("effort").as_ref(), "change", move |_| {
+        render_effort_description(&models_view)
+    });
+    let models_view = view.clone();
+    on(element("refresh-models").as_ref(), "click", move |_| {
+        let model = select("model").value();
+        let effort = select("effort").value();
+        refresh_models(&models_view, model, effort);
+    });
     on(element("start-at-login").as_ref(), "change", |_| {
         select("startup").set_disabled(!input("start-at-login").checked());
     });
@@ -1132,6 +1318,16 @@ pub fn start() -> Result<(), JsValue> {
         e.prevent_default();
         let mut settings = target.borrow().snapshot.settings.clone();
         settings.name = input("name").value();
+        if !select("model").disabled() {
+            let model = select("model").value();
+            let effort = select("effort").value();
+            if model.is_empty() || effort.is_empty() {
+                message("Choose an available model and effort before saving.");
+                return;
+            }
+            settings.model = model;
+            settings.effort = effort;
+        }
         settings.hue = input("hue").value().parse().unwrap_or(192);
         settings.voice_id = select("voice").value();
         settings.voice_provider = select("provider").value();
@@ -1160,7 +1356,12 @@ pub fn start() -> Result<(), JsValue> {
         let key = input("key").value();
         let target = target.clone();
         spawn_local(async move {
-            match call("save_settings", json!({"settings":settings,"key":key})).await {
+            match call(
+                "save_settings",
+                json!({"settings":settings,"key":key,"validateModel":!select("model").disabled()}),
+            )
+            .await
+            {
                 Ok(_) => {
                     input("key").set_value("");
                     message("");
@@ -1486,6 +1687,14 @@ pub fn start() -> Result<(), JsValue> {
                             None
                         }
                     };
+                    if dialog("panel").open()
+                        && !target.borrow().model_refreshing
+                        && js_sys::Date::now() >= target.borrow().model_refresh_at
+                    {
+                        let model = select("model").value();
+                        let effort = select("effort").value();
+                        refresh_models(&target, model, effort);
+                    }
                     let onboard = !snapshot.settings.onboarding_complete;
                     target.borrow_mut().snapshot = snapshot;
                     if !target.borrow().initialized {
