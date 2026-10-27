@@ -1,0 +1,210 @@
+{
+  "revision": "f275ddbc3c16a9cb34deb3c0f5058c04043e0b00",
+  "working_tree": "bench may be uncommitted; retain source hash with results",
+  "source_sha256": "60b4667a821dc2e5791668f94b6dbe949d746d65c69b0445edbcf69d187f67dc",
+  "platform": "macOS-27.0.1-arm64-arm-64bit",
+  "rust": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+  "method": "3 fresh-process repetitions per size, alternated; 40 verified six-hit recalls each; no model/voice/renderer measurement",
+  "runs": [
+    {
+      "completed_queries": 40,
+      "excludes": "Voice, model inference, renderer and hardware latency",
+      "failures": 0,
+      "insert": {
+        "max_ms": 13.964125000000001,
+        "min_ms": 4.485334,
+        "n": 100,
+        "p50_ms": 5.623208,
+        "p95_ms": 8.419833
+      },
+      "mode": "release",
+      "open_ms": 1.839208,
+      "percentile_method": "nearest rank",
+      "recall": {
+        "max_ms": 1.792791,
+        "min_ms": 0.46349999999999997,
+        "n": 40,
+        "p50_ms": 0.540458,
+        "p95_ms": 1.392875
+      },
+      "record_bytes": 0,
+      "records": 100,
+      "returned_hits": 240,
+      "workload": "synthetic-local-ledger",
+      "repeat": 1,
+      "elapsed_seconds": 0.8946965
+    },
+    {
+      "completed_queries": 40,
+      "excludes": "Voice, model inference, renderer and hardware latency",
+      "failures": 0,
+      "insert": {
+        "max_ms": 17.690416,
+        "min_ms": 3.934,
+        "n": 1000,
+        "p50_ms": 9.191125,
+        "p95_ms": 11.331959000000001
+      },
+      "mode": "release",
+      "open_ms": 0.5429999999999999,
+      "percentile_method": "nearest rank",
+      "recall": {
+        "max_ms": 2.813667,
+        "min_ms": 2.262667,
+        "n": 40,
+        "p50_ms": 2.2962909999999996,
+        "p95_ms": 2.536375
+      },
+      "record_bytes": 0,
+      "records": 1000,
+      "returned_hits": 240,
+      "workload": "synthetic-local-ledger",
+      "repeat": 1,
+      "elapsed_seconds": 9.22435075
+    },
+    {
+      "completed_queries": 40,
+      "excludes": "Voice, model inference, renderer and hardware latency",
+      "failures": 0,
+      "insert": {
+        "max_ms": 9.555708,
+        "min_ms": 3.9644579999999996,
+        "n": 100,
+        "p50_ms": 6.013083,
+        "p95_ms": 8.587625
+      },
+      "mode": "release",
+      "open_ms": 0.30091599999999996,
+      "percentile_method": "nearest rank",
+      "recall": {
+        "max_ms": 1.067042,
+        "min_ms": 0.516584,
+        "n": 40,
+        "p50_ms": 0.651167,
+        "p95_ms": 1.002459
+      },
+      "record_bytes": 0,
+      "records": 100,
+      "returned_hits": 240,
+      "workload": "synthetic-local-ledger",
+      "repeat": 2,
+      "elapsed_seconds": 0.647342042
+    },
+    {
+      "completed_queries": 40,
+      "excludes": "Voice, model inference, renderer and hardware latency",
+      "failures": 0,
+      "insert": {
+        "max_ms": 178.01837500000002,
+        "min_ms": 4.069375,
+        "n": 1000,
+        "p50_ms": 9.305582999999999,
+        "p95_ms": 12.075249999999999
+      },
+      "mode": "release",
+      "open_ms": 0.7284579999999999,
+      "percentile_method": "nearest rank",
+      "recall": {
+        "max_ms": 2.8097090000000002,
+        "min_ms": 2.2923750000000003,
+        "n": 40,
+        "p50_ms": 2.3722499999999997,
+        "p95_ms": 2.5601249999999998
+      },
+      "record_bytes": 0,
+      "records": 1000,
+      "returned_hits": 240,
+      "workload": "synthetic-local-ledger",
+      "repeat": 2,
+      "elapsed_seconds": 9.972556832999999
+    },
+    {
+      "completed_queries": 40,
+      "excludes": "Voice, model inference, renderer and hardware latency",
+      "failures": 0,
+      "insert": {
+        "max_ms": 11.608583000000001,
+        "min_ms": 3.0101669999999996,
+        "n": 100,
+        "p50_ms": 5.107667,
+        "p95_ms": 8.314
+      },
+      "mode": "release",
+      "open_ms": 0.314,
+      "percentile_method": "nearest rank",
+      "recall": {
+        "max_ms": 0.9596669999999999,
+        "min_ms": 0.45829200000000003,
+        "n": 40,
+        "p50_ms": 0.569167,
+        "p95_ms": 0.72775
+      },
+      "record_bytes": 0,
+      "records": 100,
+      "returned_hits": 240,
+      "workload": "synthetic-local-ledger",
+      "repeat": 3,
+      "elapsed_seconds": 0.5721154999999989
+    },
+    {
+      "completed_queries": 40,
+      "excludes": "Voice, model inference, renderer and hardware latency",
+      "failures": 0,
+      "insert": {
+        "max_ms": 19.761167,
+        "min_ms": 3.157083,
+        "n": 1000,
+        "p50_ms": 9.395125,
+        "p95_ms": 12.032334
+      },
+      "mode": "release",
+      "open_ms": 0.5727920000000001,
+      "percentile_method": "nearest rank",
+      "recall": {
+        "max_ms": 2.8038339999999997,
+        "min_ms": 2.282625,
+        "n": 40,
+        "p50_ms": 2.347708,
+        "p95_ms": 2.52125
+      },
+      "record_bytes": 0,
+      "records": 1000,
+      "returned_hits": 240,
+      "workload": "synthetic-local-ledger",
+      "repeat": 3,
+      "elapsed_seconds": 9.287126583
+    }
+  ],
+  "hardware": {
+    "model": "Mac16,1",
+    "logical_cpus": 10,
+    "ram_bytes": 25769803776
+  },
+  "capacity_run": {
+    "completed_queries": 40,
+    "excludes": "Voice, model inference, renderer and hardware latency",
+    "failures": 0,
+    "insert": {
+      "max_ms": 114.966333,
+      "min_ms": 2.82125,
+      "n": 2000,
+      "p50_ms": 19.783166,
+      "p95_ms": 32.102458
+    },
+    "mode": "release",
+    "open_ms": 0.324375,
+    "percentile_method": "nearest rank",
+    "recall": {
+      "max_ms": 12.956917,
+      "min_ms": 12.33825,
+      "n": 40,
+      "p50_ms": 12.77675,
+      "p95_ms": 12.932374999999999
+    },
+    "record_bytes": 4000,
+    "records": 2000,
+    "returned_hits": 120,
+    "workload": "synthetic-local-ledger"
+  },
+  "capacity_run_note": "One at-capacity run, 40 successful targeted recalls, no end-to-end voice/renderer claim."
+}

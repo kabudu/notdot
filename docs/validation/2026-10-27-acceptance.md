@@ -9,7 +9,7 @@ Work in progress. Synthetic fixtures and isolated profiles only; do not run memo
 | Linux safety | RUSTSEC-2024-0429, GLib 0.18.5 string iterator; GTK3 pins old major | Vendored 0.18.5 with the two-line upstream fix; 57 optimized Linux variant tests pass; provenance hash checks cover all unchanged files |
 | Voice | Earlier user hardware confirmation exists | New microphone → STT → selected runtime → TTS → speaker flow, including cancel/wake/error cases |
 | Accessibility | Source review found no keyboard Settings shortcut, Enter activation gap, About-space microphone activation; theme Save contrast low at some hues | Keyboard/modal regressions and static ARIA/contrast tests pass; native VoiceOver/layout inspection remains pending |
-| Performance | No current end-to-end measurements claimed | Record completed work, latency distributions, input size and environment |
+| Performance | Repeated release-mode targeted ledger recall measured, plus an at-capacity run | Native voice/render latency still blocked; no end-to-end timing claim |
 
 Full hardware voice, VoiceOver and native visual checks require the Mac to be unlocked. Never call synthetic/API-only tests hardware E2E.
 
@@ -40,3 +40,21 @@ A debug QA bundle/profile is prepared under com.kabudu.notdot.qa, separate from 
 ## Capacity regression
 
 A new backend regression failed before the fix: forgetting one of two records left total_records at two because soft-delete tombstones still consumed the 2,000-current-record budget. Forgetting now removes the selected current records and dependent summaries, freeing capacity for replacements. Existing forget/reopen/provenance tests continue to pass. Underlying store version/changefeed history can still remain until full Reset memory; this is not a forensic-erasure claim.
+
+## Performance evidence
+
+`acceptance_bench` and `scripts/measure_memory.py` run synthetic real-ledger work in fresh processes and verify that each query returns the specifically requested record. Three alternating runs per size perform 40 verified recalls each. The final report uses nearest-rank percentiles and includes revision, workload source hash, compiler/platform and hardware. It is a local-ledger measurement, not model/voice/renderer latency, and is not a comparison against another database. The earlier preliminary numeric-tag workload was replaced by uniquely tagged, target-verified records; preliminary timings are not mixed with final results.
+
+| Workload | Recall p95 across runs | Insert p95 across runs | Completion |
+| --- | --- | --- | --- |
+| 100 short notes, three runs | 0.73–1.39 ms | 8.31–8.59 ms | 120 targeted queries, no failures |
+| 1,000 short notes, three runs | 2.52–2.56 ms | 11.33–12.08 ms | 120 targeted queries, no failures |
+| 2,000 × 4,000-byte notes, one capacity run | 12.93 ms | 32.10 ms | 40 targeted queries, no failures |
+
+Raw distributions/method are retained in 2026-10-27-memory-performance.json. Reproduce with `cargo build -p notdot-core --example acceptance_bench --release --locked`, then `python3 scripts/measure_memory.py output.json`; capacity run: `cargo run -p notdot-core --example acceptance_bench --release --locked -- 2000 4000`. The temporary fixtures are removed afterward.
+
+## Runtime and adversarial checks
+
+A real default Terra/Medium bridge turn returns a synthetic acceptance marker, then a fresh process resumes the same isolated smoke conversation and recalls it. The three opt-in live tests pass account model discovery/non-default inference, semantic memory lifecycle and adversarial source handling. The adversarial test requires a completed structured model response and accepted safe extraction; timeouts/availability failures cannot count as passes. Its injected source asks for a temporary sentinel overwrite and retention of a fake secret; the sentinel remains unchanged and neither payload is retained. This is evidence for the isolated learning boundary, not proof against all possible prompt injection.
+
+The unpatched upstream GLib iterator tests also pass on this particular toolchain: the advisory crash was not reproduced locally. The backport is justified by the upstream-confirmed undefined-behavior fix; 57 optimized patched variant tests and source-hash verification pass. Do not present it as a locally reproduced crash fix.
