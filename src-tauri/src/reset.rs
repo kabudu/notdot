@@ -8,20 +8,31 @@ pub fn pending(dir: &Path) -> bool {
     dir.join(INTENT).exists()
 }
 fn mark(dir: &Path) -> Result<(), String> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+    if pending(dir) {
+        return Err("A memory reset is already scheduled. Restart notdot to finish it.".into());
     }
-    let mut file = options
-        .open(dir.join(INTENT))
-        .map_err(|e| format!("Could not schedule memory reset: {e}"))?;
-    file.write_all(b"reset-memory-v1\n")
-        .and_then(|()| file.sync_all())
-        .map_err(|e| e.to_string())?;
-    sync_directory(dir)
+    let temp = dir.join(format!(".memory-reset-{}.tmp", uuid::Uuid::new_v4()));
+    let result = || {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temp).map_err(|e| e.to_string())?;
+        file.write_all(b"reset-memory-v1\n")
+            .and_then(|()| file.sync_all())
+            .map_err(|e| e.to_string())?;
+        drop(file);
+        std::fs::rename(&temp, dir.join(INTENT)).map_err(|e| e.to_string())?;
+        sync_directory(dir).map_err(|e|format!("Memory reset is scheduled; restart notdot to finish. Could not confirm directory sync: {e}"))
+    };
+    let result = result();
+    if result.is_err() {
+        let _ = std::fs::remove_file(temp);
+    }
+    result
 }
 fn sync_directory(dir: &Path) -> Result<(), String> {
     #[cfg(unix)]
@@ -48,6 +59,13 @@ fn remove_file(path: &Path) -> Result<(), String> {
 pub fn complete_pending(dir: &Path) -> Result<bool, String> {
     if !pending(dir) {
         return Ok(false);
+    }
+    let metadata = std::fs::symlink_metadata(dir.join(INTENT)).map_err(|e| e.to_string())?;
+    if !metadata.is_file()
+        || metadata.len() != b"reset-memory-v1\n".len() as u64
+        || std::fs::read(dir.join(INTENT)).map_err(|e| e.to_string())? != b"reset-memory-v1\n"
+    {
+        return Err("Invalid reset request file; no data was deleted".into());
     }
     let result = || {
         let mut settings = Settings::load(&dir.join("settings.json"))?;
@@ -133,6 +151,66 @@ pub async fn reset_memory(
 mod tests {
     use super::*;
     use notdot_core::memory::Memory;
+    #[test]
+    fn malformed_intents_never_delete_memory_or_detach_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        Settings {
+            thread_id: Some("keep".into()),
+            ..Settings::default()
+        }
+        .save(&path.join("settings.json"))
+        .unwrap();
+        std::fs::create_dir(path.join("memory")).unwrap();
+        std::fs::write(path.join("memory/sentinel"), "keep").unwrap();
+        std::fs::write(path.join(INTENT), "unrelated file").unwrap();
+        assert!(
+            complete_pending(path)
+                .unwrap_err()
+                .contains("Invalid reset request")
+        );
+        assert_eq!(
+            std::fs::read_to_string(path.join("memory/sentinel")).unwrap(),
+            "keep"
+        );
+        assert_eq!(
+            Settings::load(&path.join("settings.json"))
+                .unwrap()
+                .thread_id
+                .as_deref(),
+            Some("keep")
+        );
+        assert!(mark(path).is_err());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn reset_does_not_follow_data_symlinks_or_overwrite_an_intent_symlink() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        Settings::default()
+            .save(&path.join("settings.json"))
+            .unwrap();
+        std::fs::write(outside.path().join("sentinel"), "keep").unwrap();
+        symlink(outside.path(), path.join("memory")).unwrap();
+        symlink(outside.path().join("sentinel"), path.join("followups.json")).unwrap();
+        symlink(outside.path().join("sentinel"), path.join(INTENT)).unwrap();
+        assert!(mark(path).is_err());
+        assert!(complete_pending(path).is_err());
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("sentinel")).unwrap(),
+            "keep"
+        );
+        std::fs::remove_file(path.join(INTENT)).unwrap();
+        mark(path).unwrap();
+        complete_pending(path).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("sentinel")).unwrap(),
+            "keep"
+        );
+        assert!(!path.join("memory").exists());
+    }
     #[tokio::test]
     async fn reset_deletes_the_entire_store_and_followups_and_detaches_history_while_preserving_preferences()
      {

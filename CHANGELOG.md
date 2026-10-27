@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Validate and atomically stage reset intents; reject malformed/symlink requests before touching data, with regressions for cleanup scope.
+
 - Fix legacy macOS keychain reads that could still block despite query-level UI skipping; scope legacy UI suppression and serialise all credential operations while preserving the prior policy.
 
 - Backport the upstream GLib string-iterator FFI safety fix for the GTK3 Linux stack, retaining provenance/licenses and validating optimized variant tests.
