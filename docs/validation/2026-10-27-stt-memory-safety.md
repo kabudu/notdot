@@ -19,10 +19,23 @@ The QA bundle builds and the staged secret scan passes. QA-only confirmation evi
 
 ## Native microphone acceptance
 
-Pending local OS key approval for the rebuilt ad-hoc QA app. Planned checks: compare automatic/English recognition on known problem phrases; reject an incorrect read-back and verify zero records; approve a correct detail and verify later recall; reject bare yes; cancel/expire a confirmation; verify normal questions keep their streamed response and do not produce a memory prompt.
+Completed on the rebuilt macOS QA app after local key approval, using known speech played through the speakers into the real microphone. This exercised wake detection → native streaming ElevenLabs transcription → Terra / Medium → speech playback → automatic confirmation capture → real memory persistence and retrieval. These were controlled synthetic utterances, not a human-speaker accuracy study.
 
-The original QA profile is preserved under ignored `.local/stt-safety/original-qa-profile`. The disposable profile has no user memories or conversation copied into it. QA Settings is open and wake listening is paused while the saved-key prompt waits. No demo recorder is running. Production data is untouched.
+| Check | Observed result |
+| --- | --- |
+| Automatic language, fruit sentence, negative reply | Correct fruit transcript; zero records before read-back and after rejection. |
+| English language, same fruit sentence, negative reply | Correct fruit transcript; zero records before read-back and after rejection. |
+| English peppermint-tea sentence, approval | First “yes, save that” attempt was rejected; the reason was not retained in diagnostics. A slower “yes, remember that” passed: zero records before approval, exactly one afterward. No permissive matching was added. |
+| Later spoken recall | Retrieved the confirmed peppermint-tea note and answered correctly; no new memory question. One wake attempt missed; retry completed in 11.85 seconds from fixture playback start. |
+| Bare “yes” | Discarded colour proposal; existing record count remained one. |
+| Silence | Local capture ended, cancelled the proposal and resumed wake listening; no confirmation audio chunks sent; count remained one. |
+| Escape during automatic confirmation capture | Scoped cancellation recorded; returned to wake listening; count remained one. |
+| Settings memory review | Exactly the peppermint-tea note shown as voice confirmation / confirmed by you. |
+
+Read-back turns took about 30–32 seconds including the model response, spoken verification question and spoken confirmation outcome. The extra check deliberately adds time when saving a durable fact. English and automatic detection both recognised the paired fruit sample correctly; this small comparison demonstrates no measured accuracy gain. Exact confirmation matching can reject legitimate approvals when recognition is imperfect, requiring a retry rather than risking an unintended save.
+
+Ignored local evidence: `.local/stt-safety/{auto-reject,english-reject,english-accept,english-accept-slow,bare-yes-reject,silence-reject,escape-check}.json` and `.local/memory-e2e/stt-recall-retry.json`. No demo recording ran. The disposable profile is preserved at `.local/stt-safety/completed-test-profile`; the original QA profile was restored and reopened. Production file hashes match the pre-test snapshot. No application code changed after the passing CI/live-model checkpoint.
 
 ## References and limits
 
-[ElevenLabs transcript API](https://elevenlabs.io/docs/api-reference/speech-to-text/convert) documents optional language hints, word metadata and decoding options; [realtime API](https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime) documents streaming language selection. A language hint is not an accuracy/confidence guarantee. No measured word-error-rate improvement is claimed before the controlled microphone comparison. Read-back confirmation protects ledger storage from residual errors; it does not make ASR perfect or authenticate the speaker.
+[ElevenLabs transcript API](https://elevenlabs.io/docs/api-reference/speech-to-text/convert) documents optional language hints, word metadata and decoding options; [realtime API](https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime) documents streaming language selection. A language hint is not an accuracy/confidence guarantee. No word-error-rate improvement is claimed from this small controlled comparison. Read-back confirmation protects ledger storage from residual errors; it does not make ASR perfect or authenticate the speaker.

@@ -186,4 +186,4 @@ Completed targeted macOS voice/UI acceptance on `fd980d6`: extraction, provision
 
 ## Voice-memory confirmation follow-up
 
-`a0efdc1` adds a transcription-language setting and requires read-back confirmation before the app stores new voice-derived facts. Automated real-ledger and authenticated learner tests pass; microphone acceptance is pending local saved-key approval for the rebuilt QA app. The earlier native memory run covers the previous ingestion behaviour, not this new confirmation UI. See [current STT safety evidence and remaining gates](validation/2026-10-27-stt-memory-safety.md).
+`a0efdc1` adds a transcription-language setting and requires read-back confirmation before the app stores new voice-derived facts. Automated real-ledger and authenticated learner tests pass. Microphone acceptance completed on macOS: read-back rejection, strict approval, later recall, bare-yes refusal, silence and Escape checks. Original QA profile restored; production hashes unchanged. The earlier memory run covers the previous ingestion behaviour. See [bounded results and limitations](validation/2026-10-27-stt-memory-safety.md).
