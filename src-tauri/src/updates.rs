@@ -268,6 +268,9 @@ async fn install(
     state: &Arc<AppState>,
     updates: &Updates,
 ) -> Result<(), String> {
+    if super::is_qa(app) {
+        return Err("Live update installation is disabled in the isolated QA profile; use signed local fixtures".into());
+    }
     let _operation = updates
         .operation
         .try_lock()

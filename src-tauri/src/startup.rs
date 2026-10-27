@@ -3,6 +3,13 @@ use std::path::PathBuf;
 use tauri_plugin_autostart::ManagerExt;
 
 pub fn configure(app: &tauri::AppHandle, mode: Startup) -> Result<(), String> {
+    if super::is_qa(app) {
+        return if mode == Startup::Manual {
+            Ok(())
+        } else {
+            Err("OS startup changes are disabled in the isolated QA profile".into())
+        };
+    }
     let manager = app.autolaunch();
     let enabled = manager.is_enabled().map_err(|e| e.to_string())?;
     match (mode == Startup::Manual, enabled) {

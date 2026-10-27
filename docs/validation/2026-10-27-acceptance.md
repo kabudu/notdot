@@ -32,3 +32,7 @@ Reset intent creation now uses a create-new staging file, fsync and atomic renam
 - Save text had a minimum 3.007:1 contrast and failed 4.5:1 at 161 integer hues. Darkening the primary surface raises its minimum to 4.836:1 across all 361 hue positions. Selected-switch knob/track contrast is also tested against 3:1 for every hue. Source colour checks and ARIA reference tests are not a VoiceOver/browser audit or a WCAG conformance claim.
 
 Reference: https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html. Native visual and screen-reader acceptance is blocked by the locked Mac.
+
+## Isolated native acceptance preparation
+
+A debug QA bundle/profile is prepared under com.kabudu.notdot.qa, separate from the production singleton, settings, ledger and conversation. Credentials are read-only: explicit authorisation can read an existing key, but saving/removal is rejected before OS access. QA startup mutations and live updater installation are blocked because those plugins otherwise share OS/global resources. The initial profile copies only non-secret voice/model preferences and disables automatic behaviour. scripts/prepare_qa.py refuses to overwrite a pre-existing profile. Native steps and remaining gates are in NATIVE-VOICE-ACCEPTANCE.md; the QA bundle is built but not launched while the Mac is locked.

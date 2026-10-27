@@ -122,6 +122,9 @@ async fn report_visual(state: State<'_, Arc<AppState>>, report: Value) -> Result
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())
 }
+fn is_qa(app: &tauri::AppHandle) -> bool {
+    cfg!(debug_assertions) && app.config().identifier == "com.kabudu.notdot.qa"
+}
 fn credential_for(provider: &str) -> Result<keyring::Entry, String> {
     if !notdot_voice::providers().iter().any(|p| p.id == provider) {
         return Err("Voice backend is not installed".into());
@@ -887,6 +890,11 @@ fn main() {
             let learning =
                 learning::Learning::new(memory.clone(), analysis_dir, startup::runtime());
             learning.configure(settings.selection());
+            let credentials = if is_qa(app.handle()) {
+                credentials::Credentials::read_only()
+            } else {
+                credentials::Credentials::default()
+            };
             let state = Arc::new(AppState {
                 snapshot: Mutex::new(Snapshot {
                     settings,
@@ -906,7 +914,7 @@ fn main() {
                     version: app.package_info().version.to_string(),
                     desktop_launch_supported: cfg!(target_os = "macos"),
                 }),
-                credentials: Arc::new(credentials::Credentials::default()),
+                credentials: Arc::new(credentials),
                 bridge: Mutex::new(None),
                 memory,
                 path,

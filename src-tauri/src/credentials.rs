@@ -12,8 +12,15 @@ static OPERATIONS: Mutex<()> = Mutex::new(());
 #[derive(Default)]
 pub struct Credentials {
     cache: Mutex<HashMap<String, Zeroizing<String>>>,
+    read_only: bool,
 }
 impl Credentials {
+    pub fn read_only() -> Self {
+        Self {
+            read_only: true,
+            ..Self::default()
+        }
+    }
     pub fn cached(&self, provider: &str) -> bool {
         self.cache
             .lock()
@@ -67,6 +74,9 @@ impl Credentials {
         Ok(())
     }
     pub async fn save(self: &Arc<Self>, provider: &str, key: &str) -> Result<(), String> {
+        if self.read_only {
+            return Err("QA profile cannot change OS credentials. Use Authorize saved key for read-only access.".into());
+        }
         let vault = self.clone();
         let provider = provider.to_string();
         let key = Zeroizing::new(key.trim().to_string());
@@ -97,6 +107,9 @@ impl Credentials {
         Ok(())
     }
     pub async fn remove(self: &Arc<Self>, provider: &str) -> Result<(), String> {
+        if self.read_only {
+            return Err("QA profile cannot remove OS credentials".into());
+        }
         let vault = self.clone();
         let provider = provider.to_string();
         tokio::task::spawn_blocking(move || {
@@ -198,6 +211,25 @@ fn os_read(provider: &str, interactive: bool) -> Result<String, String> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    #[tokio::test]
+    async fn qa_profile_rejects_credential_mutation_before_any_os_access() {
+        let vault = Arc::new(Credentials::read_only());
+        assert!(
+            vault
+                .save("elevenlabs", "synthetic")
+                .await
+                .unwrap_err()
+                .contains("QA profile")
+        );
+        assert!(
+            vault
+                .remove("elevenlabs")
+                .await
+                .unwrap_err()
+                .contains("QA profile")
+        );
+        assert!(!vault.cached("elevenlabs"));
+    }
     #[cfg(target_os = "macos")]
     #[test]
     fn silent_keychain_scope_restores_prior_policy_and_preserves_an_existing_no_ui_scope() {
