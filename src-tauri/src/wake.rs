@@ -50,6 +50,11 @@ pub struct Status {
     pub rms: f32,
     pub request_id: Option<u64>,
     pub muted: bool,
+    pub audio_frames: u64,
+    pub peak_rms: f32,
+    pub candidates: u64,
+    pub rejected_energy: u64,
+    pub rejected_prefix: u64,
 }
 struct Inner {
     config: Config,
@@ -162,6 +167,9 @@ struct Detector {
     kws: KeywordSpotter,
     stream: OnlineStream,
     require_hey: bool,
+    candidates: u64,
+    rejected_energy: u64,
+    rejected_prefix: u64,
     elapsed: f64,
     voice_gate: VoiceGate,
     voiced: std::collections::VecDeque<(f64, f64, bool)>,
@@ -239,6 +247,9 @@ impl Detector {
             kws,
             stream,
             require_hey,
+            candidates: 0,
+            rejected_energy: 0,
+            rejected_prefix: 0,
             elapsed: 0.,
             voice_gate: VoiceGate::default(),
             voiced: Default::default(),
@@ -301,6 +312,13 @@ impl Detector {
                     "wake candidate: supported={supported} prefix={prefix} timestamps={:?}",
                     result.timestamps
                 );
+                self.candidates = self.candidates.saturating_add(1);
+                if !supported {
+                    self.rejected_energy = self.rejected_energy.saturating_add(1);
+                }
+                if !prefix {
+                    self.rejected_prefix = self.rejected_prefix.saturating_add(1);
+                }
                 if supported && prefix {
                     return true;
                 }
@@ -761,6 +779,13 @@ impl Worker {
             i.status.message = format!("Listening on this computer for {}.", i.config.phrase);
         }
         i.status.rms = rms;
+        i.status.audio_frames = i.status.audio_frames.saturating_add(1);
+        i.status.peak_rms = i.status.peak_rms.max(rms);
+        if let Some(detector) = &self.detector {
+            i.status.candidates = detector.candidates;
+            i.status.rejected_energy = detector.rejected_energy;
+            i.status.rejected_prefix = detector.rejected_prefix;
+        }
         false
     }
 }
@@ -823,6 +848,27 @@ mod tests {
             let detected = detects(&mut detector, &adjusted);
             eprintln!("local human fixture gain={gain}, detected={detected}");
             assert!(detected, "human wake phrase missed at gain {gain}");
+        }
+    }
+    #[test]
+    #[ignore = "known idle-state recognition failure; run during wake diagnosis"]
+    fn wake_after_extended_idle_and_rejected_candidates() {
+        let _models = MODEL_FIXTURE.lock().unwrap();
+        for idle in [2, 5, 25, 65] {
+            let mut d = Detector::new(&models(), "Hey Ava").unwrap();
+            for _ in 0..idle * 50 {
+                assert!(!d.accept(16000, &[0.; 320]));
+            }
+            for name in ["hey-ava.wav", "negative.wav"] {
+                let mut detected = false;
+                for chunk in audio(name).chunks(320) {
+                    detected |= d.accept(16000, chunk);
+                }
+                for _ in 0..60 {
+                    detected |= d.accept(16000, &[0.; 320]);
+                }
+                assert_eq!(detected, name == "hey-ava.wav", "{name} after {idle}s idle");
+            }
         }
     }
     #[test]

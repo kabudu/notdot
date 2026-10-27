@@ -148,6 +148,17 @@ async fn snapshot(
         window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
     snapshot.updates = app.state::<Arc<updates::Updates>>().status();
     snapshot.wake = state.wake.status();
+    // QA-only, bounded diagnostics. Never contains samples, transcripts or keys.
+    #[cfg(debug_assertions)]
+    if is_qa(&app)
+        && let Ok(dir) = app.path().app_data_dir()
+    {
+        let diagnostic = serde_json::json!({"wake": &snapshot.wake,
+            "phase": &snapshot.phase, "key_configured": snapshot.key_configured,
+            "key_checking": snapshot.key_checking});
+        let _ = std::fs::write(dir.join("wake-diagnostics.json"), diagnostic.to_string());
+    }
+
     snapshot.key_authorized = state.credentials.cached(&snapshot.settings.voice_provider);
     snapshot.learning = state.learning.status();
     snapshot.initiative = state.initiative.status(&snapshot.settings.initiative).await;
