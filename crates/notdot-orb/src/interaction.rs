@@ -55,6 +55,7 @@ pub(crate) fn keyboard_action(
     alt: bool,
     modal: bool,
     debug: bool,
+    wake: bool,
 ) -> Option<KeyboardAction> {
     if repeat {
         return None;
@@ -65,7 +66,7 @@ pub(crate) fn keyboard_action(
     if command && key == "," && !modal {
         return Some(KeyboardAction::Settings);
     }
-    if !modal && !command && !alt && (key == " " || (key == "Enter" && !debug)) {
+    if !wake && !modal && !command && !alt && (key == " " || (key == "Enter" && !debug)) {
         return Some(KeyboardAction::Voice);
     }
     None
@@ -74,28 +75,60 @@ pub(crate) fn keyboard_action(
 mod keyboard_tests {
     use super::*;
     #[test]
-    fn orb_is_keyboard_operable_and_modal_buttons_never_start_recording() {
+    fn wake_mode_never_starts_manual_capture_but_retains_settings_and_cancel() {
         for key in [" ", "Enter"] {
             assert_eq!(
-                keyboard_action(key, false, false, false, false, false),
-                Some(KeyboardAction::Voice)
+                keyboard_action(key, false, false, false, false, false, true),
+                None
             );
-            assert_eq!(keyboard_action(key, false, false, false, true, false), None);
-            assert_eq!(keyboard_action(key, true, false, false, false, false), None);
-            assert_eq!(keyboard_action(key, false, true, false, false, false), None);
-            assert_eq!(keyboard_action(key, false, false, true, false, false), None);
         }
         assert_eq!(
-            keyboard_action(",", false, true, false, false, false),
-            Some(KeyboardAction::Settings)
-        );
-        assert_eq!(keyboard_action(",", false, true, false, true, false), None);
-        assert_eq!(
-            keyboard_action("Escape", false, false, false, true, false),
+            keyboard_action("Escape", false, false, false, false, false, true),
             Some(KeyboardAction::Cancel)
         );
         assert_eq!(
-            keyboard_action("Enter", false, false, false, false, true),
+            keyboard_action(",", false, true, false, false, false, true),
+            Some(KeyboardAction::Settings)
+        );
+    }
+    #[test]
+    fn orb_is_keyboard_operable_and_modal_buttons_never_start_recording() {
+        for key in [" ", "Enter"] {
+            assert_eq!(
+                keyboard_action(key, false, false, false, false, false, false),
+                Some(KeyboardAction::Voice)
+            );
+            assert_eq!(
+                keyboard_action(key, false, false, false, true, false, false),
+                None
+            );
+            assert_eq!(
+                keyboard_action(key, true, false, false, false, false, false),
+                None
+            );
+            assert_eq!(
+                keyboard_action(key, false, true, false, false, false, false),
+                None
+            );
+            assert_eq!(
+                keyboard_action(key, false, false, true, false, false, false),
+                None
+            );
+        }
+        assert_eq!(
+            keyboard_action(",", false, true, false, false, false, false),
+            Some(KeyboardAction::Settings)
+        );
+        assert_eq!(
+            keyboard_action(",", false, true, false, true, false, false),
+            None
+        );
+        assert_eq!(
+            keyboard_action("Escape", false, false, false, true, false, false),
+            Some(KeyboardAction::Cancel)
+        );
+        assert_eq!(
+            keyboard_action("Enter", false, false, false, false, true, false),
             None
         );
     }

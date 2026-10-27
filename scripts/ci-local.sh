@@ -10,5 +10,7 @@ rustc --edition 2024 --test crates/notdot-orb/src/interaction.rs -o .local/gestu
 .local/gesture-tests
 rustc --edition 2024 --test crates/notdot-orb/src/visual_state.rs -o .local/visual-tests
 .local/visual-tests
+rustc --edition 2024 --test crates/notdot-orb/src/speech_queue.rs -o .local/speech-queue-tests
+.local/speech-queue-tests
 python3 -m unittest discover -s scripts -p 'test_*.py'
 git diff --check

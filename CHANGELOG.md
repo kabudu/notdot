@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Start speaking complete sentences as they arrive, with bounded prefetch.
+- Use the wake phrase when hands-free mode is on; clicks and activation keys no longer start a competing recording.
 - Speak after one click; a short pause sends your request automatically. Remove spike-style listening feedback and keep the orb thinking throughout the wait.
 - Strengthen cancellation and tool approvals, and protect voice credentials in diagnostic output.
 

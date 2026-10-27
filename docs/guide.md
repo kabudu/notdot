@@ -179,3 +179,9 @@ Current automated, security, accessibility and performance evidence is recorded 
 | Single writer | Only notdot sends messages to its companion chat. |
 
 The speaking animation now uses smooth, layered waves with a softened audio level. The listening indicator and the waiting halo remain distinct. Intelligence is chosen in one expandable card with model choices and thinking-level buttons. Drag the Settings header to move the window without closing it.
+
+## Incremental spoken replies
+
+The runtime streams final-answer items into a separate, turn-tagged speech buffer. Commentary and reasoning are never read aloud. The frontend takes complete sentences from a bounded 64 KB text/cursor buffer, keeps at most one next synthesis request in flight, and plays clips in order. It can start before the whole answer is available; this is sentence-level delivery, not byte-stream audio or word-by-word speech.
+
+Cancellation invalidates the frontend generation and clears queued text/audio. A request identity scopes native interruption to the same submission; bounded, expiring cancellation tombstones cover cancel-before-dispatch races. An already-sent provider request can finish or be billed, but its late audio is discarded. Provider failures stop the stream rather than skipping or repeating sentences. Material rewrites of already queued text fail closed. Playback has an onset gain ramp, and its dynamic listener is removed with the graph. Normal builds contain no debug composer; the optional debug composer now exercises the same spoken-reply path after STT.
