@@ -1,0 +1,8 @@
+{
+  "identifier": "com.kabudu.notdot.qa",
+  "productName": "notdot QA",
+  "bundle": {
+    "createUpdaterArtifacts": false,
+    "macOS": { "signingIdentity": "-" }
+  }
+}
