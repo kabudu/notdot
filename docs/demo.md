@@ -1,18 +1,13 @@
-# Real voice demo — production checklist
+# Voice demo recording plan
 
-Status: **not recorded**. Native access and saved-key authorisation are pending. Do not replace this requirement with generated speech over a staged animation.
+The first real voice take worked, but background noise made it unsuitable for the README and website. It is not embedded or included in the repository. We are waiting for a quiet environment before recording again.
 
-Record the actual QA app, with staged non-sensitive content, microphone input and audible app output. Keep all keys, private windows, account names and history out of frame. Suggested 45–75 second sequence:
+For the new take:
 
-1. Show the real orb; say “What is three times seven?” and keep the audible reply.
-2. With learning enabled, say “Remember that I prefer concise answers.” Show the actual acknowledgement.
-3. Ask a follow-up in the same conversation; show listening, thinking and speaking states.
-4. Briefly show the colour preview and voice picker, without credential fields or private notes.
+1. Record a short, real spoken request and notdot’s reply using the current app. Keep the video focused on the experience: no programming stack, model names or thinking levels.
+2. Keep the exchange at its original speed. Trim only the waiting time around it.
+3. Apply light noise reduction and balance the volume. Check that every word still sounds natural.
+4. Add speaker captions and a transcript, and check the exported audio by listening.
+5. Add the approved video to the README and website with playback controls and captions, without autoplay.
 
-Do not hide failure or cut away waiting time to imply unmeasured latency. Label any time compression. Listen to the exported file end to end; verify both sides are audible and no private content appears. Obtain consent from anyone whose voice is recorded.
-
-## Publication assets
-
-Place the verified H.264/AAC MP4, actual-frame poster, WebVTT captions and plain transcript under `docs/site-assets/demo/`. Use `<video controls playsinline preload="metadata" poster="…">` plus a caption track on the website; no autoplay. Provide a transcript link. Do not add broken references before these files exist.
-
-GitHub Markdown sanitises arbitrary video HTML. Upload the actual MP4 through GitHub’s attachment UI and verify its rendered player in the README; retain a clickable poster/direct file fallback. Do not claim an inline player works until it has been checked in the rendered README. Keep the repository copy as the durable downloadable asset. Remove this pending status from the README/site only after actual media verification.
+Keep original recordings and rejected takes out of Git. Temporary recorder permissions must be removed after recording. Website publication remains a separate decision.

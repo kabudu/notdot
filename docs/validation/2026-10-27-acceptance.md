@@ -61,7 +61,9 @@ The unpatched upstream GLib iterator tests also pass on this particular toolchai
 
 ## Linux fixture race
 
-The final default-parallel Linux rerun exposed a failure in native wake fixtures after an earlier complete pass. ONNX Runtime reported: “Only one instance of LoggingManager created with InstanceType::Default can exist at any point in time.” Two fixtures were constructing/destroying models concurrently; production uses one inference worker per process. The model fixtures now share a test-only mutex across the entire fixture lifetime, including teardown. All assertions remain. The full Linux suite then passed, followed by three fresh-process runs of all five wake tests (each passed). This is a harness correction matching the production ownership model, not a claim that ONNX supports arbitrary concurrent environment construction.
+The final default-parallel Linux rerun exposed a failure in native wake fixtures after an earlier complete pass. ONNX Runtime reported: “Only one instance of LoggingManager created with InstanceType::Default can exist at any point in time.” Two fixtures were constructing/destroying models concurrently; production uses one inference worker per process. The model fixtures now share a test-only mutex across the entire fixture lifetime, including teardown. All assertions remain.
+
+The full Linux suite then passed, followed by three fresh-process runs of all five wake tests (each passed). This is a harness correction matching the production ownership model, not a claim that ONNX supports arbitrary concurrent environment construction.
 
 ## Final automated results and open gates
 

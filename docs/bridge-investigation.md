@@ -1,5 +1,7 @@
 # notdot
 
+This is a technical record of the Desktop connection tests. The practical result: notdot sends messages through its own Codex process; Desktop can show saved history. Two apps cannot safely send to the same chat at once. For everyday use, see [Settings](settings.md).
+
 Private feasibility prototype for a desktop voice companion. No voice, orb, memory ledger or onboarding has been built yet.
 
 ## Bridge proof — 26 October 2026

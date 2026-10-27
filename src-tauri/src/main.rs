@@ -22,7 +22,7 @@ use std::{
 };
 use tauri::{
     Manager, State,
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::TrayIconBuilder,
 };
 use tokio::sync::Mutex;
@@ -603,7 +603,7 @@ async fn maintain_memory(state: State<'_, Arc<AppState>>) -> Result<String, Stri
     let ticket = state
         .memory
         .learning_ticket()
-        .ok_or("Enable learning and memory before distilling notes")?;
+        .ok_or("Turn on memory before tidying notes")?;
     state.memory.maintain_when_enabled(ticket).await?;
     state.learning.review()?;
     Ok("Notes compacted. Semantic review queued; see memory status for the result.".into())
@@ -998,53 +998,91 @@ fn main() {
                     &quit,
                 ],
             )?;
+            let updates_item = MenuItem::with_id(
+                app,
+                "check-updates",
+                "Check for Updates…",
+                true,
+                None::<&str>,
+            )?;
+            menu.insert(&updates_item, 1)?;
+            let app_menu = Submenu::with_items(
+                app,
+                "notdot",
+                true,
+                &[&about_item, &settings_item, &updates_item, &quit],
+            )?;
+            let edit_menu = Submenu::with_items(
+                app,
+                "Edit",
+                true,
+                &[
+                    &PredefinedMenuItem::undo(app, None)?,
+                    &PredefinedMenuItem::redo(app, None)?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::cut(app, None)?,
+                    &PredefinedMenuItem::copy(app, None)?,
+                    &PredefinedMenuItem::paste(app, None)?,
+                    &PredefinedMenuItem::select_all(app, None)?,
+                ],
+            )?;
+            app.set_menu(Menu::with_items(app, &[&app_menu, &edit_menu])?)?;
             let icon = tauri::include_image!("icons/32x32.png");
-            TrayIconBuilder::new()
-                .icon(icon)
-                .menu(&menu)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "quit" => app.exit(0),
-                    "mute" => {
-                        let state = app.state::<Arc<AppState>>().inner().clone();
-                        let app = app.clone();
-                        tauri::async_runtime::spawn(async move {
-                            let muted = !state.snapshot.lock().await.settings.microphone_muted;
-                            let result = mute_microphone(&state, muted).await;
-                            if muted && let Some(w) = app.get_webview_window("main") {
-                                let _ = w.eval("window.dispatchEvent(new Event('notdot-mute'))");
-                            }
-                            if let Err(e) = result {
-                                state.snapshot.lock().await.error = Some(e);
-                            }
-                        });
+            TrayIconBuilder::new().icon(icon).menu(&menu).build(app)?;
+            app.on_menu_event(|app, event| match event.id.as_ref() {
+                "check-updates" => {
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                        let _ = w.eval("window.dispatchEvent(new Event('notdot-updates'))");
                     }
-                    "about" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                            let _ = w.eval("window.dispatchEvent(new Event('notdot-about'))");
+                    let handle = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let updates = handle.state::<Arc<updates::Updates>>();
+                        let _ = updates::check_updates(handle.clone(), updates).await;
+                    });
+                }
+                "quit" => app.exit(0),
+                "mute" => {
+                    let state = app.state::<Arc<AppState>>().inner().clone();
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let muted = !state.snapshot.lock().await.settings.microphone_muted;
+                        let result = mute_microphone(&state, muted).await;
+                        if muted && let Some(w) = app.get_webview_window("main") {
+                            let _ = w.eval("window.dispatchEvent(new Event('notdot-mute'))");
                         }
-                    }
-                    "settings" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                            let _ = w.eval("window.dispatchEvent(new Event('notdot-settings'))");
+                        if let Err(e) = result {
+                            state.snapshot.lock().await.error = Some(e);
                         }
+                    });
+                }
+                "about" => {
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                        let _ = w.eval("window.dispatchEvent(new Event('notdot-about'))");
                     }
-                    "reconnect" => {
-                        let state = app.state::<Arc<AppState>>().inner().clone();
-                        tauri::async_runtime::spawn(async move {
-                            if let Err(e) = connect(state.clone(), true).await {
-                                let mut s = state.snapshot.lock().await;
-                                s.phase = "error".into();
-                                s.error = Some(e);
-                            }
-                        });
+                }
+                "settings" => {
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                        let _ = w.eval("window.dispatchEvent(new Event('notdot-settings'))");
                     }
-                    _ => {}
-                })
-                .build(app)?;
+                }
+                "reconnect" => {
+                    let state = app.state::<Arc<AppState>>().inner().clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = connect(state.clone(), true).await {
+                            let mut s = state.snapshot.lock().await;
+                            s.phase = "error".into();
+                            s.error = Some(e);
+                        }
+                    });
+                }
+                _ => {}
+            });
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if waiting_for_desktop {

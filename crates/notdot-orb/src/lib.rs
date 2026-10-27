@@ -95,6 +95,8 @@ struct View {
     generation: u64,
     last_frame: f64,
     amplitude: f64,
+    speech_energy: f64,
+    keyboard_navigation: bool,
     local_phase: Option<&'static str>,
     voices: Vec<VoiceChoice>,
     next_cursor: Option<String>,
@@ -277,84 +279,203 @@ fn usage_time(value: &Value) -> String {
         })
         .unwrap_or_else(|| "not reported".into())
 }
+fn usage_text(parent: &web_sys::Element, tag: &str, class: &str, text: &str) -> web_sys::Element {
+    let node = document().create_element(tag).expect("usage element");
+    node.set_class_name(class);
+    node.set_text_content(Some(text));
+    let _ = parent.append_child(&node);
+    node
+}
+fn credit_count(value: u64) -> String {
+    let digits = value.to_string();
+    let mut output = String::with_capacity(digits.len() + 6);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            output.push(',');
+        }
+        output.push(ch);
+    }
+    output
+}
+fn usage_date(value: &Value) -> String {
+    value
+        .as_u64()
+        .filter(|n| *n > 0)
+        .map(|n| {
+            let options = json!({"day":"numeric", "month":"short"})
+                .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+                .unwrap_or(JsValue::UNDEFINED);
+            js_sys::Date::new(&JsValue::from_f64(n as f64 * 1000.))
+                .to_locale_date_string("en-GB", &options)
+                .into()
+        })
+        .unwrap_or_else(|| "Not reported".into())
+}
 fn render_usage(quota: &Value) {
+    let expanded = document()
+        .get_element_by_id("usage-more")
+        .is_some_and(|e| e.has_attribute("open"));
     let area = element("usage-details");
     area.set_text_content(None);
-    let card = element("usage-title")
+    if let Some(card) = element("usage-title")
         .parent_element()
-        .and_then(|e| e.parent_element());
-    if let Some(card) = card {
+        .and_then(|e| e.parent_element())
+    {
         let _ = card.set_attribute("data-level", quota["level"].as_str().unwrap_or("normal"));
     }
-    let paragraph = |text: String| {
-        let p = document().create_element("p").expect("usage paragraph");
-        p.set_text_content(Some(&text));
-        let _ = area.append_child(&p);
-    };
-    paragraph(
-        quota["message"]
-            .as_str()
-            .unwrap_or("Usage unavailable: not checked yet")
-            .into(),
-    );
+    let overview = quota["report"]["meters"]
+        .as_array()
+        .and_then(|m| m.first())
+        .and_then(|m| {
+            let used = m["used"].as_u64()?;
+            let limit = m["limit"].as_u64()?;
+            (limit > 0).then(|| {
+                format!(
+                    "{:.1}% used{}",
+                    used as f64 / limit as f64 * 100.,
+                    if quota["stale"] == true {
+                        " · last known"
+                    } else {
+                        ""
+                    }
+                )
+            })
+        })
+        .unwrap_or_else(|| "Not checked yet".into());
+    element("usage-overview").set_text_content(Some(&overview));
+    let stale = quota["availability"] != "available" || quota["stale"] == true;
+    let has_report = quota["report"]["meters"]
+        .as_array()
+        .is_some_and(|m| !m.is_empty());
+    if stale {
+        usage_text(
+            &area,
+            "p",
+            "usage-notice",
+            if has_report {
+                "Last known balance · unable to refresh"
+            } else {
+                quota["message"]
+                    .as_str()
+                    .unwrap_or("Usage has not been checked yet.")
+            },
+        );
+    }
+    let more = document().create_element("details").expect("usage details");
+    more.set_id("usage-more");
+    if expanded {
+        let _ = more.set_attribute("open", "");
+    }
+    usage_text(&more, "summary", "", "Details");
     if let Some(meters) = quota["report"]["meters"].as_array() {
         for meter in meters {
             let used = meter["used"].as_u64().unwrap_or(0);
             let limit = meter["limit"].as_u64().unwrap_or(0);
-            let label = meter["label"].as_str().unwrap_or("Provider allowance");
-            let cached = if quota["availability"] != "available" || quota["stale"] == true {
-                "Last known: "
-            } else {
-                ""
+            let label = meter["label"].as_str().unwrap_or("Voice allowance");
+            let unit = match meter["unit"].as_str().unwrap_or("units") {
+                "provider credits" | "provider credits (legacy character fields)" => "credits",
+                unit => unit,
             };
-            let amount = if limit > 0 {
-                format!(
-                    "{used} / {limit} ({:.1}% used; {} remaining)",
-                    used as f64 / limit as f64 * 100.,
-                    limit.saturating_sub(used)
-                )
-            } else {
-                format!("{used} used; no positive allowance reported")
-            };
-            paragraph(format!(
-                "{cached}{label}: {amount}. Unit: {}.",
-                meter["unit"].as_str().unwrap_or("provider units")
-            ));
             if limit > 0 {
+                let percent = used as f64 / limit as f64 * 100.;
+                let summary = usage_text(&area, "div", "usage-main", "");
+                let used_block = usage_text(&summary, "div", "usage-number", "");
+                usage_text(&used_block, "strong", "", &format!("{percent:.1}%"));
+                usage_text(&used_block, "span", "", "used");
+                let left_block = usage_text(&summary, "div", "usage-number usage-left", "");
+                usage_text(
+                    &left_block,
+                    "strong",
+                    "",
+                    &credit_count(limit.saturating_sub(used)),
+                );
+                usage_text(&left_block, "span", "", &format!("{unit} left"));
                 let bar = document()
                     .create_element("progress")
                     .expect("usage progress");
                 let _ = bar.set_attribute("max", "100");
-                let _ = bar.set_attribute(
-                    "value",
-                    &(used as f64 / limit as f64 * 100.).min(100.).to_string(),
-                );
+                let _ = bar.set_attribute("value", &percent.min(100.).to_string());
                 let _ = bar.set_attribute("aria-label", label);
+                let _ = bar.set_attribute(
+                    "aria-valuetext",
+                    &format!(
+                        "{percent:.1}% used; {} of {} {unit}",
+                        credit_count(used),
+                        credit_count(limit)
+                    ),
+                );
                 let _ = area.append_child(&bar);
+                usage_text(
+                    &area,
+                    "p",
+                    "usage-total",
+                    &format!("{} of {} {unit}", credit_count(used), credit_count(limit)),
+                );
+            } else {
+                usage_text(
+                    &area,
+                    "p",
+                    "usage-notice",
+                    &format!(
+                        "{} {unit} used. Allowance not reported.",
+                        credit_count(used)
+                    ),
+                );
             }
-            paragraph(format!(
-                "Reset: {}. Usage-based billing: {}.",
-                usage_time(&meter["reset_unix"]),
-                meter["overage"].as_str().unwrap_or("unknown")
-            ));
+            usage_text(
+                &area,
+                "p",
+                "usage-reset",
+                &format!("Resets {}", usage_date(&meter["reset_unix"])),
+            );
+            let billing = match meter["overage"].as_str() {
+                Some("enabled") => {
+                    "Your provider allows extra billed usage. notdot will not change this setting."
+                }
+                Some("disabled") => "Extra usage billing is off.",
+                _ => "Extra usage billing: not reported.",
+            };
+            usage_text(&more, "p", "", billing);
+            usage_text(
+                &more,
+                "p",
+                "",
+                &format!("Full reset time: {}", usage_time(&meter["reset_unix"])),
+            );
         }
         if let Some(note) = quota["report"]["note"].as_str() {
-            paragraph(note.into());
+            usage_text(&more, "p", "", note);
         }
+    }
+    if stale && has_report {
+        usage_text(
+            &more,
+            "p",
+            "",
+            quota["message"]
+                .as_str()
+                .unwrap_or("Balance may be out of date."),
+        );
+        usage_text(
+            &more,
+            "p",
+            "",
+            &format!(
+                "Last successful check: {}",
+                usage_time(&quota["last_success"])
+            ),
+        );
     }
     if let Some(fault) = quota["fault"]["message"].as_str() {
-        paragraph(format!("Last voice error: {fault}"));
+        usage_text(&more, "p", "", &format!("Last voice error: {fault}"));
     }
-    paragraph(format!(
-        "Last checked: {}. Last successful check: {}.{}",
-        usage_time(&quota["last_checked"]),
-        usage_time(&quota["last_success"]),
-        if quota["stale"] == true {
-            " Cached usage may be out of date."
-        } else {
-            ""
-        }
-    ));
+    usage_text(
+        &area,
+        "p",
+        "usage-checked",
+        &format!("Checked {}", usage_time(&quota["last_checked"])),
+    );
+    let _ = area.append_child(&more);
 }
 fn message(error: impl AsRef<str>) {
     element("error").set_text_content(Some(error.as_ref()));
@@ -418,6 +539,137 @@ async fn wake_request(view: Shared, id: u64, generation: u64) -> Result<(), Stri
         .ok_or("Transcription returned no text")?;
     submit_transcript(view, text, generation).await
 }
+fn close_intelligence_picker() {
+    let _ = element("intelligence-section").remove_attribute("open");
+    let _ = element("intelligence-toggle").set_attribute("aria-expanded", "false");
+}
+fn effort_label(value: &str) -> String {
+    let mut label = match value {
+        "xhigh" => "Extra high",
+        "max" => "Maximum",
+        _ => value,
+    }
+    .to_string();
+    if let Some(first) = label.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    label
+}
+fn render_intelligence_summary(view: &Shared) {
+    let model = select("model").value();
+    let effort = select("effort").value();
+    let v = view.borrow();
+    let name = v
+        .models
+        .iter()
+        .find(|m| m["model"] == model)
+        .and_then(|m| m["displayName"].as_str())
+        .unwrap_or("Choose intelligence");
+    element("intelligence-model").set_text_content(Some(name));
+    let summary = if effort.is_empty() {
+        "Choose a model and thinking level".to_string()
+    } else {
+        format!(
+            "{} thinking{}",
+            effort_label(&effort),
+            if model == "gpt-6.1-terra" && effort == "medium" {
+                " · notdot default"
+            } else {
+                ""
+            }
+        )
+    };
+    element("intelligence-effort").set_text_content(Some(&summary));
+}
+fn render_model_cards(view: &Shared) {
+    element("model-options").set_text_content(None);
+    let selected = select("model").value();
+    for (i, model) in view.borrow().models.iter().enumerate() {
+        let Some(value) = model["model"].as_str() else {
+            continue;
+        };
+        let card = document().create_element("label").expect("label");
+        card.set_id(&format!("model-card-{i}"));
+        card.set_class_name("intelligence-option model-card");
+        let radio: HtmlInputElement = document()
+            .create_element("input")
+            .expect("input")
+            .unchecked_into();
+        radio.set_type("radio");
+        radio.set_name("intelligence-model");
+        radio.set_id(&format!("model-choice-{value}"));
+        radio.set_value(value);
+        radio.set_checked(value == selected);
+        let _ = card.append_child(&radio);
+        let name = document().create_element("strong").expect("model name");
+        name.set_text_content(Some(model["displayName"].as_str().unwrap_or(value)));
+        let _ = card.append_child(&name);
+        let description = document()
+            .create_element("span")
+            .expect("model description");
+        description.set_text_content(model["description"].as_str());
+        let _ = card.append_child(&description);
+        let _ = element("model-options").append_child(&card);
+    }
+    filter_model_cards(view);
+}
+fn filter_model_cards(view: &Shared) {
+    let query = input("model-search").value().to_lowercase();
+    let mut count = 0;
+    for i in 0..view.borrow().models.len() {
+        if let Some(card) = document().get_element_by_id(&format!("model-card-{i}")) {
+            let visible = card
+                .text_content()
+                .unwrap_or_default()
+                .to_lowercase()
+                .contains(&query);
+            let _ = card.toggle_attribute_with_force("hidden", !visible);
+            if visible {
+                count += 1;
+            }
+        }
+    }
+    element("model-search-status").set_text_content(Some(if count == 0 {
+        "No matching models. Try another name or refresh."
+    } else {
+        "Choose a model, then its thinking level below."
+    }));
+}
+fn render_effort_options(view: &Shared) {
+    element("effort-options").set_text_content(None);
+    let model = select("model").value();
+    let effort = select("effort").value();
+    if let Some(choices) = view
+        .borrow()
+        .models
+        .iter()
+        .find(|m| m["model"] == model)
+        .and_then(|m| m["supportedReasoningEfforts"].as_array())
+    {
+        for choice in choices {
+            let Some(value) = choice["reasoningEffort"].as_str() else {
+                continue;
+            };
+            let label = document().create_element("label").expect("effort label");
+            label.set_class_name("intelligence-option effort-chip");
+            let radio: HtmlInputElement = document()
+                .create_element("input")
+                .expect("effort input")
+                .unchecked_into();
+            radio.set_type("radio");
+            radio.set_name("intelligence-effort");
+            radio.set_id(&format!("effort-choice-{value}"));
+            radio.set_value(value);
+            radio.set_checked(value == effort);
+            let _ = radio.set_attribute("aria-describedby", "effort-description");
+            let _ = label.append_child(&radio);
+            let text = document().create_element("span").expect("effort text");
+            text.set_text_content(Some(&effort_label(value)));
+            let _ = label.append_child(&text);
+            let _ = element("effort-options").append_child(&label);
+        }
+    }
+}
 fn model_option(id: &str, value: &str, label: &str) {
     if let Ok(option) = document().create_element("option") {
         let _ = option.set_attribute("value", value);
@@ -439,6 +691,8 @@ fn render_efforts(view: &Shared, preferred: &str, choose_default: bool) {
         select("effort").set_disabled(true);
         element("model-description").set_text_content(None);
         element("effort-description").set_text_content(None);
+        render_effort_options(view);
+        render_intelligence_summary(view);
         return;
     };
     element("model-description").set_text_content(choice["description"].as_str());
@@ -476,6 +730,7 @@ fn render_efforts(view: &Shared, preferred: &str, choose_default: bool) {
     }
     select("effort").set_value(&selected);
     select("effort").set_disabled(false);
+    render_effort_options(view);
     render_effort_description(view);
 }
 fn render_effort_description(view: &Shared) {
@@ -492,13 +747,23 @@ fn render_effort_description(view: &Shared) {
         .unwrap_or("Choose an effort supported by this model.")
         .to_string();
     element("effort-description").set_text_content(Some(&description));
+    render_intelligence_summary(view);
 }
 fn refresh_models(view: &Shared, model: String, effort: String) {
     if view.borrow().model_refreshing {
         return;
     }
+    let focus = document()
+        .active_element()
+        .map(|e| e.id())
+        .filter(|id| id.starts_with("model-choice-") || id.starts_with("effort-choice-"));
+    for group in ["model-choices-group", "effort-choices-group"] {
+        let _ = element(group).set_attribute("disabled", "");
+    }
     let _ = element("default-model").set_attribute("disabled", "");
     view.borrow_mut().model_refreshing = true;
+    let _ = element("intelligence-toggle").set_attribute("disabled", "");
+    element("intelligence-model").set_text_content(Some("Checking available models…"));
     view.borrow_mut().model_refresh_at = js_sys::Date::now() + 60_000.;
     select("model").set_disabled(true);
     select("effort").set_disabled(true);
@@ -517,7 +782,11 @@ fn refresh_models(view: &Shared, model: String, effort: String) {
         }
         .await;
         view.borrow_mut().model_refreshing = false;
+        let _ = element("intelligence-toggle").remove_attribute("disabled");
         let _ = element("refresh-models").remove_attribute("disabled");
+        for group in ["model-choices-group", "effort-choices-group"] {
+            let _ = element(group).remove_attribute("disabled");
+        }
         element("model").set_text_content(None);
         match result {
             Ok(models) => {
@@ -559,12 +828,20 @@ fn refresh_models(view: &Shared, model: String, effort: String) {
                 view.borrow_mut().models = models;
                 select("model").set_value(if valid { &model } else { "" });
                 select("model").set_disabled(false);
+                render_model_cards(&view);
                 render_efforts(&view, &effort, false);
                 let available = valid && !select("effort").value().is_empty();
-                element("model-status").set_text_content(Some(if available {"Live catalog checked. Refreshes every minute while Settings is open; checked again on Save and before inference."} else {"The saved model or effort is unavailable. Choose from the current options; no automatic substitution will be made."}));
+                element("model-status").set_text_content(Some(if available {
+                    "Up to date. Save to use this choice."
+                } else {
+                    "Your saved choice is no longer available. Open the picker to choose another."
+                }));
             }
             Err(e) => {
                 view.borrow_mut().models.clear();
+                render_model_cards(&view);
+                render_effort_options(&view);
+                render_intelligence_summary(&view);
                 model_option("model", "", "Model catalog unavailable");
                 element("effort").set_text_content(None);
                 model_option("effort", "", "Unavailable");
@@ -575,9 +852,23 @@ fn refresh_models(view: &Shared, model: String, effort: String) {
                 )));
             }
         }
+        if document()
+            .active_element()
+            .is_some_and(|e| e.tag_name() == "BODY")
+            && let Some(id) = focus
+            && let Some(control) = document().get_element_by_id(&id)
+        {
+            let _ = control.unchecked_into::<web_sys::HtmlElement>().focus();
+        }
     });
 }
 fn open_panel(view: &Shared) {
+    if !view.borrow().snapshot.settings.onboarding_complete {
+        let _ = element("appearance-section").set_attribute("open", "");
+        let _ = element("voice-section").set_attribute("open", "");
+    }
+    close_intelligence_picker();
+    input("model-search").set_value("");
     let _ = element("reset-memory-confirm").set_attribute("hidden", "");
     element("reset-memory-status").set_text_content(None);
     let s = view.borrow().snapshot.settings.clone();
@@ -624,9 +915,9 @@ fn open_panel(view: &Shared) {
     let supported = view.borrow().snapshot.desktop_launch_supported;
     let _ = element("open-desktop").toggle_attribute_with_force("disabled", !supported);
     element("desktop-launch-description").set_text_content(Some(if supported {
-        "Launch in the background. The bridge runs independently."
+        "Open Codex / ChatGPT in the background too."
     } else {
-        "Available on macOS. The bridge runs independently here."
+        "Opening Codex / ChatGPT automatically is available on macOS."
     }));
     input("automatic-updates").set_checked(s.automatic_updates);
     input("key").set_value("");
@@ -636,7 +927,7 @@ fn open_panel(view: &Shared) {
         "Stored in your OS keychain"
     });
     element("heading").set_text_content(Some(if s.onboarding_complete {
-        "Your companion"
+        "Settings"
     } else {
         "Meet your companion"
     }));
@@ -1046,8 +1337,16 @@ pub fn start() -> Result<(), JsValue> {
     });
     on(element("refresh-usage").as_ref(), "click", |_| {
         spawn_local(async {
-            if let Err(e) = call("refresh_usage", json!({})).await {
-                message(e);
+            match call("refresh_usage", json!({})).await {
+                Err(e) => message(e),
+                Ok(_) => {
+                    if element("error")
+                        .text_content()
+                        .is_some_and(|text| text.starts_with("Usage unavailable:"))
+                    {
+                        element("error").set_text_content(None);
+                    }
+                }
             }
         });
     });
@@ -1084,7 +1383,44 @@ pub fn start() -> Result<(), JsValue> {
     on(window().as_ref(), "notdot-settings", move |_| {
         open_panel(&target)
     });
+    let updates_view = view.clone();
+    on(window().as_ref(), "notdot-updates", move |_| {
+        open_panel(&updates_view);
+        let section = element("startup-section");
+        let _ = section.set_attribute("open", "");
+        element("check-updates").scroll_into_view();
+        let _ = element("check-updates")
+            .dyn_into::<web_sys::HtmlElement>()
+            .map(|button| button.focus());
+    });
     let target = view.clone();
+    let focus_view = view.clone();
+    on(document().as_ref(), "keydown", move |event| {
+        if let Ok(key) = event.dyn_into::<web_sys::KeyboardEvent>()
+            && matches!(
+                key.key().as_str(),
+                "Tab"
+                    | "Enter"
+                    | " "
+                    | "Escape"
+                    | ","
+                    | "ArrowUp"
+                    | "ArrowDown"
+                    | "ArrowLeft"
+                    | "ArrowRight"
+            )
+        {
+            focus_view.borrow_mut().keyboard_navigation = true;
+        }
+    });
+    let focus_view = view.clone();
+    on(document().as_ref(), "pointerdown", move |_| {
+        focus_view.borrow_mut().keyboard_navigation = false;
+    });
+    let focus_view = view.clone();
+    on(window().as_ref(), "blur", move |_| {
+        focus_view.borrow_mut().keyboard_navigation = false;
+    });
     on(window().as_ref(), "keydown", move |e| {
         if let Ok(e) = e.dyn_into::<web_sys::KeyboardEvent>() {
             let modal = dialog("panel").open()
@@ -1156,12 +1492,13 @@ pub fn start() -> Result<(), JsValue> {
     on(element("authorize-key").as_ref(), "click", |_| {
         let provider = select("provider").value();
         let _ = element("authorize-key").set_attribute("disabled", "");
-        element("key-access-status").set_text_content(Some("Waiting for OS keychain permission…"));
+        element("key-access-status")
+            .set_text_content(Some("Waiting for your computer to allow key access…"));
         spawn_local(async move {
             let result = call("authorize_voice_key", json!({"provider":provider})).await;
             let _ = element("authorize-key").remove_attribute("disabled");
             match result {
-                Ok(_) => message("Voice key authorized for this session."),
+                Ok(_) => message("Your saved key is ready."),
                 Err(e) => message(e),
             }
         });
@@ -1307,13 +1644,40 @@ pub fn start() -> Result<(), JsValue> {
             }
         });
     });
+    on(element("panel-drag").as_ref(), "pointerdown", |event| {
+        if let Ok(pointer) = event.dyn_into::<web_sys::MouseEvent>()
+            && pointer.button() == 0
+        {
+            pointer.prevent_default();
+            spawn_local(async {
+                let _ = JsFuture::from(drag()).await;
+            });
+        }
+    });
+    for field in [
+        "name",
+        "daily-limit",
+        "followup-gap",
+        "quiet-start",
+        "quiet-end",
+    ] {
+        on(element(field).as_ref(), "invalid", |event| {
+            if let Some(target) = event
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                && let Ok(Some(section)) = target.closest("details.settings-section")
+            {
+                let _ = section.set_attribute("open", "");
+            }
+        });
+    }
     on(element("settings").as_ref(), "keydown", |event| {
         if let Ok(key) = event.dyn_into::<web_sys::KeyboardEvent>()
             && key.key() == "Enter"
             && !key
                 .target()
                 .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-                .is_some_and(|e| e.tag_name() == "BUTTON")
+                .is_some_and(|e| matches!(e.tag_name().as_str(), "BUTTON" | "SUMMARY"))
         {
             key.prevent_default();
         }
@@ -1322,17 +1686,64 @@ pub fn start() -> Result<(), JsValue> {
     let models_view = view.clone();
     on(element("default-model").as_ref(), "click", move |_| {
         select("model").set_value("gpt-6.1-terra");
+        render_model_cards(&models_view);
         render_efforts(&models_view, "medium", false);
         element("model-status").set_text_content(Some("Terra · Medium selected. Save to apply."));
     });
+    on(element("intelligence-section").as_ref(), "toggle", |_| {
+        let open = element("intelligence-section").has_attribute("open");
+        let _ = element("intelligence-toggle")
+            .set_attribute("aria-expanded", if open { "true" } else { "false" });
+        if open {
+            let _ = input("model-search").focus();
+        }
+    });
+    on(element("intelligence-done").as_ref(), "click", |_| {
+        close_intelligence_picker();
+        let _ = element("intelligence-toggle")
+            .unchecked_into::<web_sys::HtmlElement>()
+            .focus();
+    });
+    on(
+        element("intelligence-picker").as_ref(),
+        "keydown",
+        |event| {
+            if let Ok(key) = event.dyn_into::<web_sys::KeyboardEvent>()
+                && key.key() == "Escape"
+            {
+                key.prevent_default();
+                key.stop_propagation();
+                close_intelligence_picker();
+                let _ = element("intelligence-toggle")
+                    .unchecked_into::<web_sys::HtmlElement>()
+                    .focus();
+            }
+        },
+    );
     let models_view = view.clone();
-    on(element("model").as_ref(), "change", move |_| {
-        let effort = select("effort").value();
-        render_efforts(&models_view, &effort, true);
+    on(element("model-search").as_ref(), "input", move |_| {
+        filter_model_cards(&models_view)
     });
     let models_view = view.clone();
-    on(element("effort").as_ref(), "change", move |_| {
-        render_effort_description(&models_view)
+    on(element("model-options").as_ref(), "change", move |event| {
+        if let Some(radio) = event
+            .target()
+            .and_then(|t| t.dyn_into::<HtmlInputElement>().ok())
+        {
+            select("model").set_value(&radio.value());
+            let effort = select("effort").value();
+            render_efforts(&models_view, &effort, true);
+        }
+    });
+    let models_view = view.clone();
+    on(element("effort-options").as_ref(), "change", move |event| {
+        if let Some(radio) = event
+            .target()
+            .and_then(|t| t.dyn_into::<HtmlInputElement>().ok())
+        {
+            select("effort").set_value(&radio.value());
+            render_effort_description(&models_view);
+        }
     });
     let models_view = view.clone();
     on(element("refresh-models").as_ref(), "click", move |_| {
@@ -1604,15 +2015,7 @@ pub fn start() -> Result<(), JsValue> {
                     } else {
                         None
                     };
-                    element("wake-status").set_text_content(Some(&format!(
-                        "{}{}",
-                        snapshot.wake["phase"].as_str().unwrap_or("disabled"),
-                        snapshot.wake["message"]
-                            .as_str()
-                            .filter(|s| !s.is_empty())
-                            .map(|s| format!(": {s}"))
-                            .unwrap_or_default()
-                    )));
+                    element("wake-status").set_text_content(snapshot.wake["message"].as_str());
                     let _ = element("orb").set_attribute(
                         "title",
                         if snapshot.settings.microphone_muted {
@@ -1674,7 +2077,7 @@ pub fn start() -> Result<(), JsValue> {
                     let _ = element("authorize-key")
                         .toggle_attribute_with_force("hidden", snapshot.key_authorized);
                     if !element("authorize-key").has_attribute("disabled") {
-                        element("key-access-status").set_text_content(Some(if snapshot.key_authorized {"Voice key ready. Reused securely in memory for this session."} else if snapshot.key_checking {"Checking saved key without opening a password dialog…"} else {"Authorize a saved key if needed, or enter a new key above. Background checks never ask for a password."}));
+                        element("key-access-status").set_text_content(Some(if snapshot.key_authorized {"Your saved key is ready."} else if snapshot.key_checking {"Checking your saved key…"} else {"Allow access to your saved key if needed, or enter a new one above."}));
                     }
                     element("memory-status")
                         .set_text_content(snapshot.learning["message"].as_str());
@@ -1886,6 +2289,7 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
             && v.snapshot.window_visible
             && now - v.last_frame >= if reduced { 100. } else { 33. }
         {
+            let frame_seconds = (now - v.last_frame) / 1000.;
             v.last_frame = now;
             let w = canvas.client_width() as f64;
             let h = canvas.client_height() as f64;
@@ -1930,11 +2334,17 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                 }
             }
             let energy = (level.rms * 4.5).min(1.);
+            let speech_target = if mode == visual_state::Mode::Speaking {
+                if level.metered { energy } else { 0.25 }
+            } else {
+                0.
+            };
+            v.speech_energy =
+                visual_state::smooth_speech(v.speech_energy, speech_target, frame_seconds);
             let target = match mode {
                 visual_state::Mode::Thinking => 0.65,
-                visual_state::Mode::Speaking | visual_state::Mode::Listening => {
-                    0.22 + energy * 0.78
-                }
+                visual_state::Mode::Speaking => 0.22 + v.speech_energy * 0.78,
+                visual_state::Mode::Listening => 0.22 + energy * 0.78,
                 _ => 0.08,
             };
             v.amplitude += (target - v.amplitude) * 0.22;
@@ -1945,9 +2355,10 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
             };
             let time = if reduced { 0. } else { now / 1000. };
             let scale = match mode {
-                visual_state::Mode::Speaking | visual_state::Mode::Listening => {
-                    1. + energy * if reduced { 0.035 } else { 0.12 }
+                visual_state::Mode::Speaking => {
+                    1. + v.speech_energy * if reduced { 0.01 } else { 0.07 }
                 }
+                visual_state::Mode::Listening => 1. + energy * if reduced { 0.035 } else { 0.12 },
                 visual_state::Mode::Thinking => {
                     1. + if reduced {
                         0.
@@ -1976,9 +2387,24 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                     hue,
                     mode,
                     reduced,
+                    speech_energy: v.speech_energy,
                 },
                 &level,
             );
+            if v.keyboard_navigation
+                && document()
+                    .active_element()
+                    .is_some_and(|e| e == canvas.clone().into())
+            {
+                context.save();
+                context.set_line_width(1.5);
+                context.set_stroke_style_str("rgba(220,245,255,.7)");
+                context.begin_path();
+                let _ = context.arc(w / 2., h / 2., radius * 1.24, 0., TAU);
+                context.stroke();
+                context.restore();
+            }
+
             if matches!(
                 v.snapshot.quota["level"].as_str(),
                 Some("warning" | "exhausted")
@@ -2114,7 +2540,7 @@ fn draw(c: &Context, x: f64, y: f64, r: f64, t: f64, hue: f64, amp: f64) {
     for i in 0..=180 {
         let a = i as f64 / 180. * TAU;
         let rr =
-            r * (1.85 + 0.035 * (a * 9. + t * 1.4).sin() + amp * 0.11 * (a * 5. - t * 2.).sin());
+            r * (1.85 + 0.035 * (a * 3. + t * 0.7).sin() + amp * 0.06 * (a * 2. - t * 0.8).sin());
         let (px, py) = (x + a.cos() * rr, y + a.sin() * rr);
         if i == 0 {
             c.move_to(px, py)
@@ -2129,7 +2555,8 @@ fn draw(c: &Context, x: f64, y: f64, r: f64, t: f64, hue: f64, amp: f64) {
     c.begin_path();
     for i in 0..=120 {
         let a = i as f64 / 120. * TAU;
-        let rr = r * (1. + amp * (0.12 * (a * 3. + t).sin() + 0.08 * (a * 5. - t * 1.4).cos()));
+        let rr =
+            r * (1. + amp * (0.08 * (a * 2. + t * 0.7).sin() + 0.05 * (a * 3. - t * 0.8).cos()));
         let (px, py) = (a.cos() * rr, a.sin() * rr);
         if i == 0 {
             c.move_to(px, py)
@@ -2242,7 +2669,7 @@ async fn review_followups() -> Result<(), String> {
         for (label, action) in [
             ("Allow spoken check-in", "allow"),
             ("Snooze one hour", "snooze"),
-            ("Done / dismiss", "dismiss"),
+            ("Dismiss", "dismiss"),
         ] {
             if action == "allow" && e["permitted"] == true {
                 continue;
@@ -2269,7 +2696,7 @@ async fn review_memories() -> Result<(), String> {
     container.set_text_content(None);
     if let Some(records) = records.as_array() {
         if records.is_empty() {
-            container.set_text_content(Some("No saved notes"));
+            container.set_text_content(Some("No saved memories yet."));
         }
         for note in records {
             let card = document().create_element("article").map_err(js_error)?;
@@ -2281,9 +2708,11 @@ async fn review_memories() -> Result<(), String> {
             let lineage = note["lineage"].as_array().map_or(0, Vec::len);
             origin.set_text_content(Some(&format!(
                 "{}{}",
-                note["metadata"]["origin"].as_str().unwrap_or("Saved note"),
+                note["metadata"]["origin"]
+                    .as_str()
+                    .unwrap_or("Saved memory"),
                 if lineage > 0 {
-                    format!(" · {lineage} source links")
+                    format!(" · based on {lineage} saved notes")
                 } else {
                     String::new()
                 }
@@ -2302,14 +2731,23 @@ async fn review_memories() -> Result<(), String> {
             let id = note["id"].as_str().ok_or("Memory ID missing")?;
             let state = document().create_element("p").map_err(js_error)?;
             state.set_class_name("hint");
+            let confidence = note["metadata"]["confidence"]
+                .as_str()
+                .and_then(|s| s.parse::<f64>().ok())
+                .filter(|n| n.is_finite() && (0. ..=1.).contains(n))
+                .map(|n| format!(" · AI confidence estimate: {:.0}%", n * 100.))
+                .unwrap_or_default();
             state.set_text_content(Some(&format!(
-                "{} · confidence {} · updated {}",
-                note["metadata"]["learning_state"]
-                    .as_str()
-                    .unwrap_or("explicit note"),
-                note["metadata"]["confidence"]
-                    .as_str()
-                    .unwrap_or("user supplied"),
+                "{}{} · updated {}",
+                match note["metadata"]["learning_state"].as_str().unwrap_or("") {
+                    "provisional" => "Needs confirmation",
+                    "corroborated" => "Confirmed in more than one chat",
+                    "corrected" | "explicit correction" => "Corrected",
+                    "confirmed" | "confirmed by user" => "Confirmed by you",
+                    _ if note["metadata"]["origin"] == "semantic distillation" => "Summary",
+                    _ => "Saved by you",
+                },
+                confidence,
                 js_sys::Date::new(&JsValue::from_f64(
                     note["updated_at_unix_ms"].as_f64().unwrap_or(0.)
                 ))
@@ -2358,6 +2796,7 @@ struct ActivityFrame {
     hue: f64,
     mode: visual_state::Mode,
     reduced: bool,
+    speech_energy: f64,
 }
 fn draw_activity(c: &Context, frame: ActivityFrame, level: &audio_meter::Level) {
     let ActivityFrame {
@@ -2367,6 +2806,7 @@ fn draw_activity(c: &Context, frame: ActivityFrame, level: &audio_meter::Level) 
         hue,
         mode,
         reduced,
+        speech_energy,
     } = frame;
     use visual_state::Mode;
     c.save();
@@ -2381,7 +2821,33 @@ fn draw_activity(c: &Context, frame: ActivityFrame, level: &audio_meter::Level) 
             let _ = c.arc(x, y, r * 2.02, a, a + 0.06);
             c.stroke();
         }
-    } else if matches!(mode, Mode::Speaking | Mode::Listening) {
+    } else if mode == Mode::Speaking {
+        for layer in 0..2 {
+            c.set_line_width(if layer == 0 { 2.2 } else { 1.2 });
+            c.set_shadow_color(&format!("hsla({hue},85%,65%,.4)"));
+            c.set_shadow_blur(if reduced { 0. } else { 10. });
+            c.set_stroke_style_str(&format!(
+                "hsla({hue},85%,65%,{})",
+                0.30 + speech_energy * 0.25
+            ));
+            c.set_fill_style_str(&format!("hsla({hue},75%,60%,.025)"));
+            c.begin_path();
+            for i in 0..=180 {
+                let angle = i as f64 / 180. * TAU;
+                let radius =
+                    r * visual_state::speaking_shell(angle, t, speech_energy, layer, reduced);
+                let (px, py) = (x + angle.cos() * radius, y + angle.sin() * radius);
+                if i == 0 {
+                    c.move_to(px, py);
+                } else {
+                    c.line_to(px, py);
+                }
+            }
+            c.close_path();
+            c.fill();
+            c.stroke();
+        }
+    } else if mode == Mode::Listening {
         c.set_line_width(3.);
         c.set_stroke_style_str(&format!("hsla({hue},90%,48%,.9)"));
         for i in 0..48 {

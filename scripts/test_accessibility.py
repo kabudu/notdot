@@ -48,3 +48,38 @@ class Accessibility(unittest.TestCase):
     def test_production_markup_has_no_conversation_composer(self):
         self.assertFalse(any(t=='textarea' or a.get('id')in ('composer','text','reply') for t,a in self.markup.tags))
         self.assertIn('prefers-reduced-motion',(ROOT/'style.css').read_text())
+
+    def test_settings_are_native_disclosures_and_intelligence_has_no_visible_selects(self):
+        sections=[a for t,a in self.markup.tags if t=='details' and 'settings-section' in a.get('class','').split()]
+        self.assertEqual(len(sections),9)
+        self.assertTrue(all('open' not in a for a in sections))
+        for ident in ('model','effort'):
+            control=next(a for t,a in self.markup.tags if a.get('id')==ident)
+            self.assertIn('hidden',control)
+            self.assertEqual(control['aria-hidden'],'true')
+        title=next(a for t,a in self.markup.tags if a.get('id')=='intelligence-toggle')
+        self.assertEqual(title['aria-controls'],'intelligence-picker')
+
+    def test_canvas_focus_never_draws_a_rectangular_frame(self):
+        css=(ROOT/'style.css').read_text()
+        rules=re.findall(r'canvas:focus-visible\{([^}]+)',css)
+        self.assertTrue(rules)
+        for rule in rules:
+            self.assertIn('outline:none',rule)
+            self.assertIn('box-shadow:none',rule)
+        self.assertTrue(any(a.get('id')=='panel-drag' for _,a in self.markup.tags))
+
+    def test_voice_icons_share_the_same_coordinate_system_and_size(self):
+        class Icons(HTMLParser):
+            def __init__(self,text):
+                super().__init__();self.button=None;self.icons={};self.feed(text)
+            def handle_starttag(self,tag,attrs):
+                attrs=dict(attrs)
+                if tag=='button':self.button=attrs.get('id')
+                if tag=='svg' and self.button in ('voice-toggle','preview-voice'):
+                    self.icons[self.button]=(attrs.get('viewbox'),attrs.get('width'),attrs.get('height'))
+            def handle_endtag(self,tag):
+                if tag=='button':self.button=None
+        icons=Icons((ROOT/'index.html').read_text()).icons
+        self.assertEqual(icons['voice-toggle'],('0 0 24 24','16','16'))
+        self.assertEqual(icons['voice-toggle'],icons['preview-voice'])

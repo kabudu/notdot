@@ -1,5 +1,7 @@
 # Desktop release readiness
 
+This page tracks the work needed before publishing a release. Items left open are still required. It is a developer checklist, not a list of promises that every feature is already verified.
+
 The repository remains private. GitHub Actions is disabled at repository level at the owner's request. Local validation is authoritative during private development; this is not a hosted-CI pass or public release. No tag, release, visibility change or binary publication is authorized by preparing this workflow.
 
 ## Runtime and startup
@@ -8,7 +10,9 @@ notdot owns a standalone Codex app-server child process and its persistent conve
 
 Official current documentation lists desktop installations for macOS, Windows and Linux: https://learn.chatgpt.com/docs/app and https://learn.chatgpt.com/docs/linux/linux-app. Availability does not prove notdot compatibility. Each platform's runtime/account/tools need a live acceptance test. `NOTDOT_CODEX_BIN` can select a native Codex executable; shell command shims such as codex.cmd are not a substitute for codex.exe on Windows. notdot never installs or redistributes the OpenAI runtime automatically.
 
-Startup defaults to manual. Sign-in startup is opt-in and uses Tauri autostart. With-Codex mode starts a hidden watcher at sign-in, scans process names/paths every five seconds and activates the companion when the desktop process is seen. A helper must already be running to observe another app's launch. This is not an OS facility that starts notdot out of nothing when Codex opens. Manually opening notdot always activates it. OS autostart can be disabled outside the app. macOS background desktop launch uses `open -g`; launching it is optional because the bridge operates independently. Automatic desktop launch on Windows/Linux is not implemented yet and must not be advertised.
+Startup defaults to manual. Sign-in startup is opt-in and uses Tauri autostart. With-Codex mode starts a hidden watcher at sign-in, scans process names/paths every five seconds and activates the companion when the desktop process is seen. A helper must already be running to observe another app's launch. This is not an OS facility that starts notdot out of nothing when Codex opens. Manually opening notdot always activates it.
+
+OS autostart can be disabled outside the app. macOS background desktop launch uses `open -g`; launching it is optional because the bridge operates independently. Automatic desktop launch on Windows/Linux is not implemented yet and must not be advertised.
 
 ## Updater contract
 

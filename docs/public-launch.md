@@ -4,7 +4,7 @@ Preparation does not change repository visibility or enable automation. The curr
 
 - [x] Apache-2.0 first-party licence and package metadata; retain third-party notices.
 - [x] Contributor, conduct and security policies; concise README and static site source.
-- [ ] Record and verify real voice demo, captions, transcript and README player (see demo.md).
+- [ ] Re-record the real voice exchange in a quiet environment, lightly clean the audio, then add captions, transcript and website/README embeds (see demo.md).
 - [ ] Enable and verify GitHub private vulnerability reporting once the repository is public; current private-repo API returns 404. Replace the interim reporting instructions.
 - [ ] Review full Git history and tracked assets for secrets, personal data and redistribution rights.
 - [ ] Complete per-platform binary licence inventories and existing native acceptance/release gates before binary publication.

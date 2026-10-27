@@ -52,7 +52,7 @@ impl Learning {
                 {
                     let mut s = report.lock().expect("learning status");
                     s.phase = "learning".into();
-                    s.message = "Reviewing useful context in the background…".into();
+                    s.message = "Checking this chat for useful details to remember…".into();
                 }
                 let current_selection = selected.borrow_and_update().clone();
                 let result = async {
@@ -87,14 +87,14 @@ impl Learning {
                         client.as_ref().expect("learning client initialized").analyze_with_selection(&cwd, &prompt, memory::schema(), std::future::pending(), &current_selection).await
                     };
                     let response = tokio::select! {
-                        result = tokio::time::timeout(std::time::Duration::from_secs(90), run) => result.map_err(|_| "Memory analysis timed out".to_string()).and_then(|r|r),
-                        _ = cancel => Err("Memory learning cancelled".into()),
-                        _ = selected.changed() => Err("Memory model selection changed".into())
+                        result = tokio::time::timeout(std::time::Duration::from_secs(90), run) => result.map_err(|_| "Checking memories took too long. Your chat still works.".to_string()).and_then(|r|r),
+                        _ = cancel => Err("Saving memories was cancelled".into()),
+                        _ = selected.changed() => Err("The model changed while memories were being checked".into())
                     };
                     if response.is_err() && let Some(bridge) = client.take() { bridge.shutdown().await; }
                     let response = response?;
                     let batch: LearningBatch = serde_json::from_str(&response)
-                        .map_err(|_| "Memory analysis returned invalid structured notes")?;
+                        .map_err(|_| "The AI returned notes that could not be saved. Your chat still works.")?;
                     ledger.apply_learning(&plan, batch).await
                 }
                 .await;
@@ -110,16 +110,14 @@ impl Learning {
                         s.phase = "idle".into();
                         s.retained += count;
                         s.message = if count == 0 {
-                            "Memory review complete; no new automatic notes were needed.".into()
+                            "Memory check finished. No new details needed saving.".into()
                         } else {
-                            format!(
-                                "Memory review retained {count} source-linked notes or digests."
-                            )
+                            format!("Saved or updated {count} memories and summaries.")
                         };
                     }
                     Err(e) => {
                         s.phase = "error".into();
-                        s.message = format!("Memory learning unavailable: {e}");
+                        s.message = format!("Could not update memories: {e}");
                     }
                 }
             }
@@ -149,13 +147,13 @@ impl Learning {
         let mut s = self.status.lock().expect("learning status").clone();
         if self.memory.learning_ticket().is_none() {
             s.phase = "off".into();
-            s.message="Ledger saving and recall are off. Existing notes and conversation history are kept.".into();
+            s.message="Memory is off. Existing memories and chat history are kept, but saved memories are not used for replies.".into();
         } else if s.message.is_empty() {
-            s.message="Automatically learn useful context after completed interactions. Uses additional calls with your selected model.".into();
+            s.message="Memory is on. Useful details can be saved after each reply. This uses extra AI requests.".into();
         }
         if s.skipped > 0 {
             s.message.push_str(&format!(
-                " {} interactions skipped because the learning queue was full.",
+                " {} chats were not checked for memories because notdot was busy.",
                 s.skipped
             ));
         }
@@ -227,7 +225,7 @@ impl Learning {
         let ticket = self
             .memory
             .learning_ticket()
-            .ok_or("Enable learning and memory before distilling notes")?;
+            .ok_or("Turn on memory before tidying notes")?;
         self.enqueue(Job {
             ticket,
             source: None,
@@ -241,7 +239,7 @@ impl Learning {
         if self.sender.try_send(job).is_err() {
             let mut s = self.status.lock().expect("learning status");
             s.skipped += 1;
-            s.message = "Learning queue is full; this interaction was not queued.".into();
+            s.message = "notdot is busy. This chat was not added to the memory review.".into();
         }
     }
 }

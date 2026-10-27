@@ -113,9 +113,7 @@ async fn check(app: &tauri::AppHandle, updates: &Updates) -> Result<(), String> 
             .map_err(|e| e.to_string())?
             .check()
             .await
-            .map_err(|e| {
-                format!("Update feed unavailable: {e}. Check your connection and the published release feed.")
-            })?;
+            .map_err(|_| "Couldn’t check for updates. Check your connection and try again. Updates may not be published yet.".to_string())?;
         if let Some(update) = &update {
             validate_source(update)?;
         }

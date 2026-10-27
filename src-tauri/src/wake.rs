@@ -549,7 +549,7 @@ impl Worker {
                 .into();
             }
             if !self.failed {
-                i.status.message = if !config.enabled { "Wake listening is off." } else if config.muted { "Microphone is muted." } else if pending && allowed { "Request captured; preparing response." } else { "Wake listening is paused while notdot is busy, cooling down or Settings is open." }.into();
+                i.status.message = if !config.enabled { "Wake listening is off." } else if config.muted { "Microphone is muted." } else if pending && allowed { "Request recorded. Preparing a reply." } else { "Listening is paused while notdot answers, takes a short break or Settings is open." }.into();
             }
             i.status.rms = 0.;
             return;
@@ -713,7 +713,7 @@ impl Worker {
         }
         .into();
         if self.capture.is_none() {
-            i.status.message = format!("Listening locally for {}.", i.config.phrase);
+            i.status.message = format!("Listening on this computer for {}.", i.config.phrase);
         }
         i.status.rms = rms;
         false
