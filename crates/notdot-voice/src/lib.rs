@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 //! Voice-provider boundary. Providers own HTTP protocols and audio formats; the app owns credentials.
 pub mod quota;
+pub mod realtime;
 pub mod usage;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -29,6 +30,7 @@ pub struct AudioClip {
 pub struct ProviderInfo {
     pub id: &'static str,
     pub name: &'static str,
+    pub streaming_transcription: bool,
 }
 /// Implement this interface and register a factory to add a backend. No frontend protocol changes required.
 #[async_trait]
@@ -42,6 +44,16 @@ pub trait VoiceBackend: Send + Sync {
     }
     async fn voices(&self, search: &str, cursor: Option<&str>) -> Result<VoicePage, VoiceError>;
     async fn transcribe(&self, clip: AudioClip) -> Result<String, VoiceError>;
+    async fn start_transcription(
+        &self,
+        _sample_rate: u32,
+    ) -> Result<Box<dyn realtime::StreamingTranscriber>, VoiceError> {
+        Err(VoiceError::new(
+            VoiceErrorKind::Unsupported,
+            "This voice backend uses batch transcription",
+        ))
+    }
+
     async fn synthesize(&self, text: &str, voice: &str) -> Result<AudioClip, VoiceError>;
     async fn preview(&self, voice: &str) -> Result<AudioClip, VoiceError>;
 }
@@ -49,6 +61,7 @@ pub fn providers() -> Vec<ProviderInfo> {
     vec![ProviderInfo {
         id: "elevenlabs",
         name: "ElevenLabs",
+        streaming_transcription: true,
     }]
 }
 pub fn provider(
@@ -227,7 +240,16 @@ impl VoiceBackend for ElevenLabs {
         ProviderInfo {
             id: "elevenlabs",
             name: "ElevenLabs",
+            streaming_transcription: true,
         }
+    }
+    async fn start_transcription(
+        &self,
+        sample_rate: u32,
+    ) -> Result<Box<dyn realtime::StreamingTranscriber>, VoiceError> {
+        Ok(Box::new(
+            realtime::ElevenStream::connect(&self.endpoint, self.key.clone(), sample_rate).await?,
+        ))
     }
     async fn usage(&self) -> Result<UsageReport, VoiceError> {
         let response = self

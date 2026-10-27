@@ -7,6 +7,7 @@ mod quota;
 mod reset;
 mod startup;
 mod system_speech;
+mod transcription;
 mod updates;
 mod wake;
 use notdot_core::{bridge::Bridge, memory::Memory, settings::Settings};
@@ -61,6 +62,7 @@ struct AppState {
     waiting_for_desktop: AtomicBool,
     quota: Arc<quota::Monitor>,
     wake: wake::Wake,
+    streaming: transcription::Streaming,
     learning: learning::Learning,
     initiative: initiative::Initiative,
     credentials: Arc<credentials::Credentials>,
@@ -97,7 +99,7 @@ async fn report_visual(state: State<'_, Arc<AppState>>, report: Value) -> Result
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_millis() as u64;
-    let current = json!({"mode":mode,"rms":rms,"reduced":report["reduced"].as_bool().unwrap_or(false),"metered":report["metered"].as_bool().unwrap_or(false),"frames":report["frames"].as_u64().unwrap_or(0),"timestamp_ms":timestamp});
+    let current = json!({"mode":mode,"rms":rms,"reduced":report["reduced"].as_bool().unwrap_or(false),"metered":report["metered"].as_bool().unwrap_or(false),"frames":report["frames"].as_u64().unwrap_or(0),"timestamp_ms":timestamp,"capture_feedback_events":report["capture_feedback_events"].as_u64().unwrap_or(0)});
     if mode == "speaking" {
         log.peak_speaking_rms = log.peak_speaking_rms.max(rms);
     }
@@ -148,6 +150,15 @@ async fn snapshot(
         window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
     snapshot.updates = app.state::<Arc<updates::Updates>>().status();
     snapshot.wake = state.wake.status();
+    #[cfg(debug_assertions)]
+    if is_qa(&app)
+        && let Ok(dir) = app.path().app_data_dir()
+    {
+        let _ = std::fs::write(
+            dir.join("voice-stream-status.json"),
+            serde_json::to_vec(&state.streaming.report().await).unwrap_or_default(),
+        );
+    }
     // QA-only, bounded diagnostics. Never contains samples, transcripts or keys.
     #[cfg(debug_assertions)]
     if is_qa(&app)
@@ -181,15 +192,64 @@ async fn wake_activity(state: State<'_, Arc<AppState>>, ready: bool) -> Result<(
 }
 #[tauri::command]
 async fn transcribe_wake(state: State<'_, Arc<AppState>>, id: u64) -> Result<String, String> {
-    {
+    let (provider, generation, token, audio) = {
         let s = state.snapshot.lock().await;
         if s.active_turn.is_some() || s.phase != "idle" || s.settings.microphone_muted {
-            state.wake.ready(false);
-            return Err("Wake request cancelled while companion is busy or muted".into());
+            state.wake.pause_all();
+            return Err("Voice capture cancelled while companion is busy or muted".into());
         }
+        let token = state
+            .wake
+            .status()
+            .capture_token
+            .ok_or("Voice capture is no longer active")?;
+        let audio = state.wake.take(id)?;
+        (
+            s.settings.voice_provider.clone(),
+            state.quota.generation(),
+            token,
+            audio,
+        )
+    };
+    match state.streaming.take(&token).await {
+        Ok(Some(text)) => {
+            return quota::finish(&state, &provider, generation, "stt", Ok(text)).await;
+        }
+        Err(error) => return quota::finish(&state, &provider, generation, "stt", Err(error)).await,
+        Ok(None) => {}
     }
-    let audio = state.wake.take(id)?;
     transcribe_audio(&state, audio, "audio/wav".into()).await
+}
+
+#[tauri::command]
+fn capture_status(state: State<'_, Arc<AppState>>) -> wake::Status {
+    state.wake.status()
+}
+#[tauri::command]
+async fn start_capture(
+    state: State<'_, Arc<AppState>>,
+    token: String,
+    limit: u32,
+) -> Result<(), String> {
+    let s = state.snapshot.lock().await;
+    if s.phase != "idle"
+        || s.active_turn.is_some()
+        || !s.key_configured
+        || s.settings.microphone_muted
+    {
+        return Err("Voice capture is not ready".into());
+    }
+    state.wake.start_manual(&token, limit)
+}
+#[tauri::command]
+fn finish_capture(state: State<'_, Arc<AppState>>, token: String) -> Result<(), String> {
+    state.wake.finish_manual(&token)
+}
+#[tauri::command]
+async fn cancel_capture(state: State<'_, Arc<AppState>>, token: String) -> Result<(), String> {
+    state.wake.cancel_capture(&token)?;
+    state.streaming.cancel(&token).await;
+    Ok(())
 }
 
 async fn mute_microphone(state: &AppState, muted: bool) -> Result<(), String> {
@@ -197,7 +257,7 @@ async fn mute_microphone(state: &AppState, muted: bool) -> Result<(), String> {
     let mut settings = s.settings.clone();
     settings.microphone_muted = muted;
     // Stop capture immediately, including if persisting the mute preference fails.
-    state.wake.ready(false);
+    state.wake.pause_all();
     s.settings = settings;
     state.wake.configure(&s.settings);
     s.settings.save(&state.path)?;
@@ -751,7 +811,7 @@ async fn preview_voice(
         .voice_gate
         .try_acquire()
         .map_err(|_| "Voice service is busy")?;
-    state.wake.ready(false);
+    state.wake.pause_all();
     let generation = state.quota.generation();
     let result = backend(&state, Some(provider.clone()))
         .await?
@@ -782,7 +842,7 @@ async fn transcribe_audio(
         return Err("Microphone is muted".into());
     }
     let provider = state.snapshot.lock().await.settings.voice_provider.clone();
-    state.wake.ready(false);
+    state.wake.pause_all();
     let generation = state.quota.generation();
     let result = backend(state, Some(provider.clone()))
         .await?
@@ -798,7 +858,7 @@ async fn speak(state: State<'_, Arc<AppState>>, text: String) -> Result<EncodedA
         .map_err(|_| "Voice service is busy")?;
     let voice = state.snapshot.lock().await.settings.voice_id.clone();
     let provider = state.snapshot.lock().await.settings.voice_provider.clone();
-    state.wake.ready(false);
+    state.wake.pause_all();
     let generation = state.quota.generation();
     let result = backend(&state, Some(provider.clone()))
         .await?
@@ -910,6 +970,10 @@ fn main() {
             quota::refresh_usage,
             quota::announce_usage,
             wake_activity,
+            capture_status,
+            start_capture,
+            finish_capture,
+            cancel_capture,
             transcribe_wake,
             set_microphone_muted
         ])
@@ -941,7 +1005,8 @@ fn main() {
             } else {
                 app.path().resource_dir()?.join("wake")
             };
-            let wake = wake::Wake::new(models, &settings);
+            let (capture_events, capture_input) = tokio::sync::mpsc::channel(64);
+            let wake = wake::Wake::new(models, &settings, capture_events);
             let analysis_dir = dir.join("memory-analysis");
             std::fs::create_dir_all(&analysis_dir)?;
             let learning =
@@ -986,11 +1051,13 @@ fn main() {
                 waiting_for_desktop: AtomicBool::new(waiting_for_desktop),
                 quota: quota_monitor,
                 wake,
+                streaming: transcription::Streaming::default(),
                 learning,
                 initiative: initiative::Initiative::open(dir.join("followups.json"))
                     .map_err(std::io::Error::other)?,
             });
             app.manage(state.clone());
+            transcription::spawn(app.handle().clone(), state.clone(), capture_input);
             quota::spawn(state.clone());
             initiative::spawn(state.clone());
             // Restore silently off the UI thread. Explicit authorization belongs in Settings.

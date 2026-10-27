@@ -38,6 +38,27 @@ pub fn phrase(name: &str, name_only: bool) -> Result<String, String> {
         format!("Hey {name}")
     })
 }
+pub enum CaptureEvent {
+    Start {
+        id: u64,
+        token: String,
+        rate: u32,
+        manual: bool,
+    },
+    Audio {
+        token: String,
+        sequence: u64,
+        pcm: Vec<u8>,
+    },
+    End {
+        token: String,
+        valid: bool,
+        sequence: u64,
+    },
+    Cancel {
+        token: String,
+    },
+}
 #[derive(Clone, PartialEq, Eq)]
 struct Config {
     enabled: bool,
@@ -51,6 +72,9 @@ pub struct Status {
     pub message: String,
     pub rms: f32,
     pub request_id: Option<u64>,
+    pub capture_token: Option<String>,
+    pub manual: bool,
+    pub started_ms: u64,
     pub muted: bool,
     pub audio_frames: u64,
     pub peak_rms: f32,
@@ -65,12 +89,20 @@ struct Inner {
     lease: Option<Instant>,
     status: Status,
     pending: Option<(u64, Vec<u8>, Instant)>,
+    manual_token: Option<String>,
+    finish_requested: bool,
+    manual_limit: u32,
+    cancelled: notdot_core::request_cancel::Requests,
 }
 pub struct Wake {
     inner: Arc<Mutex<Inner>>,
 }
 impl Wake {
-    pub fn new(models: PathBuf, settings: &Settings) -> Self {
+    pub fn new(
+        models: PathBuf,
+        settings: &Settings,
+        events: tokio::sync::mpsc::Sender<CaptureEvent>,
+    ) -> Self {
         let config = config(settings);
         let inner = Arc::new(Mutex::new(Inner {
             status: Status::default(),
@@ -79,17 +111,24 @@ impl Wake {
             epoch: 0,
             lease: None,
             pending: None,
+            manual_token: None,
+            finish_requested: false,
+            manual_limit: 60,
+            cancelled: Default::default(),
         }));
         let weak = Arc::downgrade(&inner);
         std::thread::Builder::new()
             .name("notdot-wake".into())
             .spawn(move || {
-                let mut worker = Worker::default();
+                let mut worker = Worker {
+                    events: Some(events),
+                    ..Default::default()
+                };
                 while let Some(inner) = weak.upgrade() {
                     worker.tick(&models, &inner);
                     let delay = {
                         let i = inner.lock().expect("wake state");
-                        if i.config.enabled
+                        if (i.config.enabled || i.manual_token.is_some())
                             && !i.config.muted
                             && i.lease
                                 .is_some_and(|t| t.elapsed() < Duration::from_secs(3))
@@ -112,6 +151,8 @@ impl Wake {
     pub fn configure(&self, settings: &Settings) {
         let mut i = self.inner.lock().expect("wake state");
         i.config = config(settings);
+        i.manual_token = None;
+        i.finish_requested = false;
         i.revision = i.revision.wrapping_add(1);
         i.epoch = i.epoch.wrapping_add(1);
         i.lease = None;
@@ -123,17 +164,74 @@ impl Wake {
         if ready {
             i.lease = Some(Instant::now());
         } else {
+            // A delayed idle heartbeat must not cancel a newer manual click.
+            // Manual capture is cancelled through its scoped identity or lease expiry.
+            if i.manual_token.is_some() {
+                return;
+            }
             if i.lease.is_some() {
                 i.epoch = i.epoch.wrapping_add(1);
             }
             i.lease = None;
+            i.manual_token = None;
             i.pending = None;
             i.status.request_id = None;
         }
     }
+    pub fn pause_all(&self) {
+        let mut i = self.inner.lock().expect("wake state");
+        i.epoch = i.epoch.wrapping_add(1);
+        i.lease = None;
+        i.manual_token = None;
+        i.pending = None;
+        i.status.request_id = None;
+    }
+    pub fn start_manual(&self, token: &str, limit: u32) -> Result<(), String> {
+        notdot_core::request_cancel::Requests::validate(token)?;
+        if ![12, 60].contains(&limit) {
+            return Err("Invalid recording limit".into());
+        }
+        let mut i = self.inner.lock().expect("wake state");
+        if i.config.muted || i.cancelled.is_cancelled(token) {
+            return Err("Voice capture cancelled or muted".into());
+        }
+        i.manual_token = Some(token.to_owned());
+        i.manual_limit = limit;
+        i.finish_requested = false;
+        i.pending = None;
+        i.status.request_id = None;
+        i.epoch = i.epoch.wrapping_add(1);
+        i.lease = Some(Instant::now());
+        Ok(())
+    }
+    pub fn finish_manual(&self, token: &str) -> Result<(), String> {
+        let mut i = self.inner.lock().expect("wake state");
+        if i.manual_token.as_deref() != Some(token) {
+            return Err("Recording is no longer active".into());
+        }
+        i.finish_requested = true;
+        Ok(())
+    }
+    pub fn cancel_capture(&self, token: &str) -> Result<(), String> {
+        let mut i = self.inner.lock().expect("wake state");
+        i.cancelled.cancel(token)?;
+        let active = if let Some(active) = &i.manual_token {
+            active == token
+        } else {
+            i.status.capture_token.as_deref() == Some(token)
+        };
+        if active {
+            i.lease = None;
+            i.manual_token = None;
+            i.pending = None;
+            i.status.request_id = None;
+            i.epoch = i.epoch.wrapping_add(1);
+        }
+        Ok(())
+    }
     pub fn take(&self, id: u64) -> Result<Vec<u8>, String> {
         let mut i = self.inner.lock().expect("wake state");
-        if !i.config.enabled
+        if (!i.config.enabled && i.manual_token.is_none())
             || i.config.muted
             || !i
                 .lease
@@ -150,6 +248,7 @@ impl Wake {
             return Err("Wake request is no longer available".into());
         }
         let (_, bytes, _) = i.pending.take().expect("pending checked");
+        i.manual_token = None;
         i.epoch = i.epoch.wrapping_add(1);
         i.lease = None;
         i.status.request_id = None;
@@ -470,6 +569,7 @@ impl VoiceGate {
 #[derive(Default)]
 struct Capture {
     samples: Vec<f32>,
+    limit_secs: Option<u32>,
     total: usize,
     speech: usize,
     silence: usize,
@@ -492,7 +592,7 @@ impl Capture {
         if self.speech >= rate as usize / 5 && self.silence >= rate as usize * 6 / 5 {
             return End::Submit;
         }
-        if self.total >= (rate as usize * 30).min(4_000_000) {
+        if self.total >= (rate as usize * self.limit_secs.unwrap_or(30) as usize).min(4_000_000) {
             return if self.speech >= rate as usize / 5 {
                 End::Submit
             } else {
@@ -546,9 +646,98 @@ struct Worker {
     sequence: u64,
     cooldown: Option<Instant>,
     last_audio: Option<Instant>,
+    events: Option<tokio::sync::mpsc::Sender<CaptureEvent>>,
+    capture_token: Option<String>,
+    stream_packet: Vec<u8>,
+    stream_sequence: u64,
 }
 impl Worker {
+    fn event(&self, event: CaptureEvent) {
+        if let Some(sender) = &self.events {
+            let _ = sender.try_send(event);
+        }
+    }
+    fn begin_capture(
+        &mut self,
+        inner: &Mutex<Inner>,
+        rate: u32,
+        revision: u64,
+        epoch: u64,
+    ) -> bool {
+        let mut i = inner.lock().expect("wake state");
+        if i.revision != revision
+            || i.epoch != epoch
+            || i.config.muted
+            || (!i.config.enabled && i.manual_token.is_none())
+            || !i
+                .lease
+                .is_some_and(|t| t.elapsed() < Duration::from_secs(3))
+        {
+            return false;
+        }
+        self.sequence = self.sequence.wrapping_add(1);
+        let manual = i.manual_token.is_some();
+        let token = i
+            .manual_token
+            .clone()
+            .unwrap_or_else(|| format!("wake-{}", self.sequence));
+        self.capture_token = Some(token.clone());
+        self.stream_sequence = 0;
+        self.stream_packet.clear();
+        self.capture = Some(Capture {
+            limit_secs: Some(if manual { i.manual_limit } else { 30 }),
+            ..Default::default()
+        });
+        self.speech_gate
+            .as_mut()
+            .expect("speech gate initialized")
+            .reset();
+        i.status.capture_token = Some(token.clone());
+        i.status.manual = manual;
+        i.status.started_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64;
+        i.status.phase = "capturing".into();
+        i.status.message = "I'm listening. Speak your request; silence ends recording.".into();
+        drop(i);
+        self.event(CaptureEvent::Start {
+            id: self.sequence,
+            token,
+            rate,
+            manual,
+        });
+        true
+    }
+    fn stream_audio(&mut self, samples: &[f32], rate: u32) {
+        for sample in samples {
+            self.stream_packet
+                .extend_from_slice(&((sample.clamp(-1., 1.) * 32767.) as i16).to_le_bytes());
+        }
+        if self.stream_packet.len() >= rate as usize / 10 * 2 {
+            self.flush_stream();
+        }
+    }
+    fn flush_stream(&mut self) {
+        if self.stream_packet.is_empty() {
+            return;
+        }
+        if let Some(token) = &self.capture_token {
+            let event = CaptureEvent::Audio {
+                token: token.clone(),
+                sequence: self.stream_sequence,
+                pcm: std::mem::take(&mut self.stream_packet),
+            };
+            self.event(event);
+            self.stream_sequence = self.stream_sequence.wrapping_add(1);
+        }
+    }
     fn discard_capture(&mut self) {
+        if let Some(token) = self.capture_token.take() {
+            self.event(CaptureEvent::Cancel { token });
+        }
+        self.stream_packet.clear();
         if self.capture.take().is_some()
             && let Some(gate) = &mut self.speech_gate
         {
@@ -566,7 +755,7 @@ impl Worker {
         i.pending = None;
     }
     fn tick(&mut self, models: &Path, inner: &Mutex<Inner>) {
-        let (config, revision, epoch, allowed, pending) = {
+        let (config, revision, epoch, allowed, pending, manual) = {
             let i = inner.lock().expect("wake state");
             (
                 i.config.clone(),
@@ -575,10 +764,14 @@ impl Worker {
                 i.lease
                     .is_some_and(|t| t.elapsed() < Duration::from_secs(3)),
                 i.pending.is_some(),
+                i.manual_token.is_some(),
             )
         };
         if epoch != self.epoch {
             self.epoch = epoch;
+            if manual {
+                self.failed = false;
+            }
             self.mic = None;
             self.discard_capture();
             if let Some(d) = &mut self.detector {
@@ -599,13 +792,14 @@ impl Worker {
                 ..Status::default()
             };
         }
-        if !config.enabled
+        if (!config.enabled && !manual)
             || config.muted
             || !allowed
             || pending
             || self
                 .cooldown
                 .is_some_and(|t| t.elapsed() < Duration::from_millis(1800))
+                && !manual
         {
             if self.mic.take().is_some()
                 && let Some(d) = &mut self.detector
@@ -619,7 +813,7 @@ impl Worker {
                 i.status.request_id = None;
             }
             if !self.failed {
-                i.status.phase = if !config.enabled {
+                i.status.phase = if !config.enabled && !manual {
                     "disabled"
                 } else if config.muted {
                     "muted"
@@ -639,7 +833,7 @@ impl Worker {
         if self.failed {
             return;
         }
-        if self.detector.is_none() {
+        if self.detector.is_none() && !manual {
             inner.lock().expect("wake state").status.phase = "loading".into();
             match Detector::new(models, &config.phrase) {
                 Ok(d) => self.detector = Some(d),
@@ -669,6 +863,18 @@ impl Worker {
                     return;
                 }
             }
+        }
+        if manual
+            && self.capture.is_none()
+            && !self.begin_capture(
+                inner,
+                self.mic.as_ref().expect("mic initialized").rate,
+                revision,
+                epoch,
+            )
+        {
+            self.mic = None;
+            return;
         }
         if self
             .last_audio
@@ -728,7 +934,7 @@ impl Worker {
             let i = inner.lock().expect("wake state");
             if i.revision != revision
                 || i.epoch != epoch
-                || !i.config.enabled
+                || (!i.config.enabled && i.manual_token.is_none())
                 || i.config.muted
                 || !i
                     .lease
@@ -752,6 +958,7 @@ impl Worker {
         }
         let rms = energy(samples);
         if self.capture.is_some() {
+            self.stream_audio(samples, rate);
             let voiced = match self
                 .speech_gate
                 .as_mut()
@@ -765,7 +972,15 @@ impl Worker {
                 }
             };
             let capture = self.capture.as_mut().expect("capture initialized");
-            match capture.accept(samples, rate, voiced) {
+            let mut end = capture.accept(samples, rate, voiced);
+            if inner.lock().expect("wake state").finish_requested {
+                end = if capture.speech >= rate as usize / 5 {
+                    End::Submit
+                } else {
+                    End::Empty
+                };
+            }
+            match end {
                 End::Continue => {}
                 end => {
                     let wav = if matches!(end, End::Submit) {
@@ -773,9 +988,13 @@ impl Worker {
                     } else {
                         None
                     };
+                    self.flush_stream();
+                    let token = self.capture_token.take().expect("active capture token");
                     self.discard_capture();
                     self.mic = None;
-                    self.detector.as_mut().expect("detector").reset();
+                    if let Some(detector) = &mut self.detector {
+                        detector.reset();
+                    }
                     self.cooldown = Some(Instant::now());
                     let mut i = inner.lock().expect("wake state");
                     if i.revision != revision
@@ -784,19 +1003,29 @@ impl Worker {
                             .lease
                             .is_some_and(|t| t.elapsed() < Duration::from_secs(3))
                     {
+                        drop(i);
+                        self.event(CaptureEvent::Cancel { token });
                         return true;
                     }
                     if let Some(bytes) = wav {
-                        self.sequence = self.sequence.wrapping_add(1);
                         i.pending = Some((self.sequence, bytes, Instant::now()));
                         i.status.request_id = Some(self.sequence);
                         i.status.phase = "ready".into();
                     } else {
+                        i.manual_token = None;
                         i.status.phase = "paused".into();
                         i.status.message =
                             "No request heard. Say the wake phrase to try again.".into();
                     }
                     i.status.rms = 0.;
+                    i.finish_requested = false;
+                    let valid = i.pending.is_some();
+                    drop(i);
+                    self.event(CaptureEvent::End {
+                        token,
+                        valid,
+                        sequence: self.stream_sequence,
+                    });
                     return true;
                 }
             }
@@ -805,14 +1034,10 @@ impl Worker {
             .as_mut()
             .expect("detector")
             .accept(rate, samples)
+            && !self.begin_capture(inner, rate, revision, epoch)
         {
-            self.speech_gate
-                .as_mut()
-                .expect("speech gate initialized")
-                .reset();
-            self.capture = Some(Capture::default());
-            inner.lock().expect("wake state").status.message =
-                "I'm listening. Speak your request; silence ends recording.".into();
+            self.mic = None;
+            return true;
         }
         let mut i = inner.lock().expect("wake state");
         if i.revision != revision
@@ -968,7 +1193,9 @@ mod tests {
         let _models = MODEL_FIXTURE.lock().unwrap();
         let wake = isolated();
         wake.inner.lock().unwrap().pending = None;
+        let (events, mut stream_events) = tokio::sync::mpsc::channel(64);
         let mut worker = Worker {
+            events: Some(events),
             detector: Some(Detector::new(&models(), "Hey Ava").unwrap()),
             speech_gate: Some(speech::SpeechGate::new(&models()).unwrap()),
             ..Worker::default()
@@ -983,6 +1210,14 @@ mod tests {
             }
         }
         assert_eq!(wake.status().phase, "capturing");
+        assert!(matches!(
+            stream_events.try_recv().unwrap(),
+            CaptureEvent::Start { .. }
+        ));
+        assert!(
+            stream_events.try_recv().is_err(),
+            "background and wake audio must not be streamed"
+        );
         assert!(wake.inner.lock().unwrap().pending.is_none());
         assert!(
             worker.capture.as_ref().unwrap().samples.is_empty(),
@@ -1015,6 +1250,28 @@ mod tests {
         assert!(wake.take(id).is_err());
         assert!(worker.capture.is_none());
         assert!(worker.cooldown.is_some());
+        let mut next = 0;
+        let mut streamed = 0;
+        let mut ended = false;
+        while let Ok(event) = stream_events.try_recv() {
+            match event {
+                CaptureEvent::Audio { sequence, pcm, .. } => {
+                    assert_eq!(sequence, next);
+                    next += 1;
+                    streamed += pcm.len();
+                }
+                CaptureEvent::End {
+                    sequence, valid, ..
+                } => {
+                    assert_eq!(sequence, next);
+                    assert!(valid);
+                    ended = true;
+                }
+                _ => panic!("unexpected stream control event"),
+            }
+        }
+        assert!(ended);
+        assert_eq!(streamed, samples.len() * 2);
     }
     #[test]
     fn endpoint_requires_speech_then_silence_and_bounds_recording() {
@@ -1083,9 +1340,39 @@ mod tests {
                 epoch: 0,
                 lease: Some(Instant::now()),
                 status: Status::default(),
+                manual_token: None,
+                manual_limit: 60,
+                finish_requested: false,
+                cancelled: Default::default(),
                 pending: Some((42, vec![1, 2, 3], Instant::now())),
             })),
         }
+    }
+    #[test]
+    fn manual_capture_ignores_stale_idle_heartbeats_and_old_cancellation() {
+        let wake = isolated();
+        wake.configure(&Settings {
+            wake_enabled: false,
+            ..Default::default()
+        });
+        wake.start_manual("old", 60).unwrap();
+        wake.ready(false);
+        assert_eq!(
+            wake.inner.lock().unwrap().manual_token.as_deref(),
+            Some("old")
+        );
+        wake.cancel_capture("old").unwrap();
+        assert!(wake.start_manual("old", 60).is_err());
+        wake.start_manual("new", 60).unwrap();
+        wake.cancel_capture("old").unwrap();
+        assert_eq!(
+            wake.inner.lock().unwrap().manual_token.as_deref(),
+            Some("new")
+        );
+        assert!(wake.finish_manual("old").is_err());
+        wake.finish_manual("new").unwrap();
+        wake.pause_all();
+        assert!(wake.inner.lock().unwrap().manual_token.is_none());
     }
     #[test]
     fn mute_pause_expiry_and_rename_discard_pending_audio_and_takes_are_one_shot() {

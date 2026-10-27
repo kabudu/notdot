@@ -13,10 +13,12 @@ use web_sys::{
     HtmlInputElement,
 };
 #[wasm_bindgen(
-    inline_js = "export function invoke(c,a){return window.__TAURI__.core.invoke(c,a)} export function drag(){return window.__TAURI__.window.getCurrentWindow().startDragging()} export function resize(w,h){return window.__TAURI__.window.getCurrentWindow().setSize(new window.__TAURI__.dpi.LogicalSize(Math.min(w,screen.availWidth-32),Math.min(h,screen.availHeight-64)))}"
+    inline_js = "export function listenCapture(f){return window.__TAURI__.event.listen('voice-capture',e=>f(e.payload))} export function invoke(c,a){return window.__TAURI__.core.invoke(c,a)} export function drag(){return window.__TAURI__.window.getCurrentWindow().startDragging()} export function resize(w,h){return window.__TAURI__.window.getCurrentWindow().setSize(new window.__TAURI__.dpi.LogicalSize(Math.min(w,screen.availWidth-32),Math.min(h,screen.availHeight-64)))}"
 )]
 extern "C" {
     fn invoke(c: &str, a: JsValue) -> js_sys::Promise;
+    #[wasm_bindgen(js_name=listenCapture)]
+    fn listen_capture(f: &js_sys::Function) -> js_sys::Promise;
     fn drag() -> js_sys::Promise;
     fn resize(w: f64, h: f64) -> js_sys::Promise;
 }
@@ -108,6 +110,10 @@ struct View {
     speech_queue: speech_queue::SpeechQueue,
     speech_worker: bool,
     polling: bool,
+    native_manual: bool,
+    capture_token: Option<String>,
+    last_capture_cue: String,
+    capture_feedback_events: u64,
     last_poll_at: f64,
     generation: u64,
     last_frame: f64,
@@ -549,16 +555,16 @@ fn wake_ready(view: &Shared, snapshot: &Snapshot) -> bool {
     let v = view.borrow();
     snapshot.phase == "idle"
         && snapshot.window_visible
-        && snapshot.settings.wake_enabled
+        && (snapshot.settings.wake_enabled || v.native_manual)
         && !snapshot.settings.microphone_muted
         && snapshot.settings.onboarding_complete
         && snapshot.key_configured
         && !snapshot.key_checking
         && !snapshot.settings.voice_id.is_empty()
         && !v.voice_pending
-        && v.local_phase.is_none()
+        && (v.local_phase.is_none() || (v.native_manual && v.local_phase == Some("listening")))
         && v.recording.is_none()
-        && v.update_listening.is_none()
+        && (v.update_listening.is_none() || v.native_manual)
         && !dialog("panel").open()
         && !dialog("about").open()
         && !matches!(
@@ -898,6 +904,9 @@ fn refresh_models(view: &Shared, model: String, effort: String) {
     });
 }
 fn open_panel(view: &Shared) {
+    if view.borrow().capture_token.is_some() {
+        stop_audio(view);
+    }
     if !view.borrow().snapshot.settings.onboarding_complete {
         let _ = element("appearance-section").set_attribute("open", "");
         let _ = element("voice-section").set_attribute("open", "");
@@ -1020,6 +1029,12 @@ fn stop_audio(view: &Shared) {
         let _ = call("wake_activity", json!({"ready":false})).await;
     });
     let mut v = view.borrow_mut();
+    if let Some(token) = v.capture_token.take() {
+        spawn_local(async move {
+            let _ = call("cancel_capture", json!({"token":token})).await;
+        });
+    }
+    v.native_manual = false;
     if let Some(request) = v.request_id.take() {
         spawn_local(async move {
             let _ = call("stop", json!({"requestId":request})).await;
@@ -1180,6 +1195,8 @@ async fn submit_transcript(view: Shared, text: String, generation: u64) -> Resul
     if view.borrow().generation != generation {
         return Ok(());
     }
+    view.borrow_mut().capture_token = None;
+    view.borrow_mut().native_manual = false;
     let confirmation = view.borrow_mut().update_listening.take();
     if let Some(version) = confirmation {
         view.borrow_mut().local_phase = None;
@@ -1205,6 +1222,73 @@ async fn submit_transcript(view: Shared, text: String, generation: u64) -> Resul
     Ok::<(), String>(())
 }
 async fn voice(view: Shared) -> Result<(), String> {
+    if view.borrow().native_manual && view.borrow().local_phase == Some("listening") {
+        let token = view
+            .borrow()
+            .capture_token
+            .clone()
+            .ok_or("Recording is not ready")?;
+        call("finish_capture", json!({"token":token})).await?;
+        return Ok(());
+    }
+    let providers: Vec<Value> =
+        serde_wasm_bindgen::from_value(call("voice_providers", json!({})).await?)
+            .map_err(|e| e.to_string())?;
+    let selected = view.borrow().snapshot.settings.voice_provider.clone();
+    if !providers
+        .iter()
+        .any(|p| p["id"] == selected && p["streaming_transcription"] == true)
+    {
+        return browser_voice(view).await;
+    }
+    if view.borrow().snapshot.settings.microphone_muted {
+        return Err("Microphone is muted".into());
+    }
+    if view.borrow().local_phase == Some("announcing") {
+        return Ok(());
+    }
+    if matches!(
+        view.borrow().snapshot.updates.phase.as_str(),
+        "downloading" | "installing"
+    ) {
+        return Err("An update is being installed".into());
+    }
+    if !view.borrow().snapshot.key_configured || view.borrow().snapshot.settings.voice_id.is_empty()
+    {
+        return Err("Allow saved voice key access and choose a voice in Settings".into());
+    }
+    if view.borrow().snapshot.phase == "thinking" {
+        let request_id = view.borrow().snapshot.request_id.clone();
+        call("stop", json!({"requestId":request_id})).await?;
+    }
+    stop_audio(&view);
+    let generation = view.borrow().generation;
+    let token = format!("capture-{:.0}-{generation}", js_sys::Date::now());
+    let limit = if view.borrow().update_listening.is_some() {
+        12
+    } else {
+        60
+    };
+    {
+        let mut v = view.borrow_mut();
+        v.native_manual = true;
+        v.capture_token = Some(token.clone());
+        v.local_phase = Some("listening");
+    }
+    let result = call("start_capture", json!({"token":token,"limit":limit})).await;
+    if view.borrow().generation != generation {
+        let _ = call("cancel_capture", json!({"token":token})).await;
+        return Ok(());
+    }
+    if let Err(error) = result {
+        view.borrow_mut().native_manual = false;
+        view.borrow_mut().capture_token = None;
+        view.borrow_mut().local_phase = None;
+        return Err(error);
+    }
+    Ok(())
+}
+async fn browser_voice(view: Shared) -> Result<(), String> {
     if view.borrow().snapshot.settings.microphone_muted {
         return Err("Microphone is muted. Unmute in Settings or the tray menu.".into());
     }
@@ -2128,13 +2212,65 @@ pub fn start() -> Result<(), JsValue> {
             }
         });
     });
+    let capture_view = view.clone();
+    let capture_callback = Closure::<dyn FnMut(JsValue)>::new(move |payload: JsValue| {
+        let Ok(event) = serde_wasm_bindgen::from_value::<Value>(payload) else {
+            return;
+        };
+        let owner = capture_view.clone();
+        let generation = owner.borrow().generation;
+        spawn_local(async move {
+            let Ok(value) = call("capture_status", json!({})).await else {
+                return;
+            };
+            let Ok(wake) = serde_wasm_bindgen::from_value::<Value>(value) else {
+                return;
+            };
+            if owner.borrow().generation != generation {
+                return;
+            }
+            let token = event["token"].as_str().unwrap_or("");
+            if matches!(event["phase"].as_str(), Some("empty" | "cancelled"))
+                && owner.borrow().capture_token.as_deref() == Some(token)
+            {
+                stop_audio(&owner);
+                owner.borrow_mut().update_listening = None;
+                return;
+            }
+            if wake["capture_token"] != token {
+                return;
+            }
+            let ready = {
+                let snapshot = owner.borrow().snapshot.clone();
+                wake_ready(&owner, &snapshot)
+            };
+            if wake["phase"] == "capturing" && ready {
+                let mut v = owner.borrow_mut();
+                if wake["manual"] != true && v.last_capture_cue != token {
+                    let _ = v.meter.wake_cue();
+                    v.last_capture_cue = token.into();
+                }
+                v.capture_feedback_events += 1;
+                v.capture_token = Some(token.into());
+                v.snapshot.wake = wake;
+                v.last_poll_at = 0.;
+            } else if wake["phase"] == "ready" {
+                owner.borrow_mut().last_poll_at = 0.;
+            }
+        });
+    });
+    let subscription = listen_capture(capture_callback.as_ref().unchecked_ref());
+    spawn_local(async move {
+        let _ = JsFuture::from(subscription).await;
+    });
+    capture_callback.forget();
     let target = view.clone();
     let first = Rc::new(RefCell::new(true));
     let tick = Closure::<dyn FnMut()>::new(move || {
         {
             let mut v = target.borrow_mut();
             let now = js_sys::Date::now();
-            let fast = v.snapshot.settings.wake_enabled
+            let fast = (v.snapshot.settings.wake_enabled || v.native_manual)
                 && v.snapshot.window_visible
                 && matches!(
                     v.snapshot.wake["phase"].as_str(),
@@ -2162,11 +2298,27 @@ pub fn start() -> Result<(), JsValue> {
                         }
                         input("microphone-muted").set_checked(snapshot.settings.microphone_muted);
                     }
-                    if snapshot.wake["phase"] == "capturing"
-                        && !snapshot.settings.microphone_muted
-                        && target.borrow().snapshot.wake["phase"] != "capturing"
+                    if snapshot.wake["phase"] == "capturing" && !snapshot.settings.microphone_muted
                     {
-                        let _ = target.borrow_mut().meter.wake_cue();
+                        let token = snapshot.wake["capture_token"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_owned();
+                        let mut v = target.borrow_mut();
+                        if snapshot.wake["manual"] != true && v.last_capture_cue != token {
+                            let _ = v.meter.wake_cue();
+                            v.last_capture_cue = token.clone();
+                        }
+                        v.capture_token = Some(token);
+                    }
+                    if target.borrow().native_manual && snapshot.wake["phase"] == "error" {
+                        let error = snapshot.wake["message"]
+                            .as_str()
+                            .unwrap_or("Microphone could not start")
+                            .to_owned();
+                        stop_audio(&target);
+                        message(error);
+                        open_panel(&target);
                     }
                     let ready = wake_ready(&target, &snapshot);
                     let wake_id = if ready {
@@ -2722,7 +2874,7 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
             {
                 v.last_mode = mode;
                 v.last_report = now;
-                let report = json!({"mode":mode.name(),"reduced":reduced,"rms":level.rms,"metered":level.metered,"frames":v.frames,"peak_speaking_rms":v.peak_speaking_rms});
+                let report = json!({"mode":mode.name(),"reduced":reduced,"rms":level.rms,"metered":level.metered,"frames":v.frames,"peak_speaking_rms":v.peak_speaking_rms,"capture_feedback_events":v.capture_feedback_events});
                 spawn_local(async move {
                     let _ = call("report_visual", json!({"report":report})).await;
                 });
