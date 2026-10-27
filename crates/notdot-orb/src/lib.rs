@@ -125,6 +125,7 @@ struct View {
     meter: audio_meter::Meter,
     last_mode: visual_state::Mode,
     last_wake_enabled: bool,
+    last_wake_status: String,
     last_report: f64,
     frames: u64,
     peak_speaking_rms: f64,
@@ -526,6 +527,22 @@ fn render_wake_phrase() {
         format!("Hey {}", name.trim())
     };
     element("wake-phrase-preview").set_text_content(Some(&format!("Say “{phrase}”, then speak after the orb lights up. Name-only phrases may trigger accidentally.")));
+}
+fn wake_hint(snapshot: &Snapshot) -> &str {
+    if snapshot.settings.microphone_muted {
+        "Microphone muted. Open Settings to turn it on."
+    } else if snapshot.key_checking {
+        "Wake listening is paused while saved key access is checked."
+    } else if !snapshot.key_configured {
+        "Wake listening is paused. Open Settings → Voice to allow saved key access or add a key."
+    } else if snapshot.settings.voice_id.is_empty() {
+        "Wake listening is paused. Choose a voice in Settings."
+    } else {
+        snapshot.wake["message"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Preparing wake listening…")
+    }
 }
 fn wake_ready(view: &Shared, snapshot: &Snapshot) -> bool {
     let v = view.borrow();
@@ -2144,7 +2161,7 @@ pub fn start() -> Result<(), JsValue> {
                     } else {
                         None
                     };
-                    element("wake-status").set_text_content(snapshot.wake["message"].as_str());
+                    element("wake-status").set_text_content(Some(wake_hint(&snapshot)));
                     let orb = element("orb");
                     let wake_mode = snapshot.settings.wake_enabled;
                     let _ = orb.set_attribute("role", if wake_mode { "img" } else { "button" });
@@ -2164,7 +2181,7 @@ pub fn start() -> Result<(), JsValue> {
                         } else if snapshot.wake["phase"] == "listening" {
                             snapshot.wake["phrase"].as_str().unwrap_or("Wake listening")
                         } else if snapshot.settings.wake_enabled {
-                            "Wake phrase mode · right-click for Settings"
+                            wake_hint(&snapshot)
                         } else {
                             "Click to speak · right-click for Settings"
                         },
@@ -2636,7 +2653,9 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
             if mode != v.last_mode
                 || v.frames == 1
                 || v.last_wake_enabled != v.snapshot.settings.wake_enabled
+                || v.last_wake_status != wake_hint(&v.snapshot)
             {
+                v.last_wake_status = wake_hint(&v.snapshot).to_owned();
                 v.last_wake_enabled = v.snapshot.settings.wake_enabled;
                 if v.snapshot.settings.wake_enabled {
                     let _ = canvas.remove_attribute("aria-pressed");
@@ -2660,7 +2679,7 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                 );
                 element("orb-status").set_text_content(Some(match mode {
                     visual_state::Mode::Idle if v.snapshot.settings.wake_enabled => {
-                        "Wake phrase mode. Say your wake phrase to speak."
+                        wake_hint(&v.snapshot)
                     }
                     visual_state::Mode::Idle => "Ready. Press Enter or Space to speak.",
                     visual_state::Mode::Listening => {
