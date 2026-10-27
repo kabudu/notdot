@@ -578,6 +578,8 @@ fn refresh_models(view: &Shared, model: String, effort: String) {
     });
 }
 fn open_panel(view: &Shared) {
+    let _ = element("reset-memory-confirm").set_attribute("hidden", "");
+    element("reset-memory-status").set_text_content(None);
     let s = view.borrow().snapshot.settings.clone();
     refresh_models(view, s.model.clone(), s.effort.clone());
     close_voice_picker();
@@ -1486,6 +1488,40 @@ pub fn start() -> Result<(), JsValue> {
             }
         });
     });
+    on(element("reset-memory").as_ref(), "click", |_| {
+        let _ = element("reset-memory-confirm").remove_attribute("hidden");
+        if let Some(button) = element("cancel-memory-reset").dyn_ref::<web_sys::HtmlElement>() {
+            let _ = button.focus();
+        }
+    });
+    on(element("cancel-memory-reset").as_ref(), "click", |_| {
+        let _ = element("reset-memory-confirm").set_attribute("hidden", "");
+        if let Some(button) = element("reset-memory").dyn_ref::<web_sys::HtmlElement>() {
+            let _ = button.focus();
+        }
+    });
+    let reset_view = view.clone();
+    on(
+        element("confirm-memory-reset").as_ref(),
+        "click",
+        move |_| {
+            stop_audio(&reset_view);
+            let _ = element("confirm-memory-reset").set_attribute("disabled", "");
+            let _ = element("cancel-memory-reset").set_attribute("disabled", "");
+            element("reset-memory-status")
+                .set_text_content(Some("Resetting memory and restarting notdot…"));
+            reset_view.borrow_mut().local_phase = Some("resetting");
+            let view = reset_view.clone();
+            spawn_local(async move {
+                if let Err(e) = call("reset_memory", json!({"confirmed":true})).await {
+                    view.borrow_mut().local_phase = None;
+                    let _ = element("confirm-memory-reset").remove_attribute("disabled");
+                    let _ = element("cancel-memory-reset").remove_attribute("disabled");
+                    element("reset-memory-status").set_text_content(Some(&e));
+                }
+            });
+        },
+    );
     on(element("clear-key").as_ref(), "click", |_| {
         spawn_local(async {
             match call("clear_voice_key", json!({})).await {
