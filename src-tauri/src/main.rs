@@ -757,20 +757,23 @@ async fn voice_smoke() -> Result<(), String> {
         .ok_or("Home directory missing")?
         .join("Library/Application Support/com.kabudu.notdot");
     let settings = Settings::load(&dir.join("settings.json"))?;
-    let key = credential_for(&settings.voice_provider)?
-        .get_password()
-        .map_err(|_| "Voice key is unavailable")?;
+    let credentials = Arc::new(credentials::Credentials::default());
+    let key=credentials.read(&settings.voice_provider,false).await.map_err(|e|format!("Voice acceptance blocked: {e}. Authorize this trusted build locally; no password prompt was requested."))?;
     let provider =
         notdot_voice::provider(&settings.voice_provider, key, notdot_voice::http_client()?)?;
+    let start = std::time::Instant::now();
     let audio = provider
         .synthesize("The voice bridge is working.", &settings.voice_id)
         .await
         .map_err(|e| e.to_string())?;
+    let tts_ms = start.elapsed().as_secs_f64() * 1000.;
     let bytes = audio.bytes.len();
+    let start = std::time::Instant::now();
     let transcript = provider
         .transcribe(audio)
         .await
         .map_err(|e| e.to_string())?;
+    let stt_ms = start.elapsed().as_secs_f64() * 1000.;
     let normalized: String = transcript
         .chars()
         .filter(char::is_ascii_alphabetic)
@@ -783,7 +786,7 @@ async fn voice_smoke() -> Result<(), String> {
     }
     println!(
         "{}",
-        serde_json::json!({"provider":provider.info().name,"tts_bytes":bytes,"transcript":transcript,"status":"passed"})
+        serde_json::json!({"provider":provider.info().name,"tts_bytes":bytes,"transcript":transcript,"status":"passed","tts_ms":tts_ms,"stt_ms":stt_ms,"scope":"Synthetic provider API round trip; excludes model inference, microphone and speaker"})
     );
     Ok(())
 }
