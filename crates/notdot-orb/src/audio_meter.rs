@@ -1,6 +1,6 @@
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use web_sys::{
-    AnalyserNode, AudioContext, AudioContextState, GainNode, HtmlAudioElement,
+    AnalyserNode, AudioContext, AudioContextState, Event, GainNode, HtmlAudioElement,
     MediaElementAudioSourceNode, MediaStream, MediaStreamAudioSourceNode,
 };
 struct Microphone {
@@ -18,11 +18,19 @@ impl Drop for Microphone {
 struct Playback {
     source: MediaElementAudioSourceNode,
     analyser: AnalyserNode,
+    gain: GainNode,
+    audio: HtmlAudioElement,
+    on_playing: Closure<dyn FnMut(Event)>,
 }
 impl Drop for Playback {
     fn drop(&mut self) {
+        let _ = self.audio.remove_event_listener_with_callback(
+            "playing",
+            self.on_playing.as_ref().unchecked_ref(),
+        );
         let _ = self.source.disconnect();
         let _ = self.analyser.disconnect();
+        let _ = self.gain.disconnect();
     }
 }
 #[derive(Default)]
@@ -105,9 +113,29 @@ impl Meter {
         }
         let source = context.create_media_element_source(audio.unchecked_ref())?;
         let analyser = Self::analyser(context)?;
-        source.connect_with_audio_node(&analyser)?;
+        let gain = context.create_gain()?;
+        gain.gain().set_value(0.);
+        source.connect_with_audio_node(&gain)?;
+        gain.connect_with_audio_node(&analyser)?;
         analyser.connect_with_audio_node(&context.destination())?;
-        self.playback = Some(Playback { source, analyser });
+        // Start the ramp at actual playback, not before network/decoder startup.
+        let ramp_context = context.clone();
+        let ramp_gain = gain.clone();
+        let on_playing = Closure::<dyn FnMut(Event)>::new(move |_| {
+            let now = ramp_context.current_time();
+            let parameter = ramp_gain.gain();
+            let _ = parameter.cancel_scheduled_values(now);
+            let _ = parameter.set_value_at_time(0., now);
+            let _ = parameter.linear_ramp_to_value_at_time(1., now + 0.025);
+        });
+        audio.add_event_listener_with_callback("playing", on_playing.as_ref().unchecked_ref())?;
+        self.playback = Some(Playback {
+            source,
+            analyser,
+            gain,
+            audio: audio.clone(),
+            on_playing,
+        });
         Ok(true)
     }
     pub fn clear_microphone(&mut self) {

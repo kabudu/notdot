@@ -163,6 +163,7 @@ struct Detector {
     stream: OnlineStream,
     require_hey: bool,
     elapsed: f64,
+    voice_gate: VoiceGate,
     voiced: std::collections::VecDeque<(f64, f64, bool)>,
 }
 impl Detector {
@@ -239,6 +240,7 @@ impl Detector {
             stream,
             require_hey,
             elapsed: 0.,
+            voice_gate: VoiceGate::default(),
             voiced: Default::default(),
         })
     }
@@ -249,8 +251,11 @@ impl Detector {
         }
         let start = self.elapsed;
         self.elapsed += samples.len() as f64 / rate as f64;
-        self.voiced
-            .push_back((start, self.elapsed, energy(samples) >= 0.008));
+        self.voiced.push_back((
+            start,
+            self.elapsed,
+            self.voice_gate.observe(energy(samples)),
+        ));
         while self
             .voiced
             .front()
@@ -266,17 +271,20 @@ impl Detector {
                 .get_result(&self.stream)
                 .filter(|r| !r.keyword.is_empty())
             {
-                // The decoder can insert the prefix in preceding silence. Require
-                // actual local audio energy at the first keyword token, within
-                // one feature frame of timing tolerance, before opening capture.
+                // H is unvoiced and often aligned before its acoustic onset.
+                // Check speech across the explicit Hey prefix, not only at H.
                 let first = result
                     .timestamps
                     .first()
                     .map(|t| f64::from(result.start_time + t));
-                let supported = first.is_some_and(|t| {
-                    self.voiced
-                        .iter()
-                        .any(|(start, end, voice)| *voice && *start <= t + 0.04 && *end >= t - 0.04)
+                let prefix_end = result
+                    .timestamps
+                    .get(usize::from(self.require_hey))
+                    .map(|t| f64::from(result.start_time + t));
+                let supported = first.zip(prefix_end).is_some_and(|(first, end)| {
+                    self.voiced.iter().any(|(start, stop, voice)| {
+                        *voice && *start <= end + 0.10 && *stop >= first - 0.04
+                    })
                 });
 
                 self.kws.reset(&self.stream);
@@ -288,6 +296,11 @@ impl Detector {
                         .get(1)
                         .zip(result.timestamps.first())
                         .is_some_and(|(ey, h)| *ey > *h && ey - h <= 0.16);
+                #[cfg(test)]
+                eprintln!(
+                    "wake candidate: supported={supported} prefix={prefix} timestamps={:?}",
+                    result.timestamps
+                );
                 if supported && prefix {
                     return true;
                 }
@@ -393,12 +406,44 @@ where
 }
 
 /// Sample-time endpointing keeps working independently of webview animation frames.
+/// Estimate a quiet floor from a bounded two-second window of 20 ms packets.
+/// Keep the old upper threshold in loud environments, but support quiet inputs.
+struct VoiceGate {
+    levels: [f32; 100],
+    count: usize,
+    cursor: usize,
+}
+impl Default for VoiceGate {
+    fn default() -> Self {
+        Self {
+            levels: [0.; 100],
+            count: 0,
+            cursor: 0,
+        }
+    }
+}
+impl VoiceGate {
+    fn observe(&mut self, rms: f32) -> bool {
+        let rms = if rms.is_finite() { rms.max(0.) } else { 0. };
+        self.levels[self.cursor] = rms;
+        self.cursor = (self.cursor + 1) % 100;
+        self.count = (self.count + 1).min(100);
+        let floor = self.levels[..self.count]
+            .iter()
+            .copied()
+            .fold(f32::INFINITY, f32::min);
+        let threshold = (floor * 4.).clamp(0.00015, 0.015);
+        rms >= threshold
+    }
+}
+
 #[derive(Default)]
 struct Capture {
     samples: Vec<f32>,
     total: usize,
     speech: usize,
     silence: usize,
+    voice_gate: VoiceGate,
 }
 enum End {
     Continue,
@@ -409,7 +454,7 @@ impl Capture {
     fn accept(&mut self, samples: &[f32], rate: u32) -> End {
         let rms = energy(samples);
         self.total += samples.len();
-        if rms >= 0.015 {
+        if self.voice_gate.observe(rms) {
             self.speech += samples.len();
             self.silence = 0;
         } else {
@@ -757,6 +802,28 @@ mod tests {
             detected |= detector.accept(rate, &vec![0.; rate as usize / 50]);
         }
         detected
+    }
+    #[test]
+    #[ignore = "private local human fixture; audio must not be committed"]
+    fn local_human_wake_fixture() {
+        let _models = MODEL_FIXTURE.lock().unwrap();
+        let path = std::env::var("NOTDOT_WAKE_FIXTURE").expect("set private WAV path");
+        let mut reader = hound::WavReader::open(path).unwrap();
+        assert_eq!(reader.spec().sample_rate, 16000);
+        assert_eq!(reader.spec().channels, 1);
+        let samples: Vec<_> = reader
+            .samples::<i16>()
+            .map(|s| s.unwrap() as f32 / 32768.)
+            .take(480001)
+            .collect();
+        assert!(samples.len() <= 480000);
+        for gain in [1., 8., 32.] {
+            let adjusted: Vec<_> = samples.iter().map(|s| (s * gain).clamp(-1., 1.)).collect();
+            let mut detector = Detector::new(&models(), "Hey Ava").unwrap();
+            let detected = detects(&mut detector, &adjusted);
+            eprintln!("local human fixture gain={gain}, detected={detected}");
+            assert!(detected, "human wake phrase missed at gain {gain}");
+        }
     }
     #[test]
     fn bundled_detector_hears_custom_phrases_and_rejects_unrelated_audio() {

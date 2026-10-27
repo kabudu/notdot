@@ -31,6 +31,8 @@ struct Snapshot {
     settings: Settings,
     phase: String,
     reply: String,
+    speech: notdot_core::spoken_reply::SpokenReply,
+    request_id: Option<String>,
     error: Option<String>,
     key_configured: bool,
     key_checking: bool,
@@ -51,6 +53,7 @@ struct AppState {
     memory: Arc<Memory>,
     path: PathBuf,
     send_gate: Mutex<()>,
+    requests: Mutex<notdot_core::request_cancel::Requests>,
     generation: AtomicU64,
     voice_http: reqwest::Client,
     voice_gate: tokio::sync::Semaphore,
@@ -376,10 +379,14 @@ async fn connect(state: Arc<AppState>, allow_interrupt: bool) -> Result<(), Stri
                         continue;
                     }
                     let mut s = target.snapshot.lock().await;
+                    s.speech.event(&event);
                     match event["method"].as_str().unwrap_or("") {
                         "turn/started" => {
                             s.active_turn =
                                 event["params"]["turn"]["id"].as_str().map(str::to_owned);
+                            if let Some(turn) = s.active_turn.clone() {
+                                s.speech.start(&turn);
+                            }
                         }
                         "item/agentMessage/delta" => {
                             if let Some(delta) = event["params"]["delta"].as_str()
@@ -463,11 +470,20 @@ async fn reconnect(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     connect(state.inner().clone(), true).await
 }
 #[tauri::command]
-async fn send_message(state: State<'_, Arc<AppState>>, text: String) -> Result<(), String> {
+async fn send_message(
+    state: State<'_, Arc<AppState>>,
+    text: String,
+    request_id: Option<String>,
+) -> Result<String, String> {
+    let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    notdot_core::request_cancel::Requests::validate(&request_id)?;
     let _gate = state
         .send_gate
         .try_lock()
         .map_err(|_| "A message is already being submitted")?;
+    if state.requests.lock().await.is_cancelled(&request_id) {
+        return Err("Voice request cancelled".into());
+    }
     if text.trim().is_empty() || text.len() > 24_000 {
         return Err("Enter a message of at most 24,000 bytes".into());
     }
@@ -480,10 +496,13 @@ async fn send_message(state: State<'_, Arc<AppState>>, text: String) -> Result<(
     let behaviour = state.snapshot.lock().await.settings.initiative.behaviour;
     if let Some(reply) = state.initiative.command(&text, behaviour).await {
         let mut s = state.snapshot.lock().await;
+        let turn = uuid::Uuid::new_v4().to_string();
+        s.request_id = Some(request_id.clone());
+        s.speech = notdot_core::spoken_reply::SpokenReply::immediate(turn.clone(), reply.clone());
         s.reply = reply;
         s.phase = "idle".into();
         s.error = None;
-        return Ok(());
+        return Ok(turn);
     }
     let (tid, memory_ticket) = {
         let mut s = state.snapshot.lock().await;
@@ -495,9 +514,11 @@ async fn send_message(state: State<'_, Arc<AppState>>, text: String) -> Result<(
             .thread_id
             .clone()
             .ok_or("Agent is not connected")?;
+        s.request_id = Some(request_id);
         s.phase = "thinking".into();
         s.active_turn = Some("submission-pending".into());
         s.reply.clear();
+        s.speech = notdot_core::spoken_reply::SpokenReply::default();
         s.error = None;
         (
             tid,
@@ -536,6 +557,7 @@ async fn send_message(state: State<'_, Arc<AppState>>, text: String) -> Result<(
                     s.active_turn = Some(turn.clone());
                 }
             }
+            let returned_turn = turn.clone();
             let owner = state.inner().clone();
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(Duration::from_secs(180)).await;
@@ -547,7 +569,7 @@ async fn send_message(state: State<'_, Arc<AppState>>, text: String) -> Result<(
                     ));
                 }
             });
-            Ok(())
+            Ok(returned_turn)
         }
         Err(e) => {
             state.learning.cancel();
@@ -562,11 +584,17 @@ async fn send_message(state: State<'_, Arc<AppState>>, text: String) -> Result<(
     }
 }
 #[tauri::command]
-async fn stop(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    state.initiative.cancel();
+async fn stop(state: State<'_, Arc<AppState>>, request_id: Option<String>) -> Result<(), String> {
+    if let Some(id) = &request_id {
+        state.requests.lock().await.cancel(id)?;
+    }
     let gate = state.send_gate.lock().await;
-    state.learning.cancel();
     let snapshot = state.snapshot.lock().await.clone();
+    if request_id.is_some() && snapshot.request_id != request_id {
+        return Ok(());
+    }
+    state.initiative.cancel();
+    state.learning.cancel();
     let Some(turn) = snapshot.active_turn else {
         return Ok(());
     };
@@ -905,6 +933,8 @@ fn main() {
                     settings,
                     phase: "connecting".into(),
                     reply: String::new(),
+                    speech: notdot_core::spoken_reply::SpokenReply::default(),
+                    request_id: None,
                     error: None,
                     active_turn: None,
                     key_configured: false,
@@ -924,6 +954,7 @@ fn main() {
                 memory,
                 path,
                 send_gate: Mutex::new(()),
+                requests: Mutex::new(notdot_core::request_cancel::Requests::default()),
                 generation: AtomicU64::new(0),
                 voice_http: notdot_voice::http_client().map_err(std::io::Error::other)?,
                 voice_gate: tokio::sync::Semaphore::new(4),

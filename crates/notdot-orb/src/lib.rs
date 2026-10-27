@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 mod audio_meter;
 mod interaction;
+mod speech_queue;
 mod visual_state;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -44,6 +45,9 @@ struct Snapshot {
     settings: Settings,
     phase: String,
     reply: String,
+    #[serde(default)]
+    speech: SpeechText,
+    request_id: Option<String>,
     error: Option<String>,
     key_configured: bool,
     key_checking: bool,
@@ -56,6 +60,13 @@ struct Snapshot {
     wake: Value,
     learning: Value,
     initiative: Value,
+}
+#[derive(Clone, Default, Deserialize)]
+struct SpeechText {
+    turn: String,
+    text: String,
+    done: bool,
+    failed: bool,
 }
 #[derive(Clone, Default, Deserialize)]
 struct UpdateStatus {
@@ -92,7 +103,10 @@ struct View {
     voice_pending: bool,
     speech_end: Option<interaction::SpeechEnd>,
     discard_capture: bool,
-    spoken: String,
+    reply_turn: String,
+    request_id: Option<String>,
+    speech_queue: speech_queue::SpeechQueue,
+    speech_worker: bool,
     polling: bool,
     generation: u64,
     last_frame: f64,
@@ -110,6 +124,7 @@ struct View {
     initialized: bool,
     meter: audio_meter::Meter,
     last_mode: visual_state::Mode,
+    last_wake_enabled: bool,
     last_report: f64,
     frames: u64,
     peak_speaking_rms: f64,
@@ -987,8 +1002,16 @@ fn stop_audio(view: &Shared) {
         let _ = call("wake_activity", json!({"ready":false})).await;
     });
     let mut v = view.borrow_mut();
+    if let Some(request) = v.request_id.take() {
+        spawn_local(async move {
+            let _ = call("stop", json!({"requestId":request})).await;
+        });
+    }
     v.generation += 1;
     v.voice_pending = false;
+    v.reply_turn.clear();
+    v.speech_queue = speech_queue::SpeechQueue::default();
+    v.speech_worker = false;
     v.speech_end = None;
     v.discard_capture = false;
     v.local_phase = None;
@@ -1010,9 +1033,85 @@ fn stop_audio(view: &Shared) {
         let _ = web_sys::Url::revoke_object_url(&url);
     }
 }
-async fn play(view: Shared, text: String, generation: u64) -> Result<(), String> {
-    let value = call("speak", json!({"text":text})).await?;
-    play_encoded(view, value, generation).await
+async fn speech_tick() -> Result<(), String> {
+    let promise = js_sys::Promise::new(&mut |resolve, reject| {
+        if let Err(error) =
+            window().set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 80)
+        {
+            let _ = reject.call1(&JsValue::NULL, &error);
+        }
+    });
+    JsFuture::from(promise).await.map_err(js_error)?;
+    Ok(())
+}
+async fn wait_for_audio(
+    view: &Shared,
+    generation: u64,
+    audio: &web_sys::HtmlAudioElement,
+) -> Result<(), String> {
+    let started = js_sys::Date::now();
+    loop {
+        if view.borrow().generation != generation {
+            return Ok(());
+        }
+        if js_sys::Date::now() - started > 120_000. {
+            return Err("Voice playback took too long. Try again.".into());
+        }
+        if audio.error().is_some() {
+            return Err("Voice playback failed".into());
+        }
+        if audio.ended() || audio.paused() {
+            return Ok(());
+        }
+        speech_tick().await?;
+    }
+}
+async fn stream_speech(view: Shared, generation: u64) -> Result<(), String> {
+    let mut previous: Option<web_sys::HtmlAudioElement> = None;
+    let started = js_sys::Date::now();
+    loop {
+        let next = loop {
+            if js_sys::Date::now() - started > 240_000. {
+                return Err("The spoken response took too long. Please try again.".into());
+            }
+            let (next, finished) = {
+                let mut v = view.borrow_mut();
+                if v.generation != generation {
+                    return Ok(());
+                }
+                if v.snapshot.speech.turn == v.reply_turn
+                    && (v.snapshot.speech.failed || v.snapshot.phase == "error")
+                {
+                    return Err("The response was interrupted".into());
+                }
+                let next = v.speech_queue.next();
+                (next, v.speech_queue.finished())
+            };
+            if next.is_some() || finished {
+                break next;
+            }
+            speech_tick().await?;
+        };
+        let Some(text) = next else {
+            if let Some(audio) = previous {
+                wait_for_audio(&view, generation, &audio).await?;
+            }
+            return Ok(());
+        };
+        // At most one next clip is synthesized while the current clip plays.
+        let value = call("speak", json!({"text":text})).await?;
+        if view.borrow().generation != generation {
+            return Ok(());
+        }
+        if let Some(audio) = previous {
+            wait_for_audio(&view, generation, &audio).await?;
+        }
+        if view.borrow().generation != generation {
+            return Ok(());
+        }
+        play_encoded(view.clone(), value, generation).await?;
+        previous = view.borrow().audio.clone();
+    }
 }
 async fn play_encoded(view: Shared, value: JsValue, generation: u64) -> Result<(), String> {
     call("wake_activity", json!({"ready":false})).await?;
@@ -1038,13 +1137,7 @@ async fn play_encoded(view: Shared, value: JsValue, generation: u64) -> Result<(
         }
         v.audio = Some(audio.clone());
     }
-    let finished = view.clone();
-    on(audio.as_ref(), "ended", move |_| {
-        if finished.borrow().generation == generation {
-            element("voice-info").set_text_content(Some("Playback finished"));
-        }
-    });
-    let _ = view.borrow_mut().meter.playback(&audio);
+    view.borrow_mut().meter.playback(&audio).map_err(js_error)?;
     JsFuture::from(audio.play().map_err(js_error)?)
         .await
         .map_err(js_error)?;
@@ -1075,14 +1168,20 @@ async fn submit_transcript(view: Shared, text: String, generation: u64) -> Resul
         call("answer_update", json!({"text":text,"version":version})).await?;
         return Ok(());
     }
-    call("send_message", json!({"text":text})).await?;
+    let request = format!("voice-{:.0}-{generation}", js_sys::Date::now());
+    view.borrow_mut().request_id = Some(request.clone());
+    let turn = call("send_message", json!({"text":text,"requestId":request}))
+        .await?
+        .as_string()
+        .ok_or("Runtime did not identify the submitted turn")?;
     if view.borrow().generation != generation {
         return Ok(());
     }
     {
         let mut v = view.borrow_mut();
         v.voice_pending = true;
-        v.spoken.clear();
+        v.reply_turn = turn;
+        v.speech_queue = speech_queue::SpeechQueue::default();
     }
     view.borrow_mut().local_phase = None;
     Ok::<(), String>(())
@@ -1113,7 +1212,8 @@ async fn voice(view: Shared) -> Result<(), String> {
         stop_audio(&view);
     }
     if view.borrow().snapshot.phase == "thinking" {
-        call("stop", json!({})).await?;
+        let request_id = view.borrow().snapshot.request_id.clone();
+        call("stop", json!({"requestId":request_id})).await?;
     }
     stop_audio(&view);
     if view.borrow().snapshot.key_checking {
@@ -1329,6 +1429,9 @@ pub fn start() -> Result<(), JsValue> {
     });
     let target = view.clone();
     on(canvas.as_ref(), "click", move |e| {
+        if !target.borrow().initialized || target.borrow().snapshot.settings.wake_enabled {
+            return;
+        }
         let Ok(e) = e.dyn_into::<web_sys::MouseEvent>() else {
             return;
         };
@@ -1461,6 +1564,7 @@ pub fn start() -> Result<(), JsValue> {
                 e.alt_key(),
                 modal,
                 cfg!(feature = "debug-ui"),
+                target.borrow().snapshot.settings.wake_enabled,
             );
             if action == Some(interaction::KeyboardAction::Settings) {
                 e.prevent_default();
@@ -1469,9 +1573,6 @@ pub fn start() -> Result<(), JsValue> {
             }
             if action == Some(interaction::KeyboardAction::Cancel) {
                 stop_audio(&target);
-                spawn_local(async {
-                    let _ = call("stop", json!({})).await;
-                });
             }
             if action == Some(interaction::KeyboardAction::Voice) {
                 e.prevent_default();
@@ -1983,7 +2084,9 @@ pub fn start() -> Result<(), JsValue> {
             }
         });
     });
-    on(element("retry").as_ref(), "click", |_| {
+    let reconnect_view = view.clone();
+    on(element("retry").as_ref(), "click", move |_| {
+        stop_audio(&reconnect_view);
         spawn_local(async {
             if let Err(e) = call("reconnect", json!({})).await {
                 message(e);
@@ -2042,12 +2145,26 @@ pub fn start() -> Result<(), JsValue> {
                         None
                     };
                     element("wake-status").set_text_content(snapshot.wake["message"].as_str());
+                    let orb = element("orb");
+                    let wake_mode = snapshot.settings.wake_enabled;
+                    let _ = orb.set_attribute("role", if wake_mode { "img" } else { "button" });
+                    let _ = orb.set_attribute(
+                        "aria-keyshortcuts",
+                        if wake_mode {
+                            "Meta+, Control+, Escape"
+                        } else {
+                            "Enter Space Meta+, Control+, Escape"
+                        },
+                    );
+                    let _ = orb.set_attribute("aria-label", if wake_mode { "notdot wake-word companion. Say your wake phrase to speak. Right-click or Command/Control plus comma opens Settings. Escape cancels." } else { "notdot voice companion. Enter or Space to speak. Command or Control plus comma opens Settings. Escape stops." });
                     let _ = element("orb").set_attribute(
                         "title",
                         if snapshot.settings.microphone_muted {
                             "Microphone muted"
                         } else if snapshot.wake["phase"] == "listening" {
                             snapshot.wake["phrase"].as_str().unwrap_or("Wake listening")
+                        } else if snapshot.settings.wake_enabled {
+                            "Wake phrase mode · right-click for Settings"
                         } else {
                             "Click to speak · right-click for Settings"
                         },
@@ -2073,10 +2190,7 @@ pub fn start() -> Result<(), JsValue> {
                         if v.recording.is_some() {
                             snapshot.phase = "listening".into();
                         }
-                        v.voice_pending
-                            && snapshot.phase == "idle"
-                            && !snapshot.reply.is_empty()
-                            && v.spoken != snapshot.reply
+                        v.voice_pending && !v.speech_worker
                     };
                     if let Some(reply) = document().get_element_by_id("reply") {
                         reply.set_text_content(Some(
@@ -2266,22 +2380,47 @@ pub fn start() -> Result<(), JsValue> {
                             }
                         });
                     }
-                    if speak {
-                        let (text, generation) = {
+                    let stream_error = {
+                        let mut v = target.borrow_mut();
+                        if v.voice_pending && v.snapshot.speech.turn == v.reply_turn {
+                            let speech = v.snapshot.speech.clone();
+                            if speech.failed {
+                                Some("The response was interrupted before it finished".to_string())
+                            } else {
+                                v.speech_queue
+                                    .update(&speech.text, speech.done)
+                                    .err()
+                                    .map(str::to_owned)
+                            }
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(error) = stream_error {
+                        stop_audio(&target);
+                        message(error);
+                    } else if speak {
+                        let generation = {
                             let mut v = target.borrow_mut();
-                            v.voice_pending = false;
+                            v.speech_worker = true;
                             v.local_phase = Some("synthesizing");
-                            v.spoken = v.snapshot.reply.clone();
-                            (v.spoken.clone(), v.generation)
+                            v.generation
                         };
                         let voice_target = target.clone();
                         spawn_local(async move {
-                            if let Err(e) = play(voice_target.clone(), text, generation).await {
-                                message(e);
-                                open_panel(&voice_target);
-                            }
+                            let result = stream_speech(voice_target.clone(), generation).await;
                             if voice_target.borrow().generation == generation {
-                                voice_target.borrow_mut().local_phase = None;
+                                if let Err(error) = result {
+                                    stop_audio(&voice_target);
+                                    message(error);
+                                    open_panel(&voice_target);
+                                } else {
+                                    let mut v = voice_target.borrow_mut();
+                                    v.voice_pending = false;
+                                    v.speech_worker = false;
+                                    v.request_id = None;
+                                    v.local_phase = None;
+                                }
                             }
                         });
                     }
@@ -2494,15 +2633,23 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                 v.peak_speaking_rms = v.peak_speaking_rms.max(level.rms);
             }
             v.frames += 1;
-            if mode != v.last_mode || v.frames == 1 {
-                let _ = canvas.set_attribute(
-                    "aria-pressed",
-                    if mode == visual_state::Mode::Listening {
-                        "true"
-                    } else {
-                        "false"
-                    },
-                );
+            if mode != v.last_mode
+                || v.frames == 1
+                || v.last_wake_enabled != v.snapshot.settings.wake_enabled
+            {
+                v.last_wake_enabled = v.snapshot.settings.wake_enabled;
+                if v.snapshot.settings.wake_enabled {
+                    let _ = canvas.remove_attribute("aria-pressed");
+                } else {
+                    let _ = canvas.set_attribute(
+                        "aria-pressed",
+                        if mode == visual_state::Mode::Listening {
+                            "true"
+                        } else {
+                            "false"
+                        },
+                    );
+                }
                 let _ = canvas.set_attribute(
                     "aria-busy",
                     if mode == visual_state::Mode::Thinking {
@@ -2512,6 +2659,9 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                     },
                 );
                 element("orb-status").set_text_content(Some(match mode {
+                    visual_state::Mode::Idle if v.snapshot.settings.wake_enabled => {
+                        "Wake phrase mode. Say your wake phrase to speak."
+                    }
                     visual_state::Mode::Idle => "Ready. Press Enter or Space to speak.",
                     visual_state::Mode::Listening => {
                         "Listening. Speak, then pause to send. Escape cancels."
@@ -2522,6 +2672,12 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                         "Unable to complete the request. Open Settings for details."
                     }
                 }));
+            }
+            if v.last_mode == visual_state::Mode::Speaking
+                && mode != visual_state::Mode::Speaking
+                && v.audio.as_ref().is_some_and(|audio| audio.ended())
+            {
+                element("voice-info").set_text_content(Some("Playback finished"));
             }
             if v.frames == 1
                 || v.last_mode != mode
@@ -2637,7 +2793,7 @@ fn draw(c: &Context, x: f64, y: f64, r: f64, t: f64, hue: f64, amp: f64) {
 #[cfg(feature = "debug-ui")]
 fn mount_debug(view: &Shared) {
     let node = document().create_element("div").expect("debug container");
-    node.set_inner_html(r#"<dialog id="composer"><form id="message"><label for="text">Debug message</label><textarea id="text" rows="4"></textarea><p id="reply" role="status"></p><div class="actions"><button type="button" id="dismiss">Close</button><button type="button" id="stop">Stop</button><button type="submit">Send</button></div></form></dialog>"#);
+    node.set_inner_html(r#"<dialog id="composer"><form id="message"><label for="text">Debug spoken request</label><textarea id="text" rows="4"></textarea><p id="reply" role="status"></p><div class="actions"><button type="button" id="dismiss">Close</button><button type="button" id="stop">Stop</button><button type="submit">Send</button></div></form></dialog>"#);
     document()
         .body()
         .expect("debug body")
@@ -2653,25 +2809,29 @@ fn mount_debug(view: &Shared) {
     let target = view.clone();
     on(element("stop").as_ref(), "click", move |_| {
         stop_audio(&target);
-        spawn_local(async {
-            if let Err(e) = call("stop", json!({})).await {
-                message(e);
-            }
-        });
     });
     let target = view.clone();
     on(element("message").as_ref(), "submit", move |e| {
         e.prevent_default();
         stop_audio(&target);
+        let _ = target.borrow_mut().meter.unlock();
         let text = element("text")
             .unchecked_into::<web_sys::HtmlTextAreaElement>()
             .value();
+        let view = target.clone();
+        let generation = view.borrow().generation;
+        dialog("composer").close();
+        let _ = resize(360., 360.);
         spawn_local(async move {
-            match call("send_message", json!({"text":text})).await {
-                Ok(_) => element("text")
+            if let Err(error) = submit_transcript(view.clone(), text, generation).await {
+                if view.borrow().generation == generation {
+                    message(error);
+                    open_panel(&view);
+                }
+            } else {
+                element("text")
                     .unchecked_into::<web_sys::HtmlTextAreaElement>()
-                    .set_value(""),
-                Err(e) => message(e),
+                    .set_value("");
             }
         });
     });
