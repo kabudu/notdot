@@ -1,5 +1,7 @@
 # Implementation contract
 
+This checklist is for testing a release candidate. A checked item needs actual evidence; cross-compiling alone does not prove the app works on another computer. Everyday options are explained in [Settings](settings.md).
+
 - Rust native backend, Tauri 2, Rust/WASM canvas renderer. Normal surface contains only a draggable orb; settings/onboarding and text entry are opt-in overlays.
 - Single long-lived companion-owned app-server, explicit Terra Medium, durable thread identity, bounded messages/timeouts, no automatic archival/takeover, visible failures and cancellation.
 - Rust voice provider with OS-keychain credential, explicit microphone capture, transcription and speech playback; no always-on capture by default. Provider errors must remain recoverable.

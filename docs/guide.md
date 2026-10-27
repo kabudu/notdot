@@ -1,4 +1,6 @@
-# notdot
+# Developer and technical guide
+
+For everyday use, start with the [plain-language Settings guide](settings.md). This page keeps exact commands, API names and implementation limits for developers.
 
 A local desktop companion built with Rust, Tauri 2 and a Rust/WASM orb. The normal interface is just the orb. Conversation is voice-only; onboarding, preferences and memory inspection open separately.
 
@@ -47,7 +49,11 @@ Mnemara **0.6.0** is embedded as Rust library code with the sled backend. No sep
 
 Memory data and configuration live under the platform application-data directory; on macOS that is `~/Library/Application Support/com.kabudu.notdot`.
 
-The **Learn useful context** switch controls ledger saving and automatic recall. When enabled, a background Terra Medium pass extracts up to four durable preferences, goals, constraints or facts directly stated by the user after a successfully completed interaction. Explicit “Remember…” requests are retained at submission, even if conversation inference fails; cancelled turns are excluded from automatic learning. Each automatic note keeps an exact user quote, confidence and source conversation/turn. First observations are provisional for up to 30 days and excluded from recall and summaries. Another independent turn affirming the same keyed fact promotes it; replaying one turn does not. Explicit correction cues can replace inferred facts immediately. A contradictory passing remark remains provisional while the existing confirmed fact stays available. Confirmed corrections retract superseded versions and dependent summaries. Settings offers edit/confirm/forget with confidence, date, evidence and lineage; user-authored corrections take precedence over subsequent automatic inference. Editing and forgetting remain available with learning off.
+The **Learn useful context** switch controls ledger saving and automatic recall. When enabled, a background Terra Medium pass extracts up to four durable preferences, goals, constraints or facts directly stated by the user after a successfully completed interaction. Explicit “Remember…” requests are retained at submission, even if conversation inference fails; cancelled turns are excluded from automatic learning. Each automatic note keeps an exact user quote, confidence and source conversation/turn.
+
+First observations are provisional for up to 30 days and excluded from recall and summaries. Another independent turn affirming the same keyed fact promotes it; replaying one turn does not. Explicit correction cues can replace inferred facts immediately. A contradictory passing remark remains provisional while the existing confirmed fact stays available. Confirmed corrections retract superseded versions and dependent summaries.
+
+Settings offers edit/confirm/forget with confidence, date, evidence and lineage; user-authored corrections take precedence over subsequent automatic inference. Editing and forgetting remain available with learning off.
 
 The learner uses its own runtime process and ephemeral threads with shell, apps, plugins, MCP, browser and other action capabilities disabled for analysis. Structured results are validated before storage. It uses additional account inference, not model-weight training or psychological profiling. Model extraction can misinterpret a statement; notes remain observed data, never trusted instructions.
 
@@ -63,7 +69,9 @@ Say **“Remind me in ten minutes to take a break”**, using whole-number minut
 
 A separate journal discovers confirmed, source-linked goals/projects/commitments with semantic keys beginning `goal_`, `project_`, `commitment_` or `ongoing_`. Discovery runs every 30 seconds while learning and a suggestion mode are enabled. These are conservative offers to revisit recent context, not an unrestricted agent that guesses deadlines or continuously reasons over all history. Each inferred offer expires seven days after its source update and is removed when its source is forgotten/corrected or memory is disabled. Unchanged dismissed items do not reappear. Review allows permission, one-hour snooze and dismissal/completion. This is not a general calendar/date-language parser or automatic task-completion detector.
 
-Quiet hours use the computer’s local time (default 22:00–08:00), with a configurable daily cap (default three, range one–ten) and minimum gap (default one hour, range fifteen minutes–one day). Due items wait until these conditions and voice-idle checks pass. The bounded journal holds at most 256 entries. Delivery is persisted before audio for at-most-once automatic attempts across restart: a crash or unavailable system voice can miss an announcement. Such items remain reviewable and can be snoozed to retry. Speech errors appear in Settings. Escape cancels a current spoken follow-up; changing to Reactive, dismissing an item or disabling its memory permission cancels the local speech process. This layer never silently enables provider overages or switches providers.
+Quiet hours use the computer’s local time (default 22:00–08:00), with a configurable daily cap (default three, range one–ten) and minimum gap (default one hour, range fifteen minutes–one day). Due items wait until these conditions and voice-idle checks pass. The bounded journal holds at most 256 entries. Delivery is persisted before audio for at-most-once automatic attempts across restart: a crash or unavailable system voice can miss an announcement.
+
+Such items remain reviewable and can be snoozed to retry. Speech errors appear in Settings. Escape cancels a current spoken follow-up; changing to Reactive, dismissing an item or disabling its memory permission cancels the local speech process. This layer never silently enables provider overages or switches providers.
 
 Mnemara gives us memory semantics we would otherwise implement over SQLite; no comparative speed or durability claim is made. [Mnemara](https://github.com/deliberium/mnemara) is MIT licensed and compiled into the app.
 
@@ -112,7 +120,9 @@ The ElevenLabs subscription pool is **not a guaranteed combined STT/TTS balance*
 
 In Settings → Hands-free voice, enable **Listen for my wake phrase**, save, then close Settings. The default phrase follows the companion name: **Hey Ava**, for example. Name-only activation is optional and more prone to false triggers. Wake names currently use English letters, spaces, apostrophes and hyphens; the companion can have another name when wake listening is off.
 
-A small green dot on the orb means wake listening is armed. A short local tone and the listening animation signal activation. After that, speak your request; pause briefly after the wake phrase to avoid clipping the first word. Rust records only audio after activation, stops after 1.2 seconds of silence following speech, and uses the existing STT → Terra → TTS flow. Listening resumes after playback and a short cooldown. Eight seconds without a request discards capture; requests are bounded to 30 seconds and under 8.1 MB of PCM WAV. No background recording is written to disk or sent to a service.
+A small green dot on the orb means wake listening is armed. A short local tone and the listening animation signal activation. After that, speak your request; pause briefly after the wake phrase to avoid clipping the first word. Rust records only audio after activation, stops after 1.2 seconds of silence following speech, and uses the existing STT → Terra → TTS flow. Listening resumes after playback and a short cooldown.
+
+Eight seconds without a request discards capture; requests are bounded to 30 seconds and under 8.1 MB of PCM WAV. No background recording is written to disk or sent to a service.
 
 The **Mute microphone** switch and tray **Mute / unmute microphone** action stop wake listening and microphone requests. A grey mark indicates mute. Push-to-talk remains available when unmuted. Listening pauses during Settings/About, voice processing, replies, previews, update/usage announcements and installation, or when the orb window is hidden. A three-second UI heartbeat timeout stops capture if the frontend stalls. Microphone errors latch until you save wake settings to retry.
 
@@ -136,7 +146,9 @@ Availability is what the installed runtime/account reports, not the full ChatGPT
 
 notdot stores voice keys in the OS credential store and keeps an authorised copy only in native process memory for the session. Startup, normal voice requests, Settings auto-loading and automatic usage checks use silent access: on macOS a scoped login-keychain query skips items requiring authentication UI and temporarily disables legacy keychain UI under a process-wide credential-operation lock; Windows reads the current user credential set; Linux searches only already-unlocked matching Secret Service items without calling Unlock. Missing/locked/denied access is reported instead of opening an unsolicited password dialog. Opening Settings does not automatically load voices until a key is already authorised.
 
-Use **Settings → Authorize saved key** when access is needed, or enter/save a new key. Only that explicit authorisation and explicit credential writes/removal may show OS authentication UI. On macOS choose **Always Allow** if you want macOS to remember trust for this app; **Allow Once** deliberately grants only temporary access. An unlocked, trusted installation can restore its key silently on later launches. Locked keychains, changed permissions and changed/ad-hoc development binaries can still require reauthorisation. Stable distribution signing is needed for stable app identity across updates; this patch does not bypass macOS trust or promise prompt-free access for every rebuild. [Apple: keychain access choices](https://support.apple.com/guide/keychain-access/if-youre-asked-for-access-to-your-keychain-kyca1243/mac), [Apple: changed trusted apps](https://support.apple.com/guide/keychain-access/if-a-trusted-app-asks-for-keychain-access-kyca1331/mac).
+Use **Settings → Authorize saved key** when access is needed, or enter/save a new key. Only that explicit authorisation and explicit credential writes/removal may show OS authentication UI. On macOS choose **Always Allow** if you want macOS to remember trust for this app; **Allow Once** deliberately grants only temporary access. An unlocked, trusted installation can restore its key silently on later launches. Locked keychains, changed permissions and changed/ad-hoc development binaries can still require reauthorisation.
+
+Stable distribution signing is needed for stable app identity across updates; this patch does not bypass macOS trust or promise prompt-free access for every rebuild. [Apple: keychain access choices](https://support.apple.com/guide/keychain-access/if-youre-asked-for-access-to-your-keychain-kyca1243/mac), [Apple: changed trusted apps](https://support.apple.com/guide/keychain-access/if-a-trusted-app-asks-for-keychain-access-kyca1331/mac).
 
 Successful reads are serialised and cached per provider, so STT, TTS, previews and usage checks reuse the same authorised session. Updating/removing a key updates/clears that cache only after the OS operation succeeds. Cache strings use zeroising storage; provider requests may hold their own in-flight copies. No cache is written to disk, and stored secrets are never returned to the webview. The original keychain service/account identity is preserved for existing keys; no ACL is widened and no keychain password is stored.
 
@@ -149,3 +161,21 @@ Previous conversations remain in Codex/Desktop history; notdot detaches from the
 ### Acceptance validation
 
 Current automated, security, accessibility and performance evidence is recorded in [the acceptance audit](validation/2026-10-27-acceptance.md), with [repeatable memory measurements](validation/2026-10-27-memory-performance.json). Native microphone/speaker, VoiceOver, visual layout, real sign-in startup and installed-update acceptance remain gates; use [the isolated QA plan](validation/NATIVE-VOICE-ACCEPTANCE.md), never the production memory reset. The orb supports Enter/Space and Command/Control+comma for Settings.
+
+## Terms used in this technical guide
+
+| Technical term | Plain meaning |
+| --- | --- |
+| Runtime / app-server | The installed Codex program that sends requests and keeps the chat. |
+| Reasoning effort | How much thinking the model is asked to do. |
+| STT / TTS | Turning a recording into words / turning a reply into speech. |
+| Ledger | The local store of saved memories. |
+| Recall | Finding saved memories to use in a reply. |
+| Provisional | A possible memory that still needs confirmation. |
+| Corroboration | Another chat supports the same detail. |
+| Distillation / digest | Making a shorter summary of saved notes. |
+| Provenance / lineage | Where a note came from and which notes support it. |
+| Inference | An AI request. |
+| Single writer | Only notdot sends messages to its companion chat. |
+
+The speaking animation now uses smooth, layered waves with a softened audio level. The listening indicator and the waiting halo remain distinct. Intelligence is chosen in one expandable card with model choices and thinking-level buttons. Drag the Settings header to move the window without closing it.

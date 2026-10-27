@@ -4,27 +4,29 @@
 
 **A voice companion. Just an orb. Your desktop, a little more personal.**
 
-Talk to a small, expressive orb that listens, thinks and speaks. Built with Rust, Tauri and a Rust/WASM interface, notdot brings a persistent Codex conversation, optional local memory and your choice of colour to the desktop.
+Talk to a small, expressive orb that listens, thinks and speaks. Built with Rust, Tauri and a Rust/WASM interface, notdot brings a saved Codex conversation, optional local memory and your choice of colour to the desktop.
 
 **Development preview.** No public binary release yet. macOS is the primary development platform; Windows and Linux builds still need hardware acceptance. Independent project, not affiliated with OpenAI or ElevenLabs.
 
 ## Meet your orb
 
 - **Voice first:** click or press Space to talk; Escape cancels. Optional local name-based wake phrases are experimental.
-- **Continuity:** one persistent companion conversation, with notdot as the writer. Desktop history viewing is available; live shared ownership is not established.
-- **Memory you control:** optional source-linked learning, review, correction, forgetting and a complete local memory reset. This does not train model weights.
-- **Make it yours:** name, live colour preview, searchable voices with previews, model and reasoning-effort settings.
-- **Considerate by design:** separate learning and interruption permissions, quiet hours, quota alerts and reduced-motion support.
+- **Continuity:** one saved chat. Send requests through notdot; use Desktop to read its saved history. Sending from both apps at once is not supported.
+- **Memory you control:** optional memories linked to the chats they came from, review, correction, forgetting and a complete local memory reset. This changes what the AI knows about you; it does not retrain the model.
+- **Make it yours:** name, live colour preview, searchable voices with previews, one model-and-thinking-level picker.
+- **Considerate by design:** separate choices for remembering and interrupting, quiet hours, usage alerts and support for reduced motion.
 
-ElevenLabs is the first voice backend; the Rust interface supports adding others. GPT-6.1 Terra / Medium is the default, with available models and effort levels fetched from the installed runtime.
+ElevenLabs is the first voice service; the Rust interface supports adding others. GPT-6.1 Terra / Medium is the default, with available models and thinking levels checked with your installed Codex tool.
 
 ## See it in action
 
-The [website source](docs/index.html) is ready for GitHub Pages. The real voice demo is **pending native recording and audio verification**; no simulated interaction is presented as a product demonstration. See the [recording and publication checklist](docs/demo.md).
+A new voice demo is being prepared. We’re waiting for a quiet recording session so you can hear both sides clearly.
+
+[Website source](docs/index.html) · [Recording plan](docs/demo.md)
 
 ## Run from source
 
-You need macOS 14+, Rust 1.97+, an authenticated compatible Codex runtime, and an ElevenLabs account/key for voice. Services may require paid usage. The runtime is installed separately.
+You need macOS 14+, Rust 1.97+, a compatible Codex tool signed into your account, and an ElevenLabs account/key for voice. Services may require paid usage. Install Codex separately.
 
 ```sh
 git clone https://github.com/kabudu/notdot.git
@@ -35,11 +37,11 @@ cargo install tauri-cli --locked
 cargo tauri dev
 ```
 
-Open Settings with right-click or Cmd/Ctrl+, then configure your voice backend and choose a voice. Keys stay in the OS keychain. For platform prerequisites, bundles and configuration, read the [full guide](docs/guide.md).
+Open Settings with right-click or Cmd/Ctrl+, then configure your voice service and choose a voice. Keys stay in the OS keychain. For everyday options, read the [Settings guide](docs/settings.md). Build and platform details are in the [developer guide](docs/guide.md).
 
 ## Where your data goes
 
-Wake detection is local before activation. Activated audio goes to your voice provider; transcripts and recalled notes go to the model runtime. Memory and settings live in your application-data directory. Turning learning off stops ledger saving and recall without deleting history. Resetting local memory does not erase old Desktop chats or backups. See [security and privacy boundaries](SECURITY.md).
+Wake detection is local before activation. After you start a request, its recording goes to your voice service. The words from your request and relevant saved memories go to the model through Codex. Memory and settings stay in the app’s folder on your computer. Turning memory off stops saving and using those notes; it keeps your chat history. Resetting local memory does not erase old Desktop chats or backups. See [security and privacy boundaries](SECURITY.md).
 
 ## Explore and contribute
 
