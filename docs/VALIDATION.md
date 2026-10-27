@@ -172,3 +172,8 @@ Self-review also found the Settings save handler held send_gate while asking con
 ## Broad acceptance audit
 
 The 2026-10-27 validation sweep, fixes, source provenance, repeated local-memory performance measurements and exact outstanding native gates are tracked in [the acceptance record](validation/2026-10-27-acceptance.md). This adds security/dependency scans, real runtime/adversarial checks, Linux native tests, keyboard/modal/contrast regressions and an isolated read-only-credential QA profile. It does not claim completion of microphone/speaker or VoiceOver acceptance while the Mac is locked.
+
+
+## Live streaming voice acceptance
+
+The macOS `859727f` QA build passed acoustic microphone → live streaming transcription → Terra Medium → spoken reply tests in wake and one-click modes, plus active capture, model and playback cancellation. Native events delivered the first listening frame 15 ms after activation in the measured wake turn; partial transcription arrived before recording ended. See [measurements and limits](validation/2026-10-27-wake-streaming.md). This supersedes earlier pending gates for this macOS path; Windows/Linux and fresh promotional recording remain separate.
