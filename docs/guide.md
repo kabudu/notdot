@@ -39,7 +39,7 @@ notdot keeps one long-lived `codex app-server --stdio` process, uses `gpt-6.1-te
 
 Writer conflicts are shown as errors. notdot never removes locks or automatically archives a desktop-owned conversation. Reconnect is available from Settings/tray and explicitly interrupts an active turn before replacing the runtime. The app-server interface is experimental; a compatible installed runtime and account access are required.
 
-The runtime starts with read-only filesystem access and untrusted approval policy. This build rejects host approval/elicitation requests it cannot implement; it cannot fulfill every desktop-only tool or permission flow. Connected read-only tools may work with the existing account configuration, but they must not be confused with a full desktop runtime attachment.
+The runtime starts with a read-only sandbox and untrusted approval policy. Companion threads disable local shell/REPL, browser/computer control, local image viewing, delegation, hooks and project-instruction loading. Connected app and MCP writes require human review; existing prompt-for-all-call restrictions are retained. This build rejects host approval/elicitation requests it cannot implement; it cannot fulfill every desktop-only tool or permission flow. Connected read-only tools may work with the existing account configuration, but they must not be confused with a full desktop runtime attachment.
 
 See [bridge investigation](bridge-investigation.md) for the original experiments and limitations.
 
