@@ -40,6 +40,39 @@ pub struct LearningBatch {
     pub notes: Vec<LearnedNote>,
     pub digest: Option<Digest>,
 }
+impl LearningBatch {
+    /// Drop only an invalid optional summary. Notes still require all normal
+    /// source, policy and revision checks in `Memory::apply_learning`.
+    pub fn discard_invalid_digest(&mut self, plan: &LearningPlan) -> bool {
+        if self
+            .digest
+            .as_ref()
+            .is_some_and(|digest| !valid_digest(plan, digest))
+        {
+            self.digest = None;
+            true
+        } else {
+            false
+        }
+    }
+}
+fn valid_digest(plan: &LearningPlan, digest: &Digest) -> bool {
+    let ids: std::collections::BTreeSet<_> = digest.source_ids.iter().collect();
+    let sources: Vec<_> = plan
+        .notes
+        .iter()
+        .filter(|note| {
+            active(note) && note.kind == MemoryRecordKind::Fact && ids.contains(&note.id)
+        })
+        .collect();
+    ids.len() >= 2
+        && ids.len() == digest.source_ids.len()
+        && sources.len() == ids.len()
+        && !digest.content.trim().is_empty()
+        && digest.content.len() <= 2000
+        && digest.content.len() < sources.iter().map(|note| note.content.len()).sum::<usize>()
+        && !excluded(&digest.content)
+}
 pub fn schema() -> serde_json::Value {
     serde_json::json!({"type":"object","additionalProperties":false,"required":["notes","digest"],"properties":{
         "notes":{"type":"array","maxItems":4,"items":{"type":"object","additionalProperties":false,"required":["key","content","evidence","confidence"],"properties":{"key":{"type":"string"},"content":{"type":"string"},"evidence":{"type":"string"},"confidence":{"type":"number"}}}},
@@ -335,23 +368,12 @@ impl Memory {
         if opted_out(user) {
             return Ok(0);
         }
-        if let Some(d) = &batch.digest {
-            let ids: std::collections::BTreeSet<_> = d.source_ids.iter().collect();
-            let sources: Vec<_> = plan
-                .notes
-                .iter()
-                .filter(|n| active(n) && ids.contains(&n.id))
-                .collect();
-            if ids.len() < 2
-                || ids.len() != d.source_ids.len()
-                || sources.len() != ids.len()
-                || d.content.trim().is_empty()
-                || d.content.len() > 2000
-                || d.content.len() >= sources.iter().map(|r| r.content.len()).sum::<usize>()
-                || excluded(&d.content)
-            {
-                return Err("Memory digest failed provenance or compression checks".into());
-            }
+        if batch
+            .digest
+            .as_ref()
+            .is_some_and(|digest| !valid_digest(plan, digest))
+        {
+            return Err("Memory digest failed provenance or compression checks".into());
         }
         let package = self
             .store
@@ -801,6 +823,94 @@ mod tests {
         assert_eq!(notes.len(), 1);
         assert!(!provisional(&notes[0]));
         assert_ne!(notes[0].id, note.id);
+    }
+    #[test]
+    fn optional_summary_filter_preserves_valid_summaries_and_rejects_unsafe_sources() {
+        let first = learned_record("Prefers English spelling.", MemoryRecordKind::Fact);
+        let second = learned_record("Prefers unsweetened tea.", MemoryRecordKind::Fact);
+        let mut provisional_note = learned_record("An unconfirmed fact.", MemoryRecordKind::Fact);
+        provisional_note.quality_state = MemoryQualityState::Suppressed;
+        let summary = learned_record("An older summary.", MemoryRecordKind::Summary);
+        let plan = LearningPlan {
+            ticket: 1,
+            revision: 1,
+            interaction: None,
+            notes: vec![first, second, provisional_note, summary],
+        };
+        let ids: Vec<_> = plan.notes.iter().map(|note| note.id.clone()).collect();
+        let mut valid = LearningBatch {
+            notes: vec![],
+            digest: Some(Digest {
+                content: "English; unsweetened tea.".into(),
+                source_ids: ids[..2].to_vec(),
+            }),
+        };
+        assert!(!valid.discard_invalid_digest(&plan));
+        assert!(valid.digest.is_some());
+        for (content, sources) in [
+            ("Unverified".into(), vec![ids[0].clone(), "missing".into()]),
+            ("Duplicate".into(), vec![ids[0].clone(), ids[0].clone()]),
+            ("Provisional".into(), vec![ids[0].clone(), ids[2].clone()]),
+            (
+                "Summary source".into(),
+                vec![ids[0].clone(), ids[3].clone()],
+            ),
+            ("x".repeat(3000), ids[..2].to_vec()),
+            (
+                "x".repeat(plan.notes[0].content.len() + plan.notes[1].content.len()),
+                ids[..2].to_vec(),
+            ),
+        ] {
+            let mut batch = LearningBatch {
+                notes: vec![],
+                digest: Some(Digest {
+                    content,
+                    source_ids: sources,
+                }),
+            };
+            assert!(batch.discard_invalid_digest(&plan));
+            assert!(batch.digest.is_none());
+        }
+    }
+    #[tokio::test]
+    async fn invalid_optional_summary_does_not_discard_valid_facts_or_bypass_note_checks() {
+        let _store_fixture = TEST_STORE.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let m = Memory::open_with_learning(dir.path(), true).unwrap();
+        let text = "I am building a birdhouse for my garden.";
+        let plan = m
+            .plan(m.learning_ticket().unwrap(), Some(source(text)))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut batch = one("project_birdhouse", text, text);
+        batch.digest = Some(Digest {
+            content: "Unverified summary".into(),
+            source_ids: vec!["invented-a".into(), "invented-b".into()],
+        });
+        batch.discard_invalid_digest(&plan);
+        assert_eq!(m.apply_learning(&plan, batch).await.unwrap(), 1);
+        let notes = m.review("").await.unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].content, text);
+        assert!(provisional(&notes[0]));
+        let plan = m
+            .plan(m.learning_ticket().unwrap(), Some(source(text)))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut bad_note = one(
+            "project_birdhouse",
+            text,
+            "This evidence is absent from the utterance.",
+        );
+        bad_note.digest = Some(Digest {
+            content: "bad".into(),
+            source_ids: vec![],
+        });
+        assert!(bad_note.discard_invalid_digest(&plan));
+        assert!(m.apply_learning(&plan, bad_note).await.is_err());
+        assert_eq!(m.review("").await.unwrap().len(), 1);
     }
     #[tokio::test]
     async fn automatic_notes_correct_distil_reopen_and_forget_with_provenance() {
