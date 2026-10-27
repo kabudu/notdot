@@ -723,6 +723,10 @@ impl Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Production has one inference worker. Parallel fixture constructors race
+    // ONNX Runtime's process-global default LoggingManager on Linux. Keep the
+    // complete model fixtures serial (including teardown), retaining assertions.
+    static MODEL_FIXTURE: Mutex<()> = Mutex::new(());
     fn models() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/wake")
     }
@@ -756,6 +760,7 @@ mod tests {
     }
     #[test]
     fn bundled_detector_hears_custom_phrases_and_rejects_unrelated_audio() {
+        let _models = MODEL_FIXTURE.lock().unwrap();
         let mut d = Detector::new(&models(), &phrase("Ava", false).unwrap()).unwrap();
         assert!(detects(&mut d, &audio("hey-ava-uk.wav")));
         let at_48k: Vec<_> = audio("hey-ava.wav")
@@ -782,6 +787,7 @@ mod tests {
     }
     #[test]
     fn real_keyword_to_capture_to_one_shot_wav_excludes_background_audio() {
+        let _models = MODEL_FIXTURE.lock().unwrap();
         let wake = isolated();
         wake.inner.lock().unwrap().pending = None;
         let mut worker = Worker {
