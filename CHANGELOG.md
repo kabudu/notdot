@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Declare the microphone audio-input entitlement for hardened macOS bundles; the missing entitlement rejected WebKit recording even with the OS privacy switch enabled.
+
 - Make forgetting free current-record capacity instead of accumulating tombstones that prevent future learning at the ledger limit.
 
 - Improve keyboard/assistive operation of the orb and Settings, block accidental recording from modal controls, focus revealed memory editors and observe live reduced-motion changes. Correct Save/switch contrast across the full hue range with static regressions.

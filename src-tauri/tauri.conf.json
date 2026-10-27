@@ -40,7 +40,8 @@
     ],
     "macOS": {
       "minimumSystemVersion": "14.0",
-      "infoPlist": "Info.plist"
+      "infoPlist": "Info.plist",
+      "entitlements": "Entitlements.plist"
     },
     "icon": [
       "icons/32x32.png",
