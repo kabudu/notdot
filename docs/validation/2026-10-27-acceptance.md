@@ -36,3 +36,7 @@ Reference: https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html. Na
 ## Isolated native acceptance preparation
 
 A debug QA bundle/profile is prepared under com.kabudu.notdot.qa, separate from the production singleton, settings, ledger and conversation. Credentials are read-only: explicit authorisation can read an existing key, but saving/removal is rejected before OS access. QA startup mutations and live updater installation are blocked because those plugins otherwise share OS/global resources. The initial profile copies only non-secret voice/model preferences and disables automatic behaviour. scripts/prepare_qa.py refuses to overwrite a pre-existing profile. Native steps and remaining gates are in NATIVE-VOICE-ACCEPTANCE.md; the QA bundle is built but not launched while the Mac is locked.
+
+## Capacity regression
+
+A new backend regression failed before the fix: forgetting one of two records left total_records at two because soft-delete tombstones still consumed the 2,000-current-record budget. Forgetting now removes the selected current records and dependent summaries, freeing capacity for replacements. Existing forget/reopen/provenance tests continue to pass. Underlying store version/changefeed history can still remain until full Reset memory; this is not a forensic-erasure claim.
