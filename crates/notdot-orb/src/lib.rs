@@ -108,6 +108,7 @@ struct View {
     speech_queue: speech_queue::SpeechQueue,
     speech_worker: bool,
     polling: bool,
+    last_poll_at: f64,
     generation: u64,
     last_frame: f64,
     amplitude: f64,
@@ -2130,10 +2131,22 @@ pub fn start() -> Result<(), JsValue> {
     let target = view.clone();
     let first = Rc::new(RefCell::new(true));
     let tick = Closure::<dyn FnMut()>::new(move || {
-        if target.borrow().polling {
-            return;
+        {
+            let mut v = target.borrow_mut();
+            let now = js_sys::Date::now();
+            let fast = v.snapshot.settings.wake_enabled
+                && v.snapshot.window_visible
+                && matches!(
+                    v.snapshot.wake["phase"].as_str(),
+                    Some("listening" | "capturing")
+                );
+            let interval = if fast { 200. } else { 500. };
+            if v.polling || (now >= v.last_poll_at && now - v.last_poll_at < interval) {
+                return;
+            }
+            v.last_poll_at = now;
+            v.polling = true;
         }
-        target.borrow_mut().polling = true;
         let target = target.clone();
         let first = first.clone();
         spawn_local(async move {
@@ -2449,7 +2462,7 @@ pub fn start() -> Result<(), JsValue> {
     });
     window().set_interval_with_callback_and_timeout_and_arguments_0(
         tick.as_ref().unchecked_ref(),
-        500,
+        100,
     )?;
     tick.forget();
     animate(canvas, view)?;

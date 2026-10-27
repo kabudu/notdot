@@ -32,6 +32,7 @@ pub(super) struct Fallback {
     tail: VecDeque<f32>,
     samples: Vec<f32>,
     silence: usize,
+    pause_ms: u32,
     speech: usize,
     pub(super) error: Option<String>,
 }
@@ -73,6 +74,7 @@ impl Fallback {
             tail: VecDeque::new(),
             samples: Vec::new(),
             silence: 0,
+            pause_ms: 300,
             speech: 0,
             error: None,
         })
@@ -121,7 +123,9 @@ impl Fallback {
         } else {
             self.silence += samples.len();
         }
-        if self.silence >= rate as usize / 2 || self.samples.len() >= rate as usize * 6 {
+        if self.silence >= rate as usize * self.pause_ms as usize / 1000
+            || self.samples.len() >= rate as usize * 6
+        {
             let samples = std::mem::take(&mut self.samples);
             if self.speech >= rate as usize / 5 && !self.busy {
                 let job = Job {
@@ -343,12 +347,20 @@ mod tests {
             "Hey Ava",
         )
         .unwrap();
+        if let Ok(pause) = std::env::var("NOTDOT_WAKE_PAUSE_MS") {
+            fallback.pause_ms = pause.parse().unwrap();
+            assert!([300, 500].contains(&fallback.pause_ms));
+        }
+        let start = Instant::now();
+        let mut supplied = 0usize;
         let mut heard = false;
         for chunk in audio.chunks(rate as usize / 50) {
+            supplied += chunk.len();
+            let deadline = start + Duration::from_secs_f64(supplied as f64 / f64::from(rate));
+            if let Some(wait) = deadline.checked_duration_since(Instant::now()) {
+                std::thread::sleep(wait);
+            }
             heard |= fallback.accept(rate, chunk);
-            std::thread::sleep(Duration::from_secs_f64(
-                chunk.len() as f64 / f64::from(rate),
-            ));
             if heard {
                 break;
             }
@@ -360,6 +372,10 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+        eprintln!(
+            "stream activation_ms={} matched={heard}",
+            start.elapsed().as_millis()
+        );
         assert!(fallback.error.is_none(), "{:?}", fallback.error);
         assert!(heard);
     }
