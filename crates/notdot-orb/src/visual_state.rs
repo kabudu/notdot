@@ -15,9 +15,8 @@ impl Mode {
         match status {
             "listening" => Self::Listening,
             "announcing" => Self::Speaking,
-            "thinking" | "connecting" | "transcribing" | "synthesizing" | "updating" => {
-                Self::Thinking
-            }
+            "thinking" | "connecting" | "transcribing" | "synthesizing" | "updating"
+            | "resetting" => Self::Thinking,
             "error" => Self::Error,
             _ => Self::Idle,
         }

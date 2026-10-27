@@ -4,6 +4,7 @@ mod credentials;
 mod initiative;
 mod learning;
 mod quota;
+mod reset;
 mod startup;
 mod system_speech;
 mod updates;
@@ -290,6 +291,7 @@ async fn save_settings(
     if key_changed || provider_changed {
         state.quota.invalidate().await?;
     }
+    drop(_submission);
     if (name_changed || model_changed)
         && let Err(error) = connect(state.inner().clone(), false).await
     {
@@ -828,6 +830,7 @@ fn main() {
             initiative::followup_action,
             initiative::announce_followup,
             maintain_memory,
+            reset::reset_memory,
             transcribe,
             speak,
             voice_providers,
@@ -855,6 +858,7 @@ fn main() {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
             }
+            reset::complete_pending(&dir).map_err(std::io::Error::other)?;
             let path = dir.join("settings.json");
             let settings = Settings::load(&path).map_err(std::io::Error::other)?;
             let waiting_for_desktop = std::env::args().any(|a| a == "--startup")

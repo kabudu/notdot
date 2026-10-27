@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add a confirmed Reset memory action that deletes the whole local ledger and reminder journal, restarts with a fresh companion conversation and preserves configuration/API keys. Complete interrupted resets before opening the ledger or starting workers.
+- Release the settings submission guard before reconnecting after a model/name change, avoiding a reentrant-lock rejection.
+
+
 - Prevent startup, voice and background quota checks from opening keychain authentication dialogs. Add explicit saved-key authorisation in Settings and silent trusted-key restoration.
 - Cache authorised keys per provider in native session memory, serialise access and update/clear the cache after successful replacement/removal; retain OS-protected persistence and existing key identities.
 
