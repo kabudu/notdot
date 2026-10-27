@@ -1,6 +1,6 @@
 //! One bounded streaming session for the current activated recording. Failures
 //! preserve the local WAV for a batch retry; cancellation never triggers a retry.
-use crate::{AppState, backend, wake::CaptureEvent};
+use crate::{AppState, recognition_backend, wake::CaptureEvent};
 use notdot_voice::{VoiceError, VoiceErrorKind, realtime::StreamStats};
 use serde::Serialize;
 use std::{
@@ -140,7 +140,7 @@ async fn run(
     rate: u32,
     input: mpsc::Receiver<Input>,
 ) -> Result<(String, StreamStats), VoiceError> {
-    let backend = backend(&state, None).await.map_err(|_| {
+    let backend = recognition_backend(&state).await.map_err(|_| {
         VoiceError::new(
             VoiceErrorKind::Authentication,
             "Saved voice key is unavailable",
@@ -180,7 +180,7 @@ async fn run_stream(
                 expected = expected.wrapping_add(1);
                 since_commit += pcm.len() / 2;
                 stream.send(&pcm).await?;
-                if since_commit >= rate as usize * 20 {
+                if !stream.continuous_turn() && since_commit >= rate as usize * 20 {
                     let segment = stream.commit().await?;
                     append(&mut text, &segment)?;
                     since_commit = 0;
@@ -321,11 +321,15 @@ mod tests {
         assert!(append(&mut t, &"x".repeat(65536)).is_err());
     }
     struct MockStream {
+        continuous: bool,
         commits: u64,
         bytes: usize,
     }
     #[async_trait::async_trait]
     impl notdot_voice::realtime::StreamingTranscriber for MockStream {
+        fn continuous_turn(&self) -> bool {
+            self.continuous
+        }
         async fn send(&mut self, bytes: &[u8]) -> Result<(), VoiceError> {
             self.bytes += bytes.len();
             Ok(())
@@ -358,6 +362,7 @@ mod tests {
             tx.send(Input::Finish { sequence: end }).await.unwrap();
             let err = run_stream(
                 Box::new(MockStream {
+                    continuous: false,
                     commits: 0,
                     bytes: 0,
                 }),
@@ -371,29 +376,39 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn long_turn_preserves_committed_segment_order() {
-        let (tx, rx) = mpsc::channel(32);
-        for sequence in 0..21 {
-            tx.send(Input::Audio {
-                sequence,
-                pcm: vec![0; 32000],
-            })
+    async fn long_turn_preserves_committed_segment_order_without_forcing_continuous_recognizers() {
+        for continuous in [false, true] {
+            let (tx, rx) = mpsc::channel(32);
+            for sequence in 0..21 {
+                tx.send(Input::Audio {
+                    sequence,
+                    pcm: vec![0; 32000],
+                })
+                .await
+                .unwrap();
+            }
+            tx.send(Input::Finish { sequence: 21 }).await.unwrap();
+            let (text, stats) = run_stream(
+                Box::new(MockStream {
+                    continuous,
+                    commits: 0,
+                    bytes: 0,
+                }),
+                16000,
+                rx,
+            )
             .await
             .unwrap();
+            assert_eq!(
+                text,
+                if continuous {
+                    "segment1"
+                } else {
+                    "segment1 segment2"
+                }
+            );
+            assert_eq!(stats.committed_segments, if continuous { 1 } else { 2 });
         }
-        tx.send(Input::Finish { sequence: 21 }).await.unwrap();
-        let (text, stats) = run_stream(
-            Box::new(MockStream {
-                commits: 0,
-                bytes: 0,
-            }),
-            16000,
-            rx,
-        )
-        .await
-        .unwrap();
-        assert_eq!(text, "segment1 segment2");
-        assert_eq!(stats.committed_segments, 2);
     }
     #[tokio::test]
     async fn cancelled_session_never_requests_batch_fallback() {
@@ -407,6 +422,7 @@ mod tests {
         let task = tokio::spawn(async move {
             let value = run_stream(
                 Box::new(MockStream {
+                    continuous: false,
                     commits: 0,
                     bytes: 0,
                 }),

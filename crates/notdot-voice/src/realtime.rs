@@ -28,12 +28,18 @@ pub struct StreamStats {
 }
 #[async_trait]
 pub trait StreamingTranscriber: Send {
+    /// Some recognizers finalize only already-decoded text; avoid forcing them
+    /// across an arbitrary boundary in the middle of a word.
+    fn continuous_turn(&self) -> bool {
+        false
+    }
+
     async fn send(&mut self, pcm16_le: &[u8]) -> Result<(), VoiceError>;
     async fn commit(&mut self) -> Result<String, VoiceError>;
     async fn close(&mut self);
     fn stats(&self) -> StreamStats;
 }
-fn timestamp_ms() -> u64 {
+pub(crate) fn timestamp_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

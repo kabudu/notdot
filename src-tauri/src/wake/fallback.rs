@@ -74,7 +74,8 @@ impl Fallback {
             tail: VecDeque::new(),
             samples: Vec::new(),
             silence: 0,
-            pause_ms: 200,
+            // Keep a natural short pause between the greeting and name in one decode.
+            pause_ms: 350,
             speech: 0,
             error: None,
         })
@@ -236,6 +237,29 @@ fn addressed(text: &str, phrase: &str) -> bool {
 mod tests {
     use super::*;
     #[test]
+    fn short_pause_inside_wake_phrase_does_not_split_the_decode() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut f = Fallback::new(
+            &root.join("resources/wake/ggml-tiny.en-q5_1.bin"),
+            "Hey Ava",
+        )
+        .unwrap();
+        for _ in 0..25 {
+            assert!(!f.accept(16000, &[0.; 320]));
+        }
+        for _ in 0..15 {
+            assert!(!f.accept(16000, &[0.03; 320]));
+        }
+        for _ in 0..13 {
+            assert!(!f.accept(16000, &[0.; 320]));
+        }
+        assert!(
+            !f.busy,
+            "a natural pause must not send the greeting without the name"
+        );
+        assert!(!f.samples.is_empty());
+    }
+    #[test]
     fn only_direct_address_matches_the_configured_phrase() {
         assert!(addressed("Hey, Ava!", "Hey Ava"));
         assert!(addressed("Hey Ava, help me", "Hey Ava"));
@@ -350,7 +374,7 @@ mod tests {
         .unwrap();
         if let Ok(pause) = std::env::var("NOTDOT_WAKE_PAUSE_MS") {
             fallback.pause_ms = pause.parse().unwrap();
-            assert!([200, 300, 500].contains(&fallback.pause_ms));
+            assert!([200, 300, 350, 500].contains(&fallback.pause_ms));
         }
         let start = Instant::now();
         let mut supplied = 0usize;

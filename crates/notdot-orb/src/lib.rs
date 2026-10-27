@@ -31,6 +31,7 @@ struct Settings {
     voice_id: String,
     voice_provider: String,
     speech_language: String,
+    stt_provider: String,
     voice_name: String,
     memory_enabled: bool,
     initiative: Value,
@@ -55,6 +56,7 @@ struct Snapshot {
     key_configured: bool,
     key_checking: bool,
     key_authorized: bool,
+    stt_ready: bool,
     window_visible: bool,
     version: String,
     desktop_launch_supported: bool,
@@ -151,6 +153,13 @@ fn window() -> web_sys::Window {
 }
 fn document() -> web_sys::Document {
     window().document().expect("notdot document exists")
+}
+fn show_stt_fields() {
+    if select("stt-provider").value() == "deepgram" {
+        let _ = element("deepgram-settings").remove_attribute("hidden");
+    } else {
+        let _ = element("deepgram-settings").set_attribute("hidden", "");
+    }
 }
 fn element(id: &str) -> web_sys::Element {
     document()
@@ -561,6 +570,7 @@ fn wake_ready(view: &Shared, snapshot: &Snapshot) -> bool {
         && !snapshot.settings.microphone_muted
         && snapshot.settings.onboarding_complete
         && snapshot.key_configured
+        && snapshot.stt_ready
         && !snapshot.key_checking
         && !snapshot.settings.voice_id.is_empty()
         && !v.voice_pending
@@ -924,6 +934,8 @@ fn open_panel(view: &Shared) {
     input("hue").set_value(&s.hue.to_string());
     select("provider").set_value(&s.voice_provider);
     select("speech-language").set_value(&s.speech_language);
+    select("stt-provider").set_value(&s.stt_provider);
+    show_stt_fields();
     render_voice_options(view, &s.voice_id, &s.voice_name);
     apply_theme(s.hue);
     input("wake-enabled").set_checked(s.wake_enabled);
@@ -1286,9 +1298,13 @@ async fn voice(view: Shared) -> Result<(), String> {
     ) {
         return Err("An update is being installed".into());
     }
-    if !view.borrow().snapshot.key_configured || view.borrow().snapshot.settings.voice_id.is_empty()
+    if !view.borrow().snapshot.stt_ready
+        || !view.borrow().snapshot.key_configured
+        || view.borrow().snapshot.settings.voice_id.is_empty()
     {
-        return Err("Allow saved voice key access and choose a voice in Settings".into());
+        return Err(
+            "Allow the selected recognition and voice keys, and choose a voice in Settings".into(),
+        );
     }
     if view.borrow().snapshot.phase == "thinking" {
         let request_id = view.borrow().snapshot.request_id.clone();
@@ -1364,7 +1380,9 @@ async fn browser_voice(view: Shared) -> Result<(), String> {
                 .into(),
         );
     }
-    if !view.borrow().snapshot.key_configured || view.borrow().snapshot.settings.voice_id.is_empty()
+    if !view.borrow().snapshot.stt_ready
+        || !view.borrow().snapshot.key_configured
+        || view.borrow().snapshot.settings.voice_id.is_empty()
     {
         return Err(
             "Authorize your saved voice key or save a new key, and choose a voice in Settings"
@@ -1759,6 +1777,19 @@ pub fn start() -> Result<(), JsValue> {
         apply_theme(hue);
     });
     let target = view.clone();
+    on(element("stt-provider").as_ref(), "change", |_| {
+        show_stt_fields();
+    });
+    on(element("authorize-stt-key").as_ref(), "click", |_| {
+        let _ = element("authorize-stt-key").set_attribute("disabled", "");
+        spawn_local(async {
+            match call("authorize_voice_key", json!({"provider":"deepgram"})).await {
+                Ok(_) => message("Deepgram key access allowed."),
+                Err(e) => message(e),
+            }
+            let _ = element("authorize-stt-key").remove_attribute("disabled");
+        });
+    });
     on(element("authorize-key").as_ref(), "click", |_| {
         let provider = select("provider").value();
         let _ = element("authorize-key").set_attribute("disabled", "");
@@ -2046,6 +2077,7 @@ pub fn start() -> Result<(), JsValue> {
             settings.voice_name.clear();
         }
         settings.speech_language = select("speech-language").value();
+        settings.stt_provider = select("stt-provider").value();
         settings.memory_enabled = input("memory").checked();
         let minutes = |id: &str| {
             let value = input(id).value();
@@ -2065,16 +2097,18 @@ pub fn start() -> Result<(), JsValue> {
         settings.microphone_muted = input("microphone-muted").checked();
         settings.onboarding_complete = true;
         let key = input("key").value();
+        let stt_key = input("stt-key").value();
         let target = target.clone();
         spawn_local(async move {
             match call(
                 "save_settings",
-                json!({"settings":settings,"key":key,"validateModel":!select("model").disabled()}),
+                json!({"settings":settings,"key":key,"sttKey":stt_key,"validateModel":!select("model").disabled()}),
             )
             .await
             {
                 Ok(_) => {
                     input("key").set_value("");
+                    input("stt-key").set_value("");
                     message("");
                     target.borrow_mut().snapshot.settings = settings;
                     close_panel(&target);
@@ -2443,6 +2477,7 @@ pub fn start() -> Result<(), JsValue> {
                     )));
                     let _ = element("authorize-key")
                         .toggle_attribute_with_force("hidden", snapshot.key_authorized);
+                    element("stt-key-status").set_text_content(Some(if snapshot.stt_ready && snapshot.settings.stt_provider=="deepgram" {"Deepgram key is ready. Live validation is pending."}else{"Save the Deepgram key, or allow access if you saved it before. Playback still uses your voice service."}));
                     if !element("authorize-key").has_attribute("disabled") {
                         element("key-access-status").set_text_content(Some(if snapshot.key_authorized {"Your saved key is ready."} else if snapshot.key_checking {"Checking your saved key…"} else {"Allow access to your saved key if needed, or enter a new one above."}));
                     }

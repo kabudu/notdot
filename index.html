@@ -150,6 +150,16 @@
         </option>
        </select>
       </label>
+      <label>Speech recognition
+       <select id="stt-provider"><option value="voice">Use my voice service</option><option value="deepgram">Deepgram Flux · experimental</option></select>
+      </label>
+      <div id="deepgram-settings" hidden>
+       <p class="hint">English only. Live testing is still pending. Replies keep using your selected voice service. No premium vocabulary hints or second decoding pass.</p>
+       <label>Deepgram API key<input id="stt-key" type="password" autocomplete="off" placeholder="Leave blank to keep a saved key"/></label>
+       <button id="authorize-stt-key" type="button">Allow saved Deepgram key access</button>
+       <p class="hint" id="stt-key-status" role="status"></p>
+       <p class="hint">The key stays in your OS keychain. QA builds keep this key separate from your normal app. Deepgram usage is not included in the voice-usage bar.</p>
+      </div>
       <label>
        Spoken language
        <select id="speech-language"><option value="en">English</option><option value="auto">Detect automatically</option></select>

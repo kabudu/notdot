@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add experimental separate Deepgram speech recognition, a clearer memory approval phrase and more reliable wake recognition across short pauses.
+
 - Read back new voice memories before saving them, and add a spoken-language setting for clearer recognition.
 
 - Recognise ongoing projects consistently when suggesting check-ins.
