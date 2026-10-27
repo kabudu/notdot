@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Backport the upstream GLib string-iterator FFI safety fix for the GTK3 Linux stack, retaining provenance/licenses and validating optimized variant tests.
+
 - Remove unused legacy updater ZIP support and its vulnerable Windows ZIP dependency; retain current signed raw-installer/AppImage and macOS archive formats.
 
 - Add a confirmed Reset memory action that deletes the whole local ledger and reminder journal, restarts with a fresh companion conversation and preserves configuration/API keys. Complete interrupted resets before opening the ledger or starting workers.
