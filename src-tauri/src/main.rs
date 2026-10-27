@@ -122,6 +122,9 @@ async fn report_visual(state: State<'_, Arc<AppState>>, report: Value) -> Result
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())
 }
+fn app_context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
 fn is_qa(app: &tauri::AppHandle) -> bool {
     cfg!(debug_assertions) && app.config().identifier == "com.kabudu.notdot.qa"
 }
@@ -755,10 +758,12 @@ async fn speak(state: State<'_, Arc<AppState>>, text: String) -> Result<EncodedA
 }
 #[cfg(debug_assertions)]
 async fn voice_smoke() -> Result<(), String> {
+    let context = app_context();
     let dir = std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or("Home directory missing")?
-        .join("Library/Application Support/com.kabudu.notdot");
+        .join("Library/Application Support")
+        .join(context.config().identifier.clone());
     let settings = Settings::load(&dir.join("settings.json"))?;
     let credentials = Arc::new(credentials::Credentials::default());
     let key=credentials.read(&settings.voice_provider,false).await.map_err(|e|format!("Voice acceptance blocked: {e}. Authorize this trusted build locally; no password prompt was requested."))?;
@@ -1076,7 +1081,7 @@ fn main() {
             });
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(app_context())
         .expect("notdot desktop runtime could not start")
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
