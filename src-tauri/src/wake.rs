@@ -1,6 +1,7 @@
 //! On-device keyword spotting. One worker owns inference and microphone capture;
 //! the real-time callback only downmixes into a bounded queue. No network access.
 mod fallback;
+mod speech;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use notdot_core::settings::Settings;
 use serde::Serialize;
@@ -472,7 +473,6 @@ struct Capture {
     total: usize,
     speech: usize,
     silence: usize,
-    voice_gate: VoiceGate,
 }
 enum End {
     Continue,
@@ -480,10 +480,9 @@ enum End {
     Empty,
 }
 impl Capture {
-    fn accept(&mut self, samples: &[f32], rate: u32) -> End {
-        let rms = energy(samples);
+    fn accept(&mut self, samples: &[f32], rate: u32, voiced: bool) -> End {
         self.total += samples.len();
-        if self.voice_gate.observe(rms) {
+        if voiced {
             self.speech += samples.len();
             self.silence = 0;
         } else {
@@ -540,6 +539,7 @@ struct Worker {
     revision: u64,
     epoch: u64,
     detector: Option<Detector>,
+    speech_gate: Option<speech::SpeechGate>,
     mic: Option<Microphone>,
     capture: Option<Capture>,
     failed: bool,
@@ -548,9 +548,16 @@ struct Worker {
     last_audio: Option<Instant>,
 }
 impl Worker {
+    fn discard_capture(&mut self) {
+        if self.capture.take().is_some()
+            && let Some(gate) = &mut self.speech_gate
+        {
+            gate.reset();
+        }
+    }
     fn error(&mut self, inner: &Mutex<Inner>, message: String) {
         self.mic = None;
-        self.capture = None;
+        self.discard_capture();
         self.failed = true;
         let mut i = inner.lock().expect("wake state");
         i.status.phase = "error".into();
@@ -573,7 +580,7 @@ impl Worker {
         if epoch != self.epoch {
             self.epoch = epoch;
             self.mic = None;
-            self.capture = None;
+            self.discard_capture();
             if let Some(d) = &mut self.detector {
                 d.reset();
             }
@@ -581,8 +588,9 @@ impl Worker {
         if revision != self.revision {
             self.revision = revision;
             self.detector = None;
+            self.speech_gate = None;
             self.mic = None;
-            self.capture = None;
+            self.discard_capture();
             self.failed = false;
             let mut i = inner.lock().expect("wake state");
             i.status = Status {
@@ -604,7 +612,7 @@ impl Worker {
             {
                 d.reset();
             }
-            self.capture = None;
+            self.discard_capture();
             let mut i = inner.lock().expect("wake state");
             if !allowed {
                 i.pending = None;
@@ -635,6 +643,15 @@ impl Worker {
             inner.lock().expect("wake state").status.phase = "loading".into();
             match Detector::new(models, &config.phrase) {
                 Ok(d) => self.detector = Some(d),
+                Err(e) => {
+                    self.error(inner, e);
+                    return;
+                }
+            }
+        }
+        if self.speech_gate.is_none() {
+            match speech::SpeechGate::new(models) {
+                Ok(gate) => self.speech_gate = Some(gate),
                 Err(e) => {
                     self.error(inner, e);
                     return;
@@ -690,7 +707,7 @@ impl Worker {
                         .is_some_and(|t| t.elapsed() < Duration::from_secs(3))
                 {
                     self.mic = None;
-                    self.capture = None;
+                    self.discard_capture();
                     return;
                 }
             }
@@ -718,6 +735,9 @@ impl Worker {
                     .is_some_and(|t| t.elapsed() < Duration::from_secs(3))
             {
                 self.capture = None;
+                if let Some(gate) = &mut self.speech_gate {
+                    gate.reset();
+                }
                 self.mic = None;
                 return true;
             }
@@ -731,8 +751,21 @@ impl Worker {
             return true;
         }
         let rms = energy(samples);
-        if let Some(capture) = &mut self.capture {
-            match capture.accept(samples, rate) {
+        if self.capture.is_some() {
+            let voiced = match self
+                .speech_gate
+                .as_mut()
+                .expect("speech gate initialized")
+                .accept(samples, rate)
+            {
+                Ok(voiced) => voiced,
+                Err(e) => {
+                    self.error(inner, e);
+                    return true;
+                }
+            };
+            let capture = self.capture.as_mut().expect("capture initialized");
+            match capture.accept(samples, rate, voiced) {
                 End::Continue => {}
                 end => {
                     let wav = if matches!(end, End::Submit) {
@@ -740,7 +773,7 @@ impl Worker {
                     } else {
                         None
                     };
-                    self.capture = None;
+                    self.discard_capture();
                     self.mic = None;
                     self.detector.as_mut().expect("detector").reset();
                     self.cooldown = Some(Instant::now());
@@ -773,6 +806,10 @@ impl Worker {
             .expect("detector")
             .accept(rate, samples)
         {
+            self.speech_gate
+                .as_mut()
+                .expect("speech gate initialized")
+                .reset();
             self.capture = Some(Capture::default());
             inner.lock().expect("wake state").status.message =
                 "I'm listening. Speak your request; silence ends recording.".into();
@@ -784,7 +821,7 @@ impl Worker {
                 .lease
                 .is_some_and(|t| t.elapsed() < Duration::from_secs(3))
         {
-            self.capture = None;
+            self.discard_capture();
             self.mic = None;
             return true;
         }
@@ -815,7 +852,7 @@ mod tests {
     // Production has one inference worker. Parallel fixture constructors race
     // ONNX Runtime's process-global default LoggingManager on Linux. Keep the
     // complete model fixtures serial (including teardown), retaining assertions.
-    static MODEL_FIXTURE: Mutex<()> = Mutex::new(());
+    pub(super) static MODEL_FIXTURE: Mutex<()> = Mutex::new(());
     fn models() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/wake")
     }
@@ -933,6 +970,7 @@ mod tests {
         wake.inner.lock().unwrap().pending = None;
         let mut worker = Worker {
             detector: Some(Detector::new(&models(), "Hey Ava").unwrap()),
+            speech_gate: Some(speech::SpeechGate::new(&models()).unwrap()),
             ..Worker::default()
         };
         let mut input = vec![0.; 8000];
@@ -950,20 +988,30 @@ mod tests {
             worker.capture.as_ref().unwrap().samples.is_empty(),
             "no keyword or background pre-roll is retained"
         );
-        for _ in 0..20 {
-            assert!(!worker.frame(&wake.inner, &[0.1; 320], 16000, 1, 0));
+        let request = audio("negative.wav");
+        for frame in request.chunks(320) {
+            assert!(!worker.frame(&wake.inner, frame, 16000, 1, 0));
         }
-        for _ in 0..59 {
-            assert!(!worker.frame(&wake.inner, &[0.; 320], 16000, 1, 0));
+        let mut submitted = false;
+        for _ in 0..100 {
+            if worker.frame(&wake.inner, &[0.; 320], 16000, 1, 0) {
+                submitted = true;
+                break;
+            }
         }
-        assert!(worker.frame(&wake.inner, &[0.; 320], 16000, 1, 0));
+        assert!(submitted);
         let id = wake.status().request_id.unwrap();
         let bytes = wake.take(id).unwrap();
         let reader = hound::WavReader::new(Cursor::new(bytes)).unwrap();
         let samples: Vec<i16> = reader.into_samples().map(Result::unwrap).collect();
-        assert_eq!(samples.len(), 80 * 320);
-        assert!(samples[..20 * 320].iter().all(|v| *v == 3276));
-        assert!(samples[20 * 320..].iter().all(|v| *v == 0));
+        assert!(samples.len() >= request.len());
+        assert!(
+            samples
+                .iter()
+                .zip(&request)
+                .all(|(a, b)| (*a as f32 / 32768. - b).abs() < 0.0001),
+            "captured request must retain its original samples without the wake phrase"
+        );
         assert!(wake.take(id).is_err());
         assert!(worker.capture.is_none());
         assert!(worker.cooldown.is_some());
@@ -972,42 +1020,54 @@ mod tests {
     fn endpoint_requires_speech_then_silence_and_bounds_recording() {
         let mut capture = Capture::default();
         for _ in 0..100 {
-            assert!(matches!(capture.accept(&[0.; 320], 16000), End::Continue));
+            assert!(matches!(
+                capture.accept(&[0.; 320], 16000, false),
+                End::Continue
+            ));
         }
         for _ in 0..20 {
-            assert!(matches!(capture.accept(&[0.1; 320], 16000), End::Continue));
+            assert!(matches!(
+                capture.accept(&[0.1; 320], 16000, true),
+                End::Continue
+            ));
         }
         for _ in 0..59 {
-            assert!(matches!(capture.accept(&[0.; 320], 16000), End::Continue));
+            assert!(matches!(
+                capture.accept(&[0.; 320], 16000, false),
+                End::Continue
+            ));
         }
-        assert!(matches!(capture.accept(&[0.; 320], 16000), End::Submit));
+        assert!(matches!(
+            capture.accept(&[0.; 320], 16000, false),
+            End::Submit
+        ));
         let wav = capture.wav(16000).unwrap();
         let reader = hound::WavReader::new(Cursor::new(wav)).unwrap();
         assert_eq!(reader.spec().sample_rate, 16000);
         assert_eq!(reader.len() as usize, capture.samples.len());
         let mut empty = Capture::default();
         assert!(matches!(
-            empty.accept(&vec![0.; 16000 * 8], 16000),
+            empty.accept(&vec![0.; 16000 * 8], 16000, false),
             End::Empty
         ));
         let mut cue_only = Capture::default();
         assert!(matches!(
-            cue_only.accept(&[0.1; 1600], 16000),
+            cue_only.accept(&[0.1; 1600], 16000, false),
             End::Continue
         ));
         assert!(
-            matches!(cue_only.accept(&vec![0.; 126400], 16000), End::Empty),
+            matches!(cue_only.accept(&vec![0.; 126400], 16000, false), End::Empty),
             "an activation tone without a spoken request must not reach STT"
         );
         let mut continuous = Capture::default();
         for _ in 0..29 {
             assert!(matches!(
-                continuous.accept(&[0.1; 16000], 16000),
+                continuous.accept(&[0.1; 16000], 16000, true),
                 End::Continue
             ));
         }
         assert!(matches!(
-            continuous.accept(&[0.1; 16000], 16000),
+            continuous.accept(&[0.1; 16000], 16000, true),
             End::Submit
         ));
     }
