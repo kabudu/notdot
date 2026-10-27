@@ -22,4 +22,14 @@ Apple M4, debug tests, real-time 20 ms packet replay of the same private acousti
 
 ## Live acceptance
 
-Pending local saved-key approval for the rebuilt QA app. Full microphone → live streaming transcription → Terra Medium → spoken reply, native event feedback, and cancellation must be verified before claiming full acceptance. No demo recording is running or published.
+Passed on the macOS QA bundle built from `859727f`, after local key approval. Tests used known spoken fixtures played through the laptop speaker into its actual microphone, the native capture path, live ElevenLabs and the actual Codex runtime; this was not a direct audio-file upload or mocked model. No demo recorder was running.
+
+- Wake → request → streaming transcription → Terra Medium → metered spoken reply completed. The saved reply was “Seven plus five is twelve.” The persisted turn context confirms `gpt-6.1-terra`, `medium`; the settings match.
+- Wake activation appeared 1.461 seconds after fixture playback began. The orb's first Listening transition followed native activation by **15 ms**, with the event counter incremented. Thinking and metered Speaking transitions followed; peak speech RMS was 0.429.
+- The service accepted 53 audio chunks, sent five nonempty partial events and one committed segment. First audio upload followed activation by 185 ms. First partial arrived **3.014 seconds before capture ended**, proving transcription overlapped live recording. No batch fallback or provider error occurred.
+- Capture lasted 5.314 seconds. Committed transcription completed about **220 ms after capture ended**. First Speaking transition was **3.142 seconds after capture ended**; wake listening resumed 13.070 seconds after fixture start. These are one-run observations, including provider/model variability, not a universal latency guarantee.
+- Native one-click mode also passed: one click, staged spoken question, automatic silence submission, live streaming (107 chunks, five partials, one committed segment), correct spoken answer. Staging delay between the UI click and fixture playback makes its total recording duration unsuitable as a responsiveness benchmark. Wake mode was restored through Settings afterward.
+- Escape cancelled active capture, stopped a spoken compiler response and aborted a separate still-active long model turn. The real runtime recorded `turn_aborted` at `2026-10-27T17:10:45.369Z`, following `task_started` at `17:10:41.754Z`. The app returned to idle/wake listening without an error.
+- A further capture was cancelled while the staged request was still speaking into the active stream. It returned to wake listening without submitting a later model turn or speaking a late reply.
+
+The user’s own voice has not yet been retested on this particular build; the previous build had passed their wake/reply and no-pop check. This acoustic test does not establish all-name/accent/noise reliability or subjective audio quality. Fresh promotional recording remains separate and unpublished.
