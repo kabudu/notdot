@@ -262,8 +262,8 @@ async fn refresh(state: &AppState, force: bool) -> Result<(), String> {
         .try_acquire()
         .map_err(|_| "Voice service is busy; usage will refresh later")?;
     let result = async {
-        let report = backend(state, Some(provider.clone()))
-            .await?
+        let client = backend(state, Some(provider.clone())).await?;
+        let report = client
             .usage()
             .await
             .map_err(|e| format!("Usage unavailable: {e}"))?;

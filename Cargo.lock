@@ -2633,6 +2633,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "cpal",
+ "dbus-secret-service",
  "hound",
  "keyring",
  "notdot-core",
@@ -2653,6 +2654,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

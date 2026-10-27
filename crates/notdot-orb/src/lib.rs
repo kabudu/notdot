@@ -47,6 +47,7 @@ struct Snapshot {
     error: Option<String>,
     key_configured: bool,
     key_checking: bool,
+    key_authorized: bool,
     window_visible: bool,
     version: String,
     desktop_launch_supported: bool,
@@ -659,7 +660,7 @@ fn open_panel(view: &Shared) {
         }
     });
     let _ = dialog("panel").show_modal();
-    if view.borrow().snapshot.key_configured {
+    if view.borrow().snapshot.key_authorized {
         let target = view.clone();
         spawn_local(async move {
             if let Err(e) = load_catalog(target, false).await {
@@ -1137,6 +1138,19 @@ pub fn start() -> Result<(), JsValue> {
         apply_theme(hue);
     });
     let target = view.clone();
+    on(element("authorize-key").as_ref(), "click", |_| {
+        let provider = select("provider").value();
+        let _ = element("authorize-key").set_attribute("disabled", "");
+        element("key-access-status").set_text_content(Some("Waiting for OS keychain permission…"));
+        spawn_local(async move {
+            let result = call("authorize_voice_key", json!({"provider":provider})).await;
+            let _ = element("authorize-key").remove_attribute("disabled");
+            match result {
+                Ok(_) => message("Voice key authorized for this session."),
+                Err(e) => message(e),
+            }
+        });
+    });
     on(element("load-voices").as_ref(), "click", move |_| {
         let view = target.clone();
         spawn_local(async move {
@@ -1605,6 +1619,11 @@ pub fn start() -> Result<(), JsValue> {
                         snapshot.initiative["available"].as_u64().unwrap_or(0),
                         snapshot.initiative["error"].as_str().unwrap_or("")
                     )));
+                    let _ = element("authorize-key")
+                        .toggle_attribute_with_force("hidden", snapshot.key_authorized);
+                    if !element("authorize-key").has_attribute("disabled") {
+                        element("key-access-status").set_text_content(Some(if snapshot.key_authorized {"Voice key ready. Reused securely in memory for this session."} else if snapshot.key_checking {"Checking saved key without opening a password dialog…"} else {"Authorize a saved key if needed, or enter a new key above. Background checks never ask for a password."}));
+                    }
                     element("memory-status")
                         .set_text_content(snapshot.learning["message"].as_str());
                     element("about-version")

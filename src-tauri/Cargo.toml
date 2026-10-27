@@ -24,6 +24,7 @@ sherpa-onnx = "=2.0.0"
 sentencepiece-rs = "=0.2.2"
 cpal = "=0.18.2"
 hound = "3"
+zeroize = "1"
 chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
 
@@ -36,3 +37,6 @@ tempfile = "3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus-secret-service = "4.1"
