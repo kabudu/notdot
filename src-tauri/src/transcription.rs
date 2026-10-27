@@ -46,11 +46,13 @@ pub struct Streaming {
     cancelled: Mutex<notdot_core::request_cancel::Requests>,
 }
 impl Streaming {
+    #[cfg(debug_assertions)]
     pub async fn report(&self) -> Report {
         self.report.lock().await.clone()
     }
     pub async fn cancel(&self, token: &str) {
-        let _ = self.cancelled.lock().await.cancel(token);
+        let mut cancellations = self.cancelled.lock().await;
+        let _ = cancellations.cancel(token);
         let mut slot = self.inner.lock().await;
         if slot.as_ref().is_some_and(|s| s.token == token) {
             let s = slot.take().expect("matched session");
@@ -59,7 +61,10 @@ impl Streaming {
         }
     }
     pub async fn take(&self, token: &str) -> Result<Option<String>, VoiceError> {
-        if self.cancelled.lock().await.is_cancelled(token) {
+        // Match cancellation's lock order so a concurrent cancel cannot remove
+        // a session between the tombstone check and taking its receiver.
+        let mut cancellations = self.cancelled.lock().await;
+        if cancellations.is_cancelled(token) {
             return Err(VoiceError::new(
                 VoiceErrorKind::InvalidInput,
                 "Voice capture cancelled",
@@ -78,6 +83,7 @@ impl Streaming {
             };
             (result, s.cancelled.clone(), s.started)
         };
+        drop(cancellations);
         let result = tokio::time::timeout(Duration::from_secs(12), result).await;
         if cancelled.load(Ordering::Relaxed) {
             return Err(VoiceError::new(
