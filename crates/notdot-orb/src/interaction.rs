@@ -1,3 +1,20 @@
+/// Explain the first setup requirement that prevents a paid voice turn.
+pub(crate) fn voice_setup_error(
+    recognition_ready: bool,
+    voice_key_ready: bool,
+    voice_selected: bool,
+) -> Option<&'static str> {
+    if !voice_key_ready {
+        Some("Add or allow your reply voice service key in Settings → Voice.")
+    } else if !recognition_ready {
+        Some("Add or allow your speech recognition key in Settings → Voice.")
+    } else if !voice_selected {
+        Some("Choose a reply voice in Settings → Voice, then save.")
+    } else {
+        None
+    }
+}
+
 /// Tracks a gesture across native window dragging, where local coordinates can return to the origin.
 #[derive(Default)]
 pub(crate) struct Gesture {
@@ -28,6 +45,22 @@ impl Gesture {
 #[cfg(test)]
 mod tests {
     use super::Gesture;
+    #[test]
+    fn incomplete_voice_setup_identifies_the_missing_requirement() {
+        assert_eq!(
+            super::voice_setup_error(true, false, false),
+            Some("Add or allow your reply voice service key in Settings → Voice.")
+        );
+        assert_eq!(
+            super::voice_setup_error(false, true, true),
+            Some("Add or allow your speech recognition key in Settings → Voice.")
+        );
+        assert_eq!(
+            super::voice_setup_error(true, true, false),
+            Some("Choose a reply voice in Settings → Voice, then save.")
+        );
+        assert_eq!(super::voice_setup_error(true, true, true), None);
+    }
     #[test]
     fn moving_window_never_activates_microphone_even_if_local_coordinates_return() {
         let mut gesture = Gesture::default();
