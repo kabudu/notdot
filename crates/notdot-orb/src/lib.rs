@@ -2333,8 +2333,19 @@ pub fn start() -> Result<(), JsValue> {
             if matches!(event["phase"].as_str(), Some("empty" | "cancelled"))
                 && owner.borrow().capture_token.as_deref() == Some(token)
             {
+                let failure =
+                    (wake["capture_token"] == token && wake["phase"] == "error").then(|| {
+                        wake["message"]
+                            .as_str()
+                            .unwrap_or("Microphone could not continue")
+                            .to_owned()
+                    });
                 stop_audio(&owner);
                 owner.borrow_mut().update_listening = None;
+                if let Some(failure) = failure {
+                    message(failure);
+                    open_panel(&owner);
+                }
                 return;
             }
             if wake["capture_token"] != token {

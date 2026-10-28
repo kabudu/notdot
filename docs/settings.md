@@ -30,6 +30,8 @@ An **API key** is a secret that lets notdot use your service account. It stays i
 
 A key can allow speech but block account-usage checks. In ElevenLabs, the key needs **User → Access** to read the account information used here. You can keep voice working without balance monitoring. The displayed allowance does not tell you exactly how many recording minutes or replies remain. notdot warns at 80%, 90% and 100%, once at each level per billing cycle. It does not turn on extra spending.
 
+If you use Windows through Windows App on a Mac, enable **Microphone** in the saved connection's **Devices & Audio** settings, then reconnect. Windows should list **Remote Audio** as a recording device. This forwards your Mac microphone to the Windows session.
+
 ## Hands-free voice
 
 Turn on **Listen for my wake phrase** to try “Hey” followed by your companion’s name. Wait for the orb to respond, then speak. A pause ends the request. Detection happens on your computer; only the request after activation goes to the voice service.

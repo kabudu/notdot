@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicU8, Ordering},
         mpsc::{self, Receiver, SyncSender},
     },
     time::{Duration, Instant},
@@ -445,10 +445,17 @@ impl Detector {
     }
 }
 
+// Two seconds of bounded headroom tolerate batched remote-audio callbacks.
+// Packets are consumed immediately; this capacity adds no deliberate wait.
+const MIC_QUEUE_PACKETS: usize = 100;
+const MIC_QUEUE_FULL: u8 = 1;
+const MIC_DEVICE_FAILED: u8 = 2;
+
 struct Microphone {
     _stream: cpal::Stream,
     receiver: Receiver<Vec<f32>>,
-    failed: Arc<AtomicBool>,
+    errors: Receiver<cpal::Error>,
+    failed: Arc<AtomicU8>,
     rate: u32,
 }
 impl Microphone {
@@ -468,18 +475,20 @@ impl Microphone {
         {
             return Err("Unsupported microphone configuration".into());
         }
-        let (sender, receiver) = mpsc::sync_channel(16);
-        let failed = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = mpsc::sync_channel(MIC_QUEUE_PACKETS);
+        let failed = Arc::new(AtomicU8::new(0));
+        let (error_sender, errors) = mpsc::sync_channel(1);
         let stream = match format {
-            cpal::SampleFormat::F32 => input::<f32>(&device, &cfg, sender, failed.clone()),
-            cpal::SampleFormat::I16 => input::<i16>(&device, &cfg, sender, failed.clone()),
-            cpal::SampleFormat::U16 => input::<u16>(&device, &cfg, sender, failed.clone()),
+            cpal::SampleFormat::F32 => input::<f32>(&device, &cfg, sender, failed.clone(), error_sender),
+            cpal::SampleFormat::I16 => input::<i16>(&device, &cfg, sender, failed.clone(), error_sender),
+            cpal::SampleFormat::U16 => input::<u16>(&device, &cfg, sender, failed.clone(), error_sender),
             _ => return Err("Unsupported microphone sample format".into()),
         }.map_err(|_| "Microphone could not start. Check OS microphone permission and the selected input device.")?;
         stream.play().map_err(|_| "Microphone could not start")?;
         Ok(Self {
             _stream: stream,
             receiver,
+            errors,
             failed,
             rate: cfg.sample_rate,
         })
@@ -489,7 +498,8 @@ fn input<T>(
     device: &cpal::Device,
     cfg: &cpal::StreamConfig,
     sender: SyncSender<Vec<f32>>,
-    failed: Arc<AtomicBool>,
+    failed: Arc<AtomicU8>,
+    error_sender: SyncSender<cpal::Error>,
 ) -> Result<cpal::Stream, cpal::Error>
 where
     T: cpal::SizedSample,
@@ -502,36 +512,51 @@ where
     device.build_input_stream(
         *cfg,
         move |samples: &[T], _| {
-            use cpal::Sample;
-            if failed.load(Ordering::Relaxed) {
+            if failed.load(Ordering::Relaxed) != 0 {
                 return;
             }
-            // Fixed 20 ms packets give the queue a stable 320 ms budget even
-            // when a device supplies very small callbacks. No inference or I/O.
-            for channels in samples.chunks_exact(channels) {
-                let sample = channels
-                    .iter()
-                    .map(|s| {
-                        let v = f32::from_sample(*s);
-                        if v.is_finite() { v.clamp(-1., 1.) } else { 0. }
-                    })
-                    .sum::<f32>()
-                    / channels.len() as f32;
-                frame.push(sample);
-                if frame.len() == frame_size {
-                    let packet = std::mem::replace(&mut frame, Vec::with_capacity(frame_size));
-                    if sender.try_send(packet).is_err() {
-                        failed.store(true, Ordering::Relaxed);
-                        return;
-                    }
-                }
+            if queue_input(samples, channels, frame_size, &mut frame, &sender).is_err() {
+                failed.store(MIC_QUEUE_FULL, Ordering::Relaxed);
             }
         },
-        move |_| {
-            error.store(true, Ordering::Relaxed);
+        move |cause| {
+            let _ = error_sender.try_send(cause);
+            error.store(MIC_DEVICE_FAILED, Ordering::Relaxed);
         },
         None,
     )
+}
+
+/// Preserve every mono sample in fixed 20 ms packets, including callback tails.
+/// An overflow rejects the whole capture rather than silently dropping speech.
+fn queue_input<T>(
+    samples: &[T],
+    channels: usize,
+    frame_size: usize,
+    frame: &mut Vec<f32>,
+    sender: &SyncSender<Vec<f32>>,
+) -> Result<(), mpsc::TrySendError<Vec<f32>>>
+where
+    T: cpal::SizedSample,
+    f32: cpal::FromSample<T>,
+{
+    use cpal::Sample;
+    for channels in samples.chunks_exact(channels) {
+        let sample = channels
+            .iter()
+            .map(|s| {
+                let v = f32::from_sample(*s);
+                if v.is_finite() { v.clamp(-1., 1.) } else { 0. }
+            })
+            .sum::<f32>()
+            / channels.len() as f32;
+        frame.push(sample);
+        if frame.len() == frame_size {
+            let packet = std::mem::replace(frame, Vec::with_capacity(frame_size));
+            sender.try_send(packet)?;
+        }
+    }
+    Ok(())
 }
 
 /// Sample-time endpointing keeps working independently of webview animation frames.
@@ -746,13 +771,16 @@ impl Worker {
     }
     fn error(&mut self, inner: &Mutex<Inner>, message: String) {
         self.mic = None;
-        self.discard_capture();
         self.failed = true;
-        let mut i = inner.lock().expect("wake state");
-        i.status.phase = "error".into();
-        i.status.message = message;
-        i.status.rms = 0.;
-        i.pending = None;
+        {
+            let mut i = inner.lock().expect("wake state");
+            i.status.phase = "error".into();
+            i.status.message = message;
+            i.status.rms = 0.;
+            i.pending = None;
+        }
+        // Publish the reason before notifying the frontend that capture ended.
+        self.discard_capture();
     }
     fn tick(&mut self, models: &Path, inner: &Mutex<Inner>) {
         let (config, revision, epoch, allowed, pending, manual) = {
@@ -887,9 +915,22 @@ impl Worker {
             return;
         }
         let mic = self.mic.as_ref().expect("mic initialized");
-        if mic.failed.load(Ordering::Relaxed) {
-            self.error(inner, "Microphone disconnected or audio processing fell behind. Save wake settings to retry.".into());
-            return;
+        match mic.failed.load(Ordering::Relaxed) {
+            MIC_QUEUE_FULL => {
+                self.error(inner, "Microphone audio arrived faster than it could be processed. Try again; if it persists, check the input device or remote connection.".into());
+                return;
+            }
+            MIC_DEVICE_FAILED => {
+                let detail = mic
+                    .errors
+                    .try_recv()
+                    .ok()
+                    .map(|error| error.to_string().chars().take(200).collect::<String>())
+                    .unwrap_or_else(|| "device unavailable".into());
+                self.error(inner, format!("The microphone connection stopped: {detail}. Check the input device or remote connection, then try again."));
+                return;
+            }
+            _ => {}
         }
         let rate = mic.rate;
         for _ in 0..16 {
@@ -1077,6 +1118,36 @@ mod tests {
     // Production has one inference worker. Parallel fixture constructors race
     // ONNX Runtime's process-global default LoggingManager on Linux. Keep the
     // complete model fixtures serial (including teardown), retaining assertions.
+    #[test]
+    fn remote_audio_burst_keeps_all_samples_and_callback_tails() {
+        let (sender, receiver) = mpsc::sync_channel(MIC_QUEUE_PACKETS);
+        let mut frame = Vec::with_capacity(320);
+        // A one-second stereo callback exceeded the previous 320 ms queue.
+        queue_input(&vec![0.25_f32; 32010], 2, 320, &mut frame, &sender).unwrap();
+        let packets: Vec<_> = receiver.try_iter().collect();
+        assert_eq!(packets.len(), 50);
+        assert!(packets.iter().flatten().all(|&s| s == 0.25));
+        assert_eq!(frame, vec![0.25; 5]);
+        queue_input(&vec![0.5_f32; 630], 2, 320, &mut frame, &sender).unwrap();
+        let packet = receiver.try_recv().unwrap();
+        assert_eq!(&packet[..5], &[0.25; 5]);
+        assert_eq!(&packet[5..], &[0.5; 315]);
+        assert!(frame.is_empty());
+    }
+    #[test]
+    fn microphone_backlog_stays_bounded_and_fails_instead_of_dropping_audio() {
+        let (sender, receiver) = mpsc::sync_channel(MIC_QUEUE_PACKETS);
+        let mut frame = Vec::new();
+        let result = queue_input(
+            &vec![0.1_f32; 320 * (MIC_QUEUE_PACKETS + 1)],
+            1,
+            320,
+            &mut frame,
+            &sender,
+        );
+        assert!(matches!(result, Err(mpsc::TrySendError::Full(_))));
+        assert_eq!(receiver.try_iter().count(), MIC_QUEUE_PACKETS);
+    }
     pub(super) static MODEL_FIXTURE: Mutex<()> = Mutex::new(());
     fn models() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/wake")
@@ -1354,6 +1425,30 @@ mod tests {
                 pending: Some((42, vec![1, 2, 3], Instant::now())),
             })),
         }
+    }
+    #[test]
+    fn microphone_failure_keeps_its_reason_when_the_frontend_cancels_cleanup() {
+        let wake = isolated();
+        wake.start_manual("broken", 60).unwrap();
+        wake.inner.lock().unwrap().status.capture_token = Some("broken".into());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+        let mut worker = Worker {
+            events: Some(sender),
+            capture_token: Some("broken".into()),
+            capture: Some(Capture::default()),
+            ..Default::default()
+        };
+        worker.error(&wake.inner, "native input failed".into());
+        assert!(
+            matches!(receiver.try_recv().unwrap(), CaptureEvent::Cancel { token } if token == "broken")
+        );
+        wake.cancel_capture("broken").unwrap();
+        let status = wake.status();
+        assert_eq!(status.phase, "error");
+        assert_eq!(status.message, "native input failed");
+        assert_eq!(status.capture_token.as_deref(), Some("broken"));
+        assert!(worker.capture.is_none());
+        assert!(worker.failed);
     }
     #[test]
     fn manual_capture_ignores_stale_idle_heartbeats_and_old_cancellation() {
