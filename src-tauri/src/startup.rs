@@ -23,6 +23,12 @@ pub fn runtime() -> PathBuf {
     if let Some(path) = std::env::var_os("NOTDOT_CODEX_BIN") {
         return path.into();
     }
+    #[cfg(windows)]
+    if let Some(root) = std::env::var_os("LOCALAPPDATA")
+        && let Some(path) = windows_standalone_runtime(std::path::Path::new(&root))
+    {
+        return path;
+    }
     #[cfg(target_os = "macos")]
     for root in ["/Applications/ChatGPT.app", "/Applications/Codex.app"] {
         for suffix in [
@@ -60,6 +66,16 @@ pub fn runtime() -> PathBuf {
         }
     }
     PathBuf::from(if cfg!(windows) { "codex.exe" } else { "codex" })
+}
+#[cfg(any(windows, test))]
+fn windows_standalone_runtime(local_appdata: &std::path::Path) -> Option<PathBuf> {
+    let path = local_appdata
+        .join("Programs")
+        .join("OpenAI")
+        .join("Codex")
+        .join("bin")
+        .join("codex.exe");
+    path.is_file().then_some(path)
 }
 pub fn desktop_running() -> bool {
     let mut system = sysinfo::System::new();
@@ -106,4 +122,20 @@ pub async fn open_desktop() -> Result<(), String> {
     }
     #[cfg(not(target_os = "macos"))]
     Err("Automatic background desktop launch is currently available on macOS; the Codex runtime works independently on this platform".into())
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    #[test]
+    fn gui_launch_discovers_standalone_native_runtime_without_shell_path_or_cmd_shim() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(super::windows_standalone_runtime(temp.path()).is_none());
+        let bin = temp.path().join("Programs/OpenAI/Codex/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("codex.cmd"), "synthetic shim").unwrap();
+        assert!(super::windows_standalone_runtime(temp.path()).is_none());
+        let exe = bin.join("codex.exe");
+        std::fs::write(&exe, "synthetic native runtime").unwrap();
+        assert_eq!(super::windows_standalone_runtime(temp.path()), Some(exe));
+    }
 }
