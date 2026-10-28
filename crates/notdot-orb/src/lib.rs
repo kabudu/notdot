@@ -285,7 +285,16 @@ async fn load_catalog(view: Shared, append: bool) -> Result<(), String> {
     if view.borrow().catalog_generation != generation {
         return Ok(());
     }
-    let page: VoicePage = serde_wasm_bindgen::from_value(result?).map_err(|e| e.to_string())?;
+    let page: VoicePage = match result
+        .and_then(|value| serde_wasm_bindgen::from_value(value).map_err(|error| error.to_string()))
+    {
+        Ok(page) => page,
+        Err(error) => {
+            element("voice-info")
+                .set_text_content(Some(&format!("Could not load voices: {error}")));
+            return Err(error);
+        }
+    };
     let chosen = select("voice").value();
     let saved_name = element("voice-value").text_content().unwrap_or_default();
     let has_more = page.next_cursor.is_some()
@@ -1001,7 +1010,7 @@ fn open_panel(view: &Shared) {
     input("key").set_placeholder(if view.borrow().snapshot.key_configured {
         "Key saved · leave blank to keep"
     } else {
-        "Stored in your OS keychain"
+        "Enter your voice service API key"
     });
     element("heading").set_text_content(Some(if s.onboarding_complete {
         "Settings"
@@ -1316,13 +1325,12 @@ async fn voice(view: Shared) -> Result<(), String> {
     ) {
         return Err("An update is being installed".into());
     }
-    if !view.borrow().snapshot.stt_ready
-        || !view.borrow().snapshot.key_configured
-        || view.borrow().snapshot.settings.voice_id.is_empty()
-    {
-        return Err(
-            "Allow the selected recognition and voice keys, and choose a voice in Settings".into(),
-        );
+    if let Some(error) = interaction::voice_setup_error(
+        view.borrow().snapshot.stt_ready,
+        view.borrow().snapshot.key_configured,
+        !view.borrow().snapshot.settings.voice_id.is_empty(),
+    ) {
+        return Err(error.into());
     }
     if view.borrow().snapshot.phase == "thinking" {
         let request_id = view.borrow().snapshot.request_id.clone();
@@ -1398,14 +1406,12 @@ async fn browser_voice(view: Shared) -> Result<(), String> {
                 .into(),
         );
     }
-    if !view.borrow().snapshot.stt_ready
-        || !view.borrow().snapshot.key_configured
-        || view.borrow().snapshot.settings.voice_id.is_empty()
-    {
-        return Err(
-            "Authorize your saved voice key or save a new key, and choose a voice in Settings"
-                .into(),
-        );
+    if let Some(error) = interaction::voice_setup_error(
+        view.borrow().snapshot.stt_ready,
+        view.borrow().snapshot.key_configured,
+        !view.borrow().snapshot.settings.voice_id.is_empty(),
+    ) {
+        return Err(error.into());
     }
     let generation = view.borrow().generation;
     view.borrow_mut().local_phase = Some("listening");
@@ -2485,7 +2491,7 @@ pub fn start() -> Result<(), JsValue> {
                         } else if snapshot.key_configured {
                             "Key saved · leave blank to keep"
                         } else {
-                            "Stored in your OS keychain"
+                            "Enter your voice service API key"
                         });
                     }
                     element("followup-status").set_text_content(Some(&format!(
