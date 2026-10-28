@@ -12,9 +12,27 @@ use web_sys::{
     CanvasRenderingContext2d as Context, Event, HtmlCanvasElement, HtmlDialogElement,
     HtmlInputElement,
 };
-#[wasm_bindgen(
-    inline_js = "export function listenCapture(f){return window.__TAURI__.event.listen('voice-capture',e=>f(e.payload))} export function invoke(c,a){return window.__TAURI__.core.invoke(c,a)} export function drag(){return window.__TAURI__.window.getCurrentWindow().startDragging()} export function resize(w,h){return window.__TAURI__.window.getCurrentWindow().setSize(new window.__TAURI__.dpi.LogicalSize(Math.min(w,screen.availWidth-32),Math.min(h,screen.availHeight-64)))}"
-)]
+#[wasm_bindgen(inline_js = r#"
+export function listenCapture(f){return window.__TAURI__.event.listen('voice-capture',e=>f(e.payload))}
+export function invoke(c,a){return window.__TAURI__.core.invoke(c,a)}
+export function drag(){return window.__TAURI__.window.getCurrentWindow().startDragging()}
+export async function resize(w,h){
+    const api=window.__TAURI__, win=api.window.getCurrentWindow();
+    const monitor=await api.window.currentMonitor();
+    if(!monitor){
+        await win.setSize(new api.dpi.LogicalSize(Math.min(w,screen.availWidth-32),Math.min(h,screen.availHeight-64)));
+        return;
+    }
+    const area=monitor.workArea, margin=Math.round(16*monitor.scaleFactor);
+    await win.setSize(new api.dpi.PhysicalSize(
+        Math.max(1,Math.min(Math.round(w*monitor.scaleFactor),area.size.width-2*margin)),
+        Math.max(1,Math.min(Math.round(h*monitor.scaleFactor),area.size.height-2*margin))));
+    const [position,size]=await Promise.all([win.outerPosition(),win.outerSize()]);
+    const x=Math.max(area.position.x+margin,Math.min(position.x,area.position.x+area.size.width-size.width-margin));
+    const y=Math.max(area.position.y+margin,Math.min(position.y,area.position.y+area.size.height-size.height-margin));
+    if(x!==position.x || y!==position.y) await win.setPosition(new api.dpi.PhysicalPosition(x,y));
+}
+"#)]
 extern "C" {
     fn invoke(c: &str, a: JsValue) -> js_sys::Promise;
     #[wasm_bindgen(js_name=listenCapture)]
