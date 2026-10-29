@@ -238,7 +238,7 @@ mod tests {
     use super::*;
     #[test]
     fn short_pause_inside_wake_phrase_does_not_split_the_decode() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = super::super::fixture_root();
         let mut f = Fallback::new(
             &root.join("resources/wake/ggml-tiny.en-q5_1.bin"),
             "Hey Ava",
@@ -276,7 +276,7 @@ mod tests {
     }
     #[test]
     fn bundled_phrases_reject_name_only_unrelated_audio_and_cancelled_work() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = super::super::fixture_root();
         let mut p = WhisperContextParameters::default();
         p.use_gpu(false);
         let context =
@@ -321,7 +321,7 @@ mod tests {
     }
     #[test]
     fn reset_discards_an_in_flight_match_and_quiet_audio_does_not_queue_work() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = super::super::fixture_root();
         let mut f = Fallback::new(
             &root.join("resources/wake/ggml-tiny.en-q5_1.bin"),
             "Hey Ava",
@@ -357,7 +357,7 @@ mod tests {
     #[test]
     #[ignore = "private local audio fixture through the asynchronous speech gate"]
     fn local_stream_fixture() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = super::super::fixture_root();
         let path = std::env::var("NOTDOT_WAKE_FIXTURE").unwrap();
         let mut wav = hound::WavReader::open(path).unwrap();
         let rate = wav.spec().sample_rate;
@@ -408,7 +408,7 @@ mod tests {
     #[test]
     #[ignore = "private local audio fixture; never commit the recording"]
     fn local_phrase_fixture() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = super::super::fixture_root();
         let path = std::env::var("NOTDOT_WAKE_FIXTURE").unwrap();
         let mut wav = hound::WavReader::open(path).unwrap();
         let rate = wav.spec().sample_rate;

@@ -1125,6 +1125,14 @@ impl Worker {
     }
 }
 
+// Cross-compiled test binaries need resources on the machine running the tests.
+// This override is test-only; production always uses Tauri's bundled resources.
+#[cfg(test)]
+fn fixture_root() -> PathBuf {
+    std::env::var_os("NOTDOT_TEST_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1262,15 +1270,12 @@ mod tests {
     // complete model fixtures serial (including teardown), retaining assertions.
     pub(super) static MODEL_FIXTURE: Mutex<()> = Mutex::new(());
     fn models() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/wake")
+        super::fixture_root().join("resources/wake")
     }
     fn audio(name: &str) -> Vec<f32> {
-        let mut reader = hound::WavReader::open(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures")
-                .join(name),
-        )
-        .unwrap();
+        let mut reader =
+            hound::WavReader::open(super::fixture_root().join("tests/fixtures").join(name))
+                .unwrap();
         assert_eq!(reader.spec().sample_rate, 16000);
         reader
             .samples::<i16>()
