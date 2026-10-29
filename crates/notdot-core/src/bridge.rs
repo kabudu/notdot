@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -24,6 +24,9 @@ pub struct Bridge {
 }
 impl Bridge {
     pub async fn connect(binary: &Path) -> Result<Self, String> {
+        // Some emulated Linux hosts report a successful spawn even when exec
+        // cannot find the program, leaving only a misleading broken-pipe error.
+        let binary = resolve_program(binary).ok_or_else(missing_runtime)?;
         let mut command = Command::new(binary);
         #[cfg(windows)]
         command.creation_flags(0x08000000);
@@ -34,9 +37,13 @@ impl Bridge {
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound {
-                "Codex runtime was not found. Install a native Codex executable or set NOTDOT_CODEX_BIN to its full path, then reconnect.".to_string()
-            } else { format!("Start Codex runtime: {e}") })?;
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    missing_runtime()
+                } else {
+                    format!("Start Codex runtime: {e}")
+                }
+            })?;
         let input = Arc::new(Mutex::new(Some(
             child.stdin.take().ok_or("Runtime stdin missing")?,
         )));
@@ -406,6 +413,26 @@ impl Bridge {
             let _ = child.wait().await;
         }
     }
+}
+fn missing_runtime() -> String {
+    "Codex runtime was not found. Install a native Codex executable or set NOTDOT_CODEX_BIN to its full path, then reconnect.".into()
+}
+fn resolve_program(binary: &Path) -> Option<PathBuf> {
+    let existing = |path: PathBuf| {
+        if path.is_file() {
+            return Some(path);
+        }
+        #[cfg(windows)]
+        if path.extension().is_none() && path.with_extension("exe").is_file() {
+            return Some(path.with_extension("exe"));
+        }
+        None
+    };
+    if binary.is_absolute() || binary.components().count() > 1 {
+        return existing(binary.to_path_buf());
+    }
+    std::env::var_os("PATH")
+        .and_then(|paths| std::env::split_paths(&paths).find_map(|dir| existing(dir.join(binary))))
 }
 async fn write(input: &Mutex<Option<ChildStdin>>, value: &Value) -> Result<(), String> {
     let mut bytes = serde_json::to_vec(value).map_err(|e| e.to_string())?;

@@ -1128,6 +1128,86 @@ impl Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires the isolated Linux PulseAudio null-sink lab"]
+    fn isolated_linux_null_sink_reaches_native_capture_and_releases() {
+        use std::process::{Command, Stdio};
+        assert_eq!(
+            std::env::var("NOTDOT_LINUX_AUDIO_TEST").as_deref(),
+            Ok("disposable-null")
+        );
+        assert_eq!(std::env::var("HOME").as_deref(), Ok("/home/qa"));
+        let source = Command::new("pactl")
+            .arg("get-default-source")
+            .output()
+            .unwrap();
+        assert!(source.status.success());
+        assert_eq!(
+            String::from_utf8(source.stdout).unwrap().trim(),
+            "notdot_qa_sink.monitor",
+            "refusing capture outside the isolated null monitor"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tone.wav");
+        let mut wav = hound::WavWriter::create(
+            &path,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 16000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for sample in 0..16000 {
+            wav.write_sample(
+                (0.25
+                    * f32::sin(std::f32::consts::TAU * 800.0 * sample as f32 / 16000.0)
+                    * i16::MAX as f32) as i16,
+            )
+            .unwrap();
+        }
+        wav.finalize().unwrap();
+        struct Playback(std::process::Child);
+        impl Drop for Playback {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        for _ in 0..2 {
+            let microphone = Microphone::open().unwrap();
+            let _playback = Playback(
+                Command::new("paplay")
+                    .arg("--device=notdot_qa_sink")
+                    .arg(&path)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap(),
+            );
+            let deadline = Instant::now() + Duration::from_secs(8);
+            let mut peak = 0.0_f32;
+            let mut samples = 0;
+            while Instant::now() < deadline && samples < microphone.rate as usize / 4 {
+                assert_eq!(microphone.failed.load(Ordering::Relaxed), 0);
+                if let Ok(frame) = microphone.receiver.recv_timeout(Duration::from_millis(100)) {
+                    let frame_peak = frame.iter().copied().map(f32::abs).fold(0.0_f32, f32::max);
+                    peak = peak.max(frame_peak);
+                    if frame_peak > 0.05 {
+                        samples += frame.len();
+                    }
+                }
+            }
+            assert!(
+                peak > 0.05 && samples >= microphone.rate as usize / 4,
+                "native capture did not receive the generated null-sink tone"
+            );
+            assert_eq!(microphone.failed.load(Ordering::Relaxed), 0);
+            drop(microphone);
+        }
+    }
     #[test]
     fn recoverable_audio_notifications_do_not_disconnect_the_microphone() {
         use cpal::ErrorKind;

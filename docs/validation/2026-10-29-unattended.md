@@ -1,6 +1,6 @@
 # Unattended checks — 29 October 2026
 
-Windows microphone capture no longer stops on the reproduced buffer warning. Full Windows voice acceptance remains incomplete: the unattended speaker-to-microphone math requests did not produce the expected transcript or answer.
+Windows one-click voice and cancellation checks now pass in the remote session. Earlier unattended synthetic speech did not establish accuracy; the later human voice check did. Full platform release acceptance remains open.
 
 ## Reproduction and fix
 
@@ -42,6 +42,36 @@ Earlier in this session, four existing ignored tests were explicitly run against
 
 Logs and build artifacts remain under ignored `.local/windows-e2e/`.
 
+## Follow-up after the human voice check
+
+The menu-strip fix was installed and visually verified: Windows shows only the orb, with no native menu bar. The user confirmed that one click, a spoken request and a pause automatically submitted the request and audibly answered “Five plus seven is twelve,” without another click. Saved settings still select Terra Medium, Deepgram and ElevenLabs. The read-only probe independently confirmed the request and answer in the companion chat.
+
+This is a passing real microphone → streaming transcription → model → spoken reply check. It is not broad accuracy acceptance: the first human attempt was misheard and elicited a clarification; the successful attempt preserved the arithmetic but still misheard “briefly.” Synthetic speaker-to-microphone failures are not reclassified as passes.
+
+The successful turn reached thinking at `1793300651608` and speaking at `1793300653481`: **1.873 seconds from the thinking transition to first playback**. This excludes speech capture and endpoint detection and is one observation, not a latency benchmark.
+
+### Cancellation
+
+A temporary QA executable enabled the debug-only composer while using the existing Windows test chat and credentials. It did not create a separately isolated profile or change providers. No voice secret was printed, exported or copied. The production frontend was built separately and contains no debug composer.
+
+- **Model interruption passed:** a request for two hundred detailed compiler paragraphs was submitted and immediately cancelled through Escape. The supported `thread/read` result reported the latest turn as `interrupted`, with the synthetic request and no completed reply. Thinking returned to idle after 623 ms.
+- **Playback stop state passed:** for a fifty-paragraph compiler request, Send and a timed Escape were executed in the same UI call, avoiding orchestration delays. The app entered thinking at `1793303563237`, speaking at `1793303565359`, then left speaking at `1793303569993` and reached idle at `1793303570487`. Cancellation cut the speaking phase short after approximately 4.6 seconds. This verifies native cancellation and UI state; a human did not separately confirm the exact audible stop.
+- Earlier attempts cancelled too late because separate tool calls added delay. Those attempts do not establish model interruption; only the controlled checks above are counted.
+
+### Final build and checks
+
+A new production build includes the missing-runtime setup fix found during Linux testing. Its unsigned NSIS bundle built successfully. The installed executable was replaced and its SHA-256 independently checked in Windows:
+
+```text
+fcf173ba0eb0dee9c571f9b134e96a3d7ca0729539d8cc70ef19954bb1a18531
+```
+
+The QA executable was closed and moved out of the installed app directory; the normal voice-only app was restarted. The final build changes runtime discovery, not voice processing. The human voice result above belongs to the preceding menu/microphone-fixed build; it was not repeated after this final rebuild.
+
+`scripts/ci-local.sh` passed: **109 Rust tests**, 11 explicitly ignored live/private-fixture tests, native and production/debug WASM Clippy with warnings denied, formatting, all 10 Python contracts and whitespace checks. Linux-specific OS checks and emulation limits are recorded in [Linux validation](2026-10-29-linux.md). Generated binaries and logs remain ignored.
+
 ## Remaining acceptance
 
-Verify a known spoken request and correct audible answer on Windows, response timing, model-turn and playback interruption, repeated turns and wake activation. The remote synthetic input path currently cannot establish those results. The Mac locked again before the menu-strip fix could be installed and checked. Its Windows release build and macOS Clippy passed, but native UI acceptance of that final change is pending. The installed Windows executable is the microphone-fixed version whose hash is recorded above; a newer build is staged for the next unlocked session. No demo recording was started; no voice keys or authentication files were exported.
+Windows wake activation, wider real speech/accent/noise coverage, ordinary speaking animation outside reduced-motion RDP, startup and update/restart acceptance remain open. Linux still needs a native x64 machine with a genuine runtime/account and voice services for full end-to-end acceptance. Neither cross-compilation nor emulation closes those gates.
+
+No demo recording was started. The Mac was temporarily kept awake for testing using a bounded power assertion; password and screen-lock settings were not weakened. The temporary assertion was removed after testing; its process exited and the display-idle sleep assertion returned to zero. Linux audio used only a container null sink, so it never competed with the Windows microphone test.
