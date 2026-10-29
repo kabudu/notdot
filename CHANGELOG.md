@@ -24,7 +24,7 @@
 - Manage everything in clearer, collapsible Settings with a combined model picker and compact voice-usage display.
 - Enjoy smoother speaking motion and improved keyboard access, including the restored Command–Q shortcut.
 - Check for updates from the app menu, with automatic checks and permission before installation.
-- Improve microphone access, saved-key handling and voice setup errors. Show microphone failures instead of silently stopping.
+- Improve microphone access, saved-key handling and voice setup errors, with clearer reporting of interrupted audio.
 - Add a website and clearer getting-started guides.
 
 Development preview. Platform testing and public distribution are still in progress; see [release readiness](docs/release-readiness.md).
