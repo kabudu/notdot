@@ -10,6 +10,14 @@ use tauri::State;
 use tauri_plugin_updater::{Update, UpdaterExt};
 const PERIOD: u64 = 6 * 60 * 60;
 const MAX_DOWNLOAD: u64 = 256 * 1024 * 1024;
+const PACKAGE_MANAGER_GUIDANCE: &str = "Update notdot using your Linux package manager. In-app installation is available for the AppImage version.";
+fn supports_in_app_install(os: &str, bundle: Option<tauri::utils::config::BundleType>) -> bool {
+    os != "linux" || matches!(bundle, Some(tauri::utils::config::BundleType::AppImage))
+}
+fn can_install_here() -> bool {
+    supports_in_app_install(std::env::consts::OS, tauri::utils::platform::bundle_type())
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Status {
     pub phase: String,
@@ -91,6 +99,18 @@ pub async fn check_updates(
     check(&app, &updates).await
 }
 async fn check(app: &tauri::AppHandle, updates: &Updates) -> Result<(), String> {
+    if !can_install_here() {
+        let mut i = updates.lock_state();
+        i.update = None;
+        i.consent = None;
+        i.status = Status {
+            phase: "package_manager".into(),
+            message: PACKAGE_MANAGER_GUIDANCE.into(),
+            ..Status::default()
+        };
+        return Ok(());
+    }
+
     let _guard = updates
         .operation
         .try_lock()
@@ -266,6 +286,9 @@ async fn install(
     state: &Arc<AppState>,
     updates: &Updates,
 ) -> Result<(), String> {
+    if !can_install_here() {
+        return Err(PACKAGE_MANAGER_GUIDANCE.into());
+    }
     if super::is_qa(app) {
         return Err("Live update installation is disabled in the isolated QA profile; use signed local fixtures".into());
     }
@@ -355,6 +378,26 @@ pub fn spawn(app: tauri::AppHandle, state: Arc<AppState>, updates: Arc<Updates>)
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn linux_package_installs_never_offer_appimage_replacement() {
+        use tauri::utils::config::BundleType;
+        assert!(!super::supports_in_app_install(
+            "linux",
+            Some(BundleType::Deb)
+        ));
+        assert!(!super::supports_in_app_install(
+            "linux",
+            Some(BundleType::Rpm)
+        ));
+        assert!(!super::supports_in_app_install("linux", None));
+        assert!(super::supports_in_app_install(
+            "linux",
+            Some(BundleType::AppImage)
+        ));
+        assert!(super::supports_in_app_install("macos", None));
+        assert!(super::supports_in_app_install("windows", None));
+    }
+
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     /// Exercise the real Tauri updater HTTP and signature verifier with a disposable fixture.

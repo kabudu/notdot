@@ -19,6 +19,8 @@ use tokio::{
 #[derive(Clone, Default, Serialize)]
 pub struct Report {
     pub mode: String,
+    pub sample_rate: u32,
+    pub stats_available: bool,
     pub audio_chunks: u64,
     pub partial_events: u64,
     pub committed_segments: u64,
@@ -32,10 +34,22 @@ enum Input {
     Audio { sequence: u64, pcm: Vec<u8> },
     Finish { sequence: u64 },
 }
+struct Completion {
+    result: Result<String, VoiceError>,
+    stats: Option<StreamStats>,
+}
+impl Completion {
+    fn failed(error: VoiceError) -> Self {
+        Self {
+            result: Err(error),
+            stats: None,
+        }
+    }
+}
 struct Session {
     token: String,
     input: mpsc::Sender<Input>,
-    result: Option<oneshot::Receiver<Result<(String, StreamStats), VoiceError>>>,
+    result: Option<oneshot::Receiver<Completion>>,
     task: JoinHandle<()>,
     cancelled: Arc<AtomicBool>,
     started: Instant,
@@ -106,21 +120,24 @@ impl Streaming {
         drop(slot);
         let result = match result {
             Ok(Ok(result)) => result,
-            _ => Err(VoiceError::new(
+            _ => Completion::failed(VoiceError::new(
                 VoiceErrorKind::Network,
                 "Live transcription did not complete",
             )),
         };
         let mut report = self.report.lock().await;
         report.completed_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-        match result {
-            Ok((text, stats)) => {
+        report.stats_available = result.stats.is_some();
+        if let Some(stats) = result.stats {
+            report.audio_chunks = stats.audio_chunks;
+            report.partial_events = stats.partial_events;
+            report.committed_segments = stats.committed_segments;
+            report.first_audio_ms = stats.first_audio_ms;
+            report.first_partial_ms = stats.first_partial_ms;
+        }
+        match result.result {
+            Ok(text) => {
                 report.mode = "streaming".into();
-                report.audio_chunks = stats.audio_chunks;
-                report.partial_events = stats.partial_events;
-                report.committed_segments = stats.committed_segments;
-                report.first_audio_ms = stats.first_audio_ms;
-                report.first_partial_ms = stats.first_partial_ms;
                 report.error_kind = None;
                 Ok(Some(text))
             }
@@ -141,25 +158,39 @@ impl Streaming {
         }
     }
 }
-async fn run(
-    state: Arc<AppState>,
-    rate: u32,
-    input: mpsc::Receiver<Input>,
-) -> Result<(String, StreamStats), VoiceError> {
-    let backend = recognition_backend(&state).await.map_err(|_| {
-        VoiceError::new(
-            VoiceErrorKind::Authentication,
-            "Saved voice key is unavailable",
-        )
-    })?;
-    let stream = backend.start_transcription(rate).await?;
+async fn run(state: Arc<AppState>, rate: u32, input: mpsc::Receiver<Input>) -> Completion {
+    let backend = match recognition_backend(&state).await {
+        Ok(backend) => backend,
+        Err(_) => {
+            return Completion::failed(VoiceError::new(
+                VoiceErrorKind::Authentication,
+                "Saved voice key is unavailable",
+            ));
+        }
+    };
+    let stream = match backend.start_transcription(rate).await {
+        Ok(stream) => stream,
+        Err(error) => return Completion::failed(error),
+    };
     run_stream(stream, rate, input).await
 }
 async fn run_stream(
     mut stream: Box<dyn notdot_voice::realtime::StreamingTranscriber>,
     rate: u32,
+    input: mpsc::Receiver<Input>,
+) -> Completion {
+    let result = process_stream(stream.as_mut(), rate, input).await;
+    // Counters contain no transcript or audio. Retain them even when finalisation
+    // fails, so diagnostics can distinguish uploaded audio and observed updates.
+    let stats = Some(stream.stats());
+    stream.close().await;
+    Completion { result, stats }
+}
+async fn process_stream(
+    stream: &mut dyn notdot_voice::realtime::StreamingTranscriber,
+    rate: u32,
     mut input: mpsc::Receiver<Input>,
-) -> Result<(String, StreamStats), VoiceError> {
+) -> Result<String, VoiceError> {
     let mut expected = 0u64;
     let mut since_commit = 0usize;
     let mut text = String::new();
@@ -208,9 +239,7 @@ async fn run_stream(
                         "No usable speech was transcribed",
                     ));
                 }
-                let stats = stream.stats();
-                stream.close().await;
-                return Ok((text, stats));
+                return Ok(text);
             }
         }
     }
@@ -264,6 +293,7 @@ pub fn spawn(app: AppHandle, state: Arc<AppState>, mut events: mpsc::Receiver<Ca
                     drop(cancellations);
                     *state.streaming.report.lock().await = Report {
                         mode: "streaming_pending".into(),
+                        sample_rate: rate,
                         ..Default::default()
                     };
                 }
@@ -376,6 +406,7 @@ mod tests {
                 rx,
             )
             .await
+            .result
             .err()
             .unwrap();
             assert_eq!(err.kind, VoiceErrorKind::Network);
@@ -394,7 +425,7 @@ mod tests {
                 .unwrap();
             }
             tx.send(Input::Finish { sequence: 21 }).await.unwrap();
-            let (text, stats) = run_stream(
+            let completion = run_stream(
                 Box::new(MockStream {
                     continuous,
                     commits: 0,
@@ -403,8 +434,9 @@ mod tests {
                 16000,
                 rx,
             )
-            .await
-            .unwrap();
+            .await;
+            let text = completion.result.unwrap();
+            let stats = completion.stats.unwrap();
             assert_eq!(
                 text,
                 if continuous {
@@ -433,7 +465,10 @@ mod tests {
                 let (answer, result) = oneshot::channel();
                 assert!(
                     answer
-                        .send(Err(VoiceError::new(kind, "Original recognition failure")))
+                        .send(Completion::failed(VoiceError::new(
+                            kind,
+                            "Original recognition failure"
+                        )))
                         .is_ok()
                 );
                 *manager.inner.lock().await = Some(Session {
@@ -456,8 +491,89 @@ mod tests {
                     assert_eq!(error.to_string(), "Original recognition failure");
                     assert_eq!(manager.report.lock().await.mode, "failed");
                 }
+                assert!(
+                    !manager.report.lock().await.stats_available,
+                    "setup failure has no decoder counters"
+                );
                 assert!(manager.inner.lock().await.is_none());
             }
+        }
+    }
+    struct FinalFailure {
+        chunks: u64,
+        closed: Arc<AtomicBool>,
+    }
+    #[async_trait::async_trait]
+    impl notdot_voice::realtime::StreamingTranscriber for FinalFailure {
+        async fn send(&mut self, _: &[u8]) -> Result<(), VoiceError> {
+            self.chunks += 1;
+            Ok(())
+        }
+        async fn commit(&mut self) -> Result<String, VoiceError> {
+            Err(VoiceError::new(
+                VoiceErrorKind::Network,
+                "Final transcript timed out",
+            ))
+        }
+        async fn close(&mut self) {
+            self.closed.store(true, Ordering::Relaxed);
+        }
+        fn stats(&self) -> StreamStats {
+            StreamStats {
+                audio_chunks: self.chunks,
+                partial_events: 3,
+                first_audio_ms: 1000,
+                first_partial_ms: 1010,
+                ..Default::default()
+            }
+        }
+    }
+    #[tokio::test]
+    async fn finalisation_failure_preserves_observed_counters_and_closes_stream() {
+        for rate in [16000, 44100, 48000] {
+            let manager = Streaming::default();
+            let closed = Arc::new(AtomicBool::new(false));
+            let (tx, input) = mpsc::channel(8);
+            tx.send(Input::Audio {
+                sequence: 0,
+                pcm: vec![0; 32],
+            })
+            .await
+            .unwrap();
+            tx.send(Input::Finish { sequence: 1 }).await.unwrap();
+            let (answer, result) = oneshot::channel();
+            let stream = FinalFailure {
+                chunks: 0,
+                closed: closed.clone(),
+            };
+            let task = tokio::spawn(async move {
+                let _ = answer.send(run_stream(Box::new(stream), rate, input).await);
+            });
+            *manager.inner.lock().await = Some(Session {
+                token: "failure".into(),
+                input: tx,
+                result: Some(result),
+                task,
+                cancelled: Arc::new(AtomicBool::new(false)),
+                started: Instant::now(),
+            });
+            *manager.report.lock().await = Report {
+                sample_rate: rate,
+                ..Default::default()
+            };
+            let error = manager.take("failure", false).await.unwrap_err();
+            assert_eq!(error.to_string(), "Final transcript timed out");
+            let report = manager.report.lock().await;
+            assert!(report.stats_available);
+            assert_eq!(report.sample_rate, rate);
+            assert_eq!(report.mode, "failed");
+            assert_eq!(report.audio_chunks, 1);
+            assert_eq!(report.partial_events, 3);
+            assert_eq!(report.committed_segments, 0);
+            assert_eq!(report.first_audio_ms, 1000);
+            assert_eq!(report.first_partial_ms, 1010);
+            assert!(closed.load(Ordering::Relaxed));
+            assert!(manager.inner.lock().await.is_none());
         }
     }
     #[tokio::test]
