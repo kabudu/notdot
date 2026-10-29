@@ -253,12 +253,14 @@ async fn transcribe_wake(state: State<'_, Arc<AppState>>, id: u64) -> Result<Str
             audio,
         )
     };
-    match state.streaming.take(&token).await {
+    match state.streaming.take(&token, provider != "deepgram").await {
         Ok(Some(text)) => {
             return quota::finish(&state, &provider, generation, "stt", Ok(text)).await;
         }
         Err(error) => return quota::finish(&state, &provider, generation, "stt", Err(error)).await,
-        Ok(None) if provider=="deepgram" => return Err("Deepgram live recognition could not finish. Check its saved key and connection, then try again.".into()),
+        Ok(None) if provider == "deepgram" => {
+            return Err("Deepgram speech recognition did not start. Please try again.".into());
+        }
         Ok(None) => {}
     }
     transcribe_audio(&state, audio, "audio/wav".into()).await

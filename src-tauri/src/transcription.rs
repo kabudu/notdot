@@ -1,5 +1,6 @@
-//! One bounded streaming session for the current activated recording. Failures
-//! preserve the local WAV for a batch retry; cancellation never triggers a retry.
+//! One bounded streaming session for the current activated recording. Recoverable failures
+//! preserve the local WAV for a retry only when the backend supports batch STT.
+//! Cancellation, authentication, quota and permission failures never trigger a retry.
 use crate::{AppState, recognition_backend, wake::CaptureEvent};
 use notdot_voice::{VoiceError, VoiceErrorKind, realtime::StreamStats};
 use serde::Serialize;
@@ -60,7 +61,11 @@ impl Streaming {
             s.task.abort();
         }
     }
-    pub async fn take(&self, token: &str) -> Result<Option<String>, VoiceError> {
+    pub async fn take(
+        &self,
+        token: &str,
+        allow_batch_retry: bool,
+    ) -> Result<Option<String>, VoiceError> {
         // Match cancellation's lock order so a concurrent cancel cannot remove
         // a session between the tombstone check and taking its receiver.
         let mut cancellations = self.cancelled.lock().await;
@@ -120,17 +125,18 @@ impl Streaming {
                 Ok(Some(text))
             }
             Err(error) => {
-                report.mode = "batch_fallback".into();
                 report.error_kind = Some(error.kind);
-                // No retry can bypass exhausted credits or invalid authentication.
-                if matches!(
-                    error.kind,
-                    VoiceErrorKind::Authentication | VoiceErrorKind::Quota
-                ) {
-                    Err(error)
-                } else {
-                    Ok(None)
-                }
+                let retry = allow_batch_retry
+                    && !matches!(
+                        error.kind,
+                        VoiceErrorKind::Authentication
+                            | VoiceErrorKind::Permission
+                            | VoiceErrorKind::Quota
+                            | VoiceErrorKind::RateLimit
+                            | VoiceErrorKind::InvalidInput
+                    );
+                report.mode = if retry { "batch_fallback" } else { "failed" }.into();
+                if retry { Ok(None) } else { Err(error) }
             }
         }
     }
@@ -411,12 +417,56 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn streaming_only_errors_survive_and_retry_never_bypasses_restrictions() {
+        for allow_retry in [false, true] {
+            for kind in [
+                VoiceErrorKind::Network,
+                VoiceErrorKind::Provider,
+                VoiceErrorKind::Authentication,
+                VoiceErrorKind::Permission,
+                VoiceErrorKind::Quota,
+                VoiceErrorKind::RateLimit,
+                VoiceErrorKind::InvalidInput,
+            ] {
+                let manager = Streaming::default();
+                let (input, _receiver) = mpsc::channel(8);
+                let (answer, result) = oneshot::channel();
+                assert!(
+                    answer
+                        .send(Err(VoiceError::new(kind, "Original recognition failure")))
+                        .is_ok()
+                );
+                *manager.inner.lock().await = Some(Session {
+                    token: "failure".into(),
+                    input,
+                    result: Some(result),
+                    task: tokio::spawn(async {}),
+                    cancelled: Arc::new(AtomicBool::new(false)),
+                    started: Instant::now(),
+                });
+                let result = manager.take("failure", allow_retry).await;
+                let retry = allow_retry
+                    && matches!(kind, VoiceErrorKind::Network | VoiceErrorKind::Provider);
+                if retry {
+                    assert!(result.unwrap().is_none());
+                    assert_eq!(manager.report.lock().await.mode, "batch_fallback");
+                } else {
+                    let error = result.unwrap_err();
+                    assert_eq!(error.kind, kind);
+                    assert_eq!(error.to_string(), "Original recognition failure");
+                    assert_eq!(manager.report.lock().await.mode, "failed");
+                }
+                assert!(manager.inner.lock().await.is_none());
+            }
+        }
+    }
+    #[tokio::test]
     async fn cancelled_session_never_requests_batch_fallback() {
         let manager = Streaming::default();
         manager.cancel("capture-1").await;
-        assert!(manager.take("capture-1").await.is_err());
+        assert!(manager.take("capture-1", true).await.is_err());
         // A cancellation for another turn cannot block this one.
-        assert!(manager.take("capture-2").await.unwrap().is_none());
+        assert!(manager.take("capture-2", true).await.unwrap().is_none());
         let (tx, input) = mpsc::channel(8);
         let (answer, result) = oneshot::channel();
         let task = tokio::spawn(async move {
@@ -441,7 +491,7 @@ mod tests {
             started: Instant::now(),
         });
         manager.cancel("capture-3").await;
-        assert!(manager.take("capture-3").await.is_err());
+        assert!(manager.take("capture-3", true).await.is_err());
         assert!(manager.inner.lock().await.is_none());
     }
 }
