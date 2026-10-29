@@ -451,6 +451,24 @@ const MIC_QUEUE_PACKETS: usize = 100;
 const MIC_QUEUE_FULL: u8 = 1;
 const MIC_DEVICE_FAILED: u8 = 2;
 
+// A slow worker is not a disconnected microphone: consume queued input before
+// consulting its last observed timestamp. Queue overflow is checked separately.
+fn receive_microphone_frame(
+    receiver: &Receiver<Vec<f32>>,
+    last_audio: &mut Option<Instant>,
+) -> Result<Option<Vec<f32>>, String> {
+    match receiver.try_recv() {
+        Ok(samples) => {
+            *last_audio = Some(Instant::now());
+            Ok(Some(samples))
+        }
+        Err(_) if last_audio.is_some_and(|at| at.elapsed() > Duration::from_secs(2)) => {
+            Err("Microphone stopped supplying audio. Save wake settings to retry.".into())
+        }
+        Err(_) => Ok(None),
+    }
+}
+
 struct Microphone {
     _stream: cpal::Stream,
     receiver: Receiver<Vec<f32>>,
@@ -917,16 +935,6 @@ impl Worker {
             self.mic = None;
             return;
         }
-        if self
-            .last_audio
-            .is_some_and(|at| at.elapsed() > Duration::from_secs(2))
-        {
-            self.error(
-                inner,
-                "Microphone stopped supplying audio. Save wake settings to retry.".into(),
-            );
-            return;
-        }
         let mic = self.mic.as_ref().expect("mic initialized");
         match mic.failed.load(Ordering::Relaxed) {
             MIC_QUEUE_FULL => {
@@ -947,16 +955,17 @@ impl Worker {
         }
         let rate = mic.rate;
         for _ in 0..16 {
-            let Ok(samples) = self
-                .mic
-                .as_ref()
-                .expect("mic initialized")
-                .receiver
-                .try_recv()
-            else {
-                break;
+            let samples = match receive_microphone_frame(
+                &self.mic.as_ref().expect("mic initialized").receiver,
+                &mut self.last_audio,
+            ) {
+                Ok(Some(samples)) => samples,
+                Ok(None) => break,
+                Err(error) => {
+                    self.error(inner, error);
+                    return;
+                }
             };
-            self.last_audio = Some(Instant::now());
             // Check cancellation after receiving audio; discarded frames never reach STT.
             {
                 let i = inner.lock().expect("wake state");
@@ -1216,6 +1225,33 @@ mod tests {
             drop(microphone);
         }
     }
+    #[test]
+    fn queued_microphone_frames_refresh_a_stale_worker_timer_before_timeout() {
+        let (sender, receiver) = mpsc::sync_channel(2);
+        let mut last_audio = Some(Instant::now() - Duration::from_secs(3));
+        sender.send(vec![0.1; 320]).unwrap();
+        assert_eq!(
+            receive_microphone_frame(&receiver, &mut last_audio)
+                .unwrap()
+                .unwrap()
+                .len(),
+            320
+        );
+        assert!(last_audio.unwrap().elapsed() < Duration::from_secs(1));
+        assert!(
+            receive_microphone_frame(&receiver, &mut last_audio)
+                .unwrap()
+                .is_none()
+        );
+        // A truly empty stream still fails at the original two-second bound.
+        last_audio = Some(Instant::now() - Duration::from_millis(2100));
+        assert!(
+            receive_microphone_frame(&receiver, &mut last_audio)
+                .unwrap_err()
+                .contains("stopped supplying audio")
+        );
+    }
+
     #[test]
     fn recoverable_audio_notifications_do_not_disconnect_the_microphone() {
         use cpal::ErrorKind;

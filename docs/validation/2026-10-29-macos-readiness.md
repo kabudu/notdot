@@ -25,3 +25,9 @@ The final incremental build includes the source freeze at `98947d2` and complete
 5. Repeat current-candidate human microphone, cancellation, wake, permission-denied/device-loss, lock-screen privacy and keyboard/VoiceOver checks. Earlier dated reports identify the builds actually exercised. Broader names, accents and background noise remain experimental wake gates.
 
 Local build, signature and contract logs are under ignored `.local/macos-readiness/`. No demo recording, public release, tag, merge or GitHub Actions change was made.
+
+## Silent credential restoration audit
+
+A source review found that macOS silent key reads used the production service name directly, while explicit access correctly selected the separate QA Deepgram service. If both entries existed, QA startup could use the production Deepgram key; if only the QA entry existed, silent startup could incorrectly appear unconfigured. This was a policy mismatch found without reading either credential, not evidence that a production key was actually used.
+
+Silent search now derives its service/account from the same policy as explicit access. Production identity and the intentional read-only QA reuse of the ElevenLabs key stay unchanged. No key is moved, copied or migrated. A regression failed with the old hard-coded service and passes with the shared policy for QA/production and both providers. All five credential tests pass, including cache replacement, denial and QA mutation protection. OS credential access for the rebuilt app is not exercised unattended.
