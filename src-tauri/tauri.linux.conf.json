@@ -16,7 +16,8 @@
           "gstreamer1.0-plugins-good",
           "gstreamer1.0-plugins-base",
           "gstreamer1.0-libav",
-          "speech-dispatcher"
+          "speech-dispatcher",
+          "speech-dispatcher-espeak-ng"
         ]
       }
     }

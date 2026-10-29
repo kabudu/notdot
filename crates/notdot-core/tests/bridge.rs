@@ -54,6 +54,21 @@ async fn broken_runtime_fails_without_hanging() {
 }
 
 #[tokio::test]
+async fn missing_runtime_reports_setup_instead_of_a_pipe_error() {
+    let name = format!("notdot-absent-runtime-{}", uuid::Uuid::new_v4());
+    let error = match Bridge::connect(std::path::Path::new(&name)).await {
+        Ok(bridge) => {
+            bridge.shutdown().await;
+            panic!("unexpected executable for a unique missing name");
+        }
+        Err(error) => error,
+    };
+    assert!(error.contains("Codex runtime was not found"));
+    assert!(error.contains("NOTDOT_CODEX_BIN"));
+    assert!(!error.contains("pipe"));
+}
+
+#[tokio::test]
 async fn interruption_identifies_both_thread_and_turn() {
     let (_dir, path) = server(
         r#"import json,sys

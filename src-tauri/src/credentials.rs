@@ -230,6 +230,81 @@ fn os_read(provider: &str, interactive: bool) -> Result<String, String> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    /// Requires an unlocked, explicitly marked disposable Linux collection.
+    /// Never run this against a user's login keyring or use real provider keys.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "requires the isolated Linux Secret Service lab"]
+    async fn isolated_linux_secret_service_lifecycle() {
+        assert_eq!(
+            std::env::var("NOTDOT_LINUX_SECRET_SERVICE_TEST").as_deref(),
+            Ok("disposable")
+        );
+        assert_eq!(std::env::var("HOME").as_deref(), Ok("/home/qa"));
+        let service =
+            dbus_secret_service::SecretService::connect(dbus_secret_service::EncryptionType::Plain)
+                .unwrap();
+        let collection = service.get_default_collection().unwrap();
+        assert_eq!(
+            collection.get_label().unwrap(),
+            "notdot-disposable-qa",
+            "refusing to touch a collection without the disposable lab marker"
+        );
+        assert!(!collection.is_locked().unwrap());
+        let entry = super::super::credential_for("deepgram").unwrap();
+        assert!(
+            matches!(entry.get_password(), Err(keyring::Error::NoEntry)),
+            "refusing to overwrite an existing credential"
+        );
+        struct Cleanup(keyring::Entry);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = self.0.delete_credential();
+            }
+        }
+        let cleanup = Cleanup(entry);
+        let vault = Arc::new(Credentials::default());
+        vault
+            .save("deepgram", "notdot-synthetic-first")
+            .await
+            .unwrap();
+        assert_eq!(
+            os_read("deepgram", false).unwrap(),
+            "notdot-synthetic-first"
+        );
+        vault
+            .save("deepgram", "notdot-synthetic-replacement")
+            .await
+            .unwrap();
+        let restarted = Arc::new(Credentials::default());
+        assert_eq!(
+            restarted.read("deepgram", false).await.unwrap(),
+            "notdot-synthetic-replacement"
+        );
+        cleanup
+            .0
+            .set_password("notdot-synthetic-external-replacement")
+            .unwrap();
+        assert_eq!(
+            restarted.read("deepgram", false).await.unwrap(),
+            "notdot-synthetic-replacement"
+        );
+        let fresh = Arc::new(Credentials::default());
+        assert_eq!(
+            fresh.read("deepgram", false).await.unwrap(),
+            "notdot-synthetic-external-replacement"
+        );
+        vault.remove("deepgram").await.unwrap();
+        assert!(!vault.cached("deepgram"));
+        assert!(os_read("deepgram", false).is_err());
+        drop(cleanup);
+        assert!(matches!(
+            super::super::credential_for("deepgram")
+                .unwrap()
+                .get_password(),
+            Err(keyring::Error::NoEntry)
+        ));
+    }
     #[tokio::test]
     async fn qa_profile_rejects_credential_mutation_before_any_os_access() {
         let vault = Arc::new(Credentials::read_only());
