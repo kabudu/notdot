@@ -192,6 +192,31 @@ impl Flux {
             rate,
         })
     }
+    async fn commit_with_timeout(&mut self, final_timeout: Duration) -> Result<String, VoiceError> {
+        timeout(
+            Duration::from_secs(2),
+            self.writer.send(Message::Text(
+                json!({"type":"ForceEndTurn"}).to_string().into(),
+            )),
+        )
+        .await
+        .map_err(|_| err(VoiceErrorKind::Network, "Deepgram commit timed out"))?
+        .map_err(|_| err(VoiceErrorKind::Network, "Deepgram commit failed"))?;
+        let answer = timeout(final_timeout, self.results.recv())
+            .await
+            .map_err(|_| {
+                // Report only whether an update was observed, never its content.
+                let message = if self.partials.load(Ordering::Relaxed) > 0 {
+                    "Deepgram final transcript timed out after receiving speech updates"
+                } else {
+                    "Deepgram final transcript timed out without receiving speech updates"
+                };
+                err(VoiceErrorKind::Network, message)
+            })?
+            .ok_or_else(|| err(VoiceErrorKind::Network, "Deepgram disconnected"))??;
+        self.stats.committed_segments += 1;
+        Ok(answer)
+    }
 }
 #[async_trait]
 impl StreamingTranscriber for Flux {
@@ -222,26 +247,7 @@ impl StreamingTranscriber for Flux {
         Ok(())
     }
     async fn commit(&mut self) -> Result<String, VoiceError> {
-        timeout(
-            Duration::from_secs(2),
-            self.writer.send(Message::Text(
-                json!({"type":"ForceEndTurn"}).to_string().into(),
-            )),
-        )
-        .await
-        .map_err(|_| err(VoiceErrorKind::Network, "Deepgram commit timed out"))?
-        .map_err(|_| err(VoiceErrorKind::Network, "Deepgram commit failed"))?;
-        let answer = timeout(Duration::from_secs(5), self.results.recv())
-            .await
-            .map_err(|_| {
-                err(
-                    VoiceErrorKind::Network,
-                    "Deepgram final transcript timed out",
-                )
-            })?
-            .ok_or_else(|| err(VoiceErrorKind::Network, "Deepgram disconnected"))??;
-        self.stats.committed_segments += 1;
-        Ok(answer)
+        self.commit_with_timeout(Duration::from_secs(5)).await
     }
     async fn close(&mut self) {
         let _ = timeout(Duration::from_secs(1), self.writer.close()).await;
@@ -326,6 +332,118 @@ mod tests {
         assert_eq!(stream.stats().committed_segments, 2);
         stream.close().await;
         server.await.unwrap();
+    }
+    async fn finalisation_server(
+        rate: u32,
+        updates: bool,
+    ) -> (
+        Flux,
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<bool>,
+        JoinHandle<()>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (observed, ready) = tokio::sync::oneshot::channel();
+        let (release, gate) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let mut received = 0;
+            loop {
+                match ws.next().await.unwrap().unwrap() {
+                    Message::Binary(bytes) => received += bytes.len(),
+                    Message::Text(text) => {
+                        assert_eq!(
+                            serde_json::from_str::<serde_json::Value>(&text).unwrap()["type"],
+                            "ForceEndTurn"
+                        );
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(received, rate as usize / 50 * 2);
+            if updates {
+                ws.send(Message::Text(json!({"type":"TurnInfo","event":"Update","transcript":"synthetic sensitive words"}).to_string().into())).await.unwrap();
+            }
+            observed.send(()).unwrap();
+            if gate.await.unwrap() {
+                ws.send(Message::Text(json!({"type":"TurnInfo","event":"EndOfTurn","turn_index":0,"transcript":"confirmed final"}).to_string().into())).await.unwrap();
+            }
+        });
+        let stream = Flux::connect(
+            &format!("ws://{addr}"),
+            reqwest::header::HeaderValue::from_static("Token synthetic"),
+            rate,
+        )
+        .await
+        .unwrap();
+        (stream, ready, release, server)
+    }
+    #[tokio::test]
+    async fn missing_final_is_classified_without_leaking_partial_text_at_supported_rates() {
+        for rate in [8000, 16000, 24000, 44100, 48000] {
+            for updates in [false, true] {
+                let (mut stream, ready, release, server) = finalisation_server(rate, updates).await;
+                stream.send(&vec![0; rate as usize / 50 * 2]).await.unwrap();
+                let request = tokio::spawn(async move {
+                    let result = stream.commit_with_timeout(Duration::from_millis(250)).await;
+                    (stream, result)
+                });
+                ready.await.unwrap();
+                let (mut stream, result) = request.await.unwrap();
+                let error = result.unwrap_err();
+                assert_eq!(error.kind, VoiceErrorKind::Network);
+                assert_eq!(
+                    error.to_string(),
+                    if updates {
+                        "Deepgram final transcript timed out after receiving speech updates"
+                    } else {
+                        "Deepgram final transcript timed out without receiving speech updates"
+                    }
+                );
+                assert!(!error.to_string().contains("synthetic sensitive words"));
+                assert_eq!(stream.stats().partial_events, u64::from(updates));
+                assert_eq!(stream.stats().committed_segments, 0);
+                assert_eq!(stream.stats().audio_chunks, 1);
+                release.send(false).unwrap();
+                stream.close().await;
+                server.await.unwrap();
+            }
+        }
+    }
+    #[tokio::test]
+    async fn delayed_final_waits_for_end_of_turn_and_preserves_counters_at_supported_rates() {
+        for rate in [8000, 16000, 24000, 44100, 48000] {
+            let (mut stream, ready, release, server) = finalisation_server(rate, true).await;
+            stream.send(&vec![0; rate as usize / 50 * 2]).await.unwrap();
+            let partials = stream.partials.clone();
+            let request = tokio::spawn(async move {
+                let result = stream.commit_with_timeout(Duration::from_secs(5)).await;
+                (stream, result)
+            });
+            ready.await.unwrap();
+            timeout(Duration::from_secs(1), async {
+                while partials.load(Ordering::Relaxed) == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(
+                !request.is_finished(),
+                "partial text must not finish a request"
+            );
+            release.send(true).unwrap();
+            let (mut stream, result) = request.await.unwrap();
+            assert_eq!(result.unwrap(), "confirmed final");
+            assert_eq!(stream.stats().partial_events, 1);
+            assert_eq!(stream.stats().committed_segments, 1);
+            assert_eq!(stream.stats().audio_chunks, 1);
+            stream.close().await;
+            server.await.unwrap();
+        }
     }
     #[test]
     fn recognition_factory_rejects_unsupported_language_and_bad_headers() {
