@@ -24,9 +24,11 @@ use std::{
     },
     time::Duration,
 };
+#[cfg(target_os = "macos")]
+use tauri::menu::{PredefinedMenuItem, Submenu};
 use tauri::{
     Manager, State,
-    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
+    menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
 };
 use tokio::sync::Mutex;
@@ -1327,27 +1329,31 @@ fn main() {
                 None::<&str>,
             )?;
             menu.insert(&updates_item, 1)?;
-            let app_menu = Submenu::with_items(
-                app,
-                "notdot",
-                true,
-                &[&about_item, &settings_item, &updates_item, &quit],
-            )?;
-            let edit_menu = Submenu::with_items(
-                app,
-                "Edit",
-                true,
-                &[
-                    &PredefinedMenuItem::undo(app, None)?,
-                    &PredefinedMenuItem::redo(app, None)?,
-                    &PredefinedMenuItem::separator(app)?,
-                    &PredefinedMenuItem::cut(app, None)?,
-                    &PredefinedMenuItem::copy(app, None)?,
-                    &PredefinedMenuItem::paste(app, None)?,
-                    &PredefinedMenuItem::select_all(app, None)?,
-                ],
-            )?;
-            app.set_menu(Menu::with_items(app, &[&app_menu, &edit_menu])?)?;
+            // macOS uses a global menu; other platforms keep the orb window bare.
+            #[cfg(target_os = "macos")]
+            {
+                let app_menu = Submenu::with_items(
+                    app,
+                    "notdot",
+                    true,
+                    &[&about_item, &settings_item, &updates_item, &quit],
+                )?;
+                let edit_menu = Submenu::with_items(
+                    app,
+                    "Edit",
+                    true,
+                    &[
+                        &PredefinedMenuItem::undo(app, None)?,
+                        &PredefinedMenuItem::redo(app, None)?,
+                        &PredefinedMenuItem::separator(app)?,
+                        &PredefinedMenuItem::cut(app, None)?,
+                        &PredefinedMenuItem::copy(app, None)?,
+                        &PredefinedMenuItem::paste(app, None)?,
+                        &PredefinedMenuItem::select_all(app, None)?,
+                    ],
+                )?;
+                app.set_menu(Menu::with_items(app, &[&app_menu, &edit_menu])?)?;
+            }
             let icon = tauri::include_image!("icons/32x32.png");
             TrayIconBuilder::new().icon(icon).menu(&menu).build(app)?;
             app.on_menu_event(|app, event| match event.id.as_ref() {
