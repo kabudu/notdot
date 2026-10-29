@@ -155,6 +155,11 @@ fn non_interactive_keychain()
         Ok(None)
     }
 }
+#[cfg(any(target_os = "macos", test))]
+fn search_identity(provider: &str, qa: bool) -> (&'static str, &str) {
+    // Silent restoration must query the same vault as explicit reads and writes.
+    (super::credential_service(provider, qa), provider)
+}
 fn os_read(provider: &str, interactive: bool) -> Result<String, String> {
     let entry = super::credential_for(provider)?;
     if interactive {
@@ -169,11 +174,12 @@ fn os_read(provider: &str, interactive: bool) -> Result<String, String> {
         let _no_ui = non_interactive_keychain()?;
         let keychain = SecKeychain::default_for_domain(SecPreferencesDomain::User)
             .map_err(|_| "The login keychain is unavailable".to_string())?;
+        let (service, account) = search_identity(provider, super::isolated_stt_vault());
         let values = ItemSearchOptions::new()
             .keychains(&[keychain])
             .class(ItemClass::generic_password())
-            .service("com.kabudu.notdot")
-            .account(provider)
+            .service(service)
+            .account(account)
             .load_data(true)
             .skip_authenticated_items(true)
             .search()
@@ -230,6 +236,21 @@ fn os_read(provider: &str, interactive: bool) -> Result<String, String> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    #[test]
+    fn silent_reads_use_the_same_identity_as_explicit_key_access() {
+        for (provider, qa, service) in [
+            ("deepgram", true, "com.kabudu.notdot.qa"),
+            ("deepgram", false, "com.kabudu.notdot"),
+            ("elevenlabs", true, "com.kabudu.notdot"),
+            ("elevenlabs", false, "com.kabudu.notdot"),
+        ] {
+            assert_eq!(search_identity(provider, qa), (service, provider));
+            assert_eq!(
+                search_identity(provider, qa).0,
+                super::super::credential_service(provider, qa)
+            );
+        }
+    }
     /// Requires an unlocked, explicitly marked disposable Linux collection.
     /// Never run this against a user's login keyring or use real provider keys.
     #[cfg(target_os = "linux")]
