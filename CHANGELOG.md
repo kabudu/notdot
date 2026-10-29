@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Keep Settings fully on screen, including above the Windows taskbar.
+- Keep Settings above the Windows taskbar and remove the menu strip from the orb.
 
 - Add experimental separate Deepgram speech recognition, a clearer memory approval phrase and more reliable wake recognition across short pauses.
 
@@ -24,7 +24,7 @@
 - Manage everything in clearer, collapsible Settings with a combined model picker and compact voice-usage display.
 - Enjoy smoother speaking motion and improved keyboard access, including the restored Command–Q shortcut.
 - Check for updates from the app menu, with automatic checks and permission before installation.
-- Improve microphone access, saved-key handling and voice setup errors, with clearer reporting of interrupted audio.
+- Improve microphone access and saved-key handling, recover from temporary microphone buffer warnings, and explain voice setup errors more clearly.
 - Add a website and clearer getting-started guides.
 
 Development preview. Platform testing and public distribution are still in progress; see [release readiness](docs/release-readiness.md).
