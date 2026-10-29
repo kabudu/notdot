@@ -9,7 +9,7 @@ use std::{
     path::Path,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     thread::JoinHandle,
@@ -163,6 +163,37 @@ fn recognize(
     epoch: Arc<AtomicU64>,
     expected: u64,
 ) -> Result<bool, String> {
+    recognize_with_limits(
+        context,
+        phrase,
+        samples,
+        rate,
+        epoch,
+        expected,
+        DecodeLimits::default(),
+    )
+}
+struct DecodeLimits {
+    budget: Duration,
+    threads: i32,
+}
+impl Default for DecodeLimits {
+    fn default() -> Self {
+        Self {
+            budget: Duration::from_secs(3),
+            threads: 2,
+        }
+    }
+}
+fn recognize_with_limits(
+    context: &WhisperContext,
+    phrase: &str,
+    samples: &[f32],
+    rate: u32,
+    epoch: Arc<AtomicU64>,
+    expected: u64,
+    limits: DecodeLimits,
+) -> Result<bool, String> {
     whisper_rs::install_logging_hooks();
     if epoch.load(Ordering::Relaxed) != expected {
         return Ok(false);
@@ -187,7 +218,7 @@ fn recognize(
     };
     let mut state = context.create_state().map_err(|e| e.to_string())?;
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    params.set_n_threads(2);
+    params.set_n_threads(limits.threads);
     params.set_max_tokens(32);
     params.set_temperature_inc(0.);
     params.set_suppress_nst(true);
@@ -200,15 +231,26 @@ fn recognize(
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
     params.set_initial_prompt(phrase.strip_prefix("Hey ").unwrap_or(phrase));
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + limits.budget;
+    let timed_out = Arc::new(AtomicBool::new(false));
+    let abort_timeout = timed_out.clone();
     let cancelled = epoch.clone();
     let abort: Box<dyn FnMut() -> bool> = Box::new(move || {
-        cancelled.load(Ordering::Relaxed) != expected || Instant::now() > deadline
+        if cancelled.load(Ordering::Relaxed) != expected {
+            return true;
+        }
+        let expired = Instant::now() > deadline;
+        if expired {
+            abort_timeout.store(true, Ordering::Relaxed);
+        }
+        expired
     });
     params.set_abort_callback_safe::<_, Box<dyn FnMut() -> bool>>(Some(abort));
     if let Err(e) = state.full(params, &audio) {
         return if epoch.load(Ordering::Relaxed) != expected {
             Ok(false)
+        } else if timed_out.load(Ordering::Relaxed) {
+            Err("Local wake recognition exceeded its time limit".into())
         } else {
             Err(format!("Local wake recognition could not finish: {e}"))
         };
@@ -236,6 +278,61 @@ fn addressed(text: &str, phrase: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "bounded local wake decode comparison; synthetic audio, no microphone or provider"]
+    fn decode_budget_diagnostic() {
+        let root = super::super::fixture_root();
+        for (flash_attn, threads) in [(false, 2), (true, 2), (false, 4)] {
+            let mut p = WhisperContextParameters::default();
+            p.use_gpu(false).flash_attn(flash_attn);
+            let context = WhisperContext::new_with_params(
+                root.join("resources/wake/ggml-tiny.en-q5_1.bin"),
+                p,
+            )
+            .unwrap();
+            let mut correct = 0;
+            let start = Instant::now();
+            for (name, expected) in [
+                ("hey-ava.wav", true),
+                ("hey-ava-uk.wav", true),
+                ("hey-ava-us.wav", true),
+                ("ava.wav", false),
+                ("negative.wav", false),
+            ] {
+                let mut wav =
+                    hound::WavReader::open(root.join("tests/fixtures").join(name)).unwrap();
+                let rate = wav.spec().sample_rate;
+                let mut samples: Vec<_> = wav
+                    .samples::<i16>()
+                    .map(|s| f32::from(s.unwrap()) / 32768.)
+                    .collect();
+                samples.resize(samples.len() + rate as usize / 2, 0.);
+                let item_start = Instant::now();
+                let result = recognize_with_limits(
+                    &context,
+                    "Hey Ava",
+                    &samples,
+                    rate,
+                    Arc::new(AtomicU64::new(0)),
+                    0,
+                    DecodeLimits {
+                        budget: Duration::from_secs(15),
+                        threads,
+                    },
+                );
+                correct += usize::from(result.as_ref().is_ok_and(|heard| *heard == expected));
+                eprintln!(
+                    "wake diagnostic flash_attn={flash_attn} threads={threads} fixture={name} elapsed_ms={} result={result:?}",
+                    item_start.elapsed().as_millis()
+                );
+            }
+            eprintln!(
+                "wake diagnostic flash_attn={flash_attn} threads={threads} elapsed_ms={} correct={correct}/5",
+                start.elapsed().as_millis()
+            );
+        }
+    }
+
     #[test]
     fn short_pause_inside_wake_phrase_does_not_split_the_decode() {
         let root = super::super::fixture_root();
@@ -307,6 +404,22 @@ mod tests {
             .unwrap();
             assert_eq!(heard, expected, "{name}");
         }
+        let timeout = recognize_with_limits(
+            &context,
+            "Hey Ava",
+            &[0.01; 16000],
+            16000,
+            Arc::new(AtomicU64::new(0)),
+            0,
+            DecodeLimits {
+                budget: Duration::ZERO,
+                threads: 2,
+            },
+        );
+        assert_eq!(
+            timeout.unwrap_err(),
+            "Local wake recognition exceeded its time limit"
+        );
         assert!(
             !recognize(
                 &context,
