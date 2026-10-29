@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
         mpsc::{self, Receiver, SyncSender},
     },
     time::{Duration, Instant},
@@ -509,22 +509,41 @@ where
     let frame_size = (cfg.sample_rate / 50) as usize;
     let mut frame = Vec::with_capacity(frame_size);
     let error = failed.clone();
+    let received_audio = Arc::new(AtomicBool::new(false));
+    let error_received_audio = received_audio.clone();
     device.build_input_stream(
         *cfg,
         move |samples: &[T], _| {
             if failed.load(Ordering::Relaxed) != 0 {
                 return;
             }
-            if queue_input(samples, channels, frame_size, &mut frame, &sender).is_err() {
-                failed.store(MIC_QUEUE_FULL, Ordering::Relaxed);
+            match queue_input(samples, channels, frame_size, &mut frame, &sender) {
+                Ok(true) => received_audio.store(true, Ordering::Release),
+                Ok(false) => {}
+                Err(_) => failed.store(MIC_QUEUE_FULL, Ordering::Relaxed),
             }
         },
         move |cause| {
+            if !fatal_input_notification(cause.kind(), error_received_audio.load(Ordering::Acquire))
+            {
+                return;
+            }
             let _ = error_sender.try_send(cause);
             error.store(MIC_DEVICE_FAILED, Ordering::Relaxed);
         },
         None,
     )
+}
+
+/// WASAPI may flag remote-audio startup as discontinuous after zero-filled
+/// packets. No audible input exists to lose yet. Once any input signal arrives,
+/// an xrun invalidates the recording instead of silently losing words.
+fn fatal_input_notification(kind: cpal::ErrorKind, received_audio: bool) -> bool {
+    match kind {
+        cpal::ErrorKind::RealtimeDenied => false,
+        cpal::ErrorKind::Xrun | cpal::ErrorKind::DeviceChanged => received_audio,
+        _ => true,
+    }
 }
 
 /// Preserve every mono sample in fixed 20 ms packets, including callback tails.
@@ -535,12 +554,13 @@ fn queue_input<T>(
     frame_size: usize,
     frame: &mut Vec<f32>,
     sender: &SyncSender<Vec<f32>>,
-) -> Result<(), mpsc::TrySendError<Vec<f32>>>
+) -> Result<bool, mpsc::TrySendError<Vec<f32>>>
 where
     T: cpal::SizedSample,
     f32: cpal::FromSample<T>,
 {
     use cpal::Sample;
+    let mut signal = false;
     for channels in samples.chunks_exact(channels) {
         let sample = channels
             .iter()
@@ -550,13 +570,14 @@ where
             })
             .sum::<f32>()
             / channels.len() as f32;
+        signal |= sample.abs() > 0.000_001;
         frame.push(sample);
         if frame.len() == frame_size {
             let packet = std::mem::replace(frame, Vec::with_capacity(frame_size));
             sender.try_send(packet)?;
         }
     }
-    Ok(())
+    Ok(signal)
 }
 
 /// Sample-time endpointing keeps working independently of webview animation frames.
@@ -1118,6 +1139,28 @@ mod tests {
     // Production has one inference worker. Parallel fixture constructors race
     // ONNX Runtime's process-global default LoggingManager on Linux. Keep the
     // complete model fixtures serial (including teardown), retaining assertions.
+    #[test]
+    fn startup_discontinuity_is_recoverable_but_loss_during_recording_is_not() {
+        use cpal::ErrorKind;
+        assert!(!fatal_input_notification(ErrorKind::Xrun, false));
+        assert!(fatal_input_notification(ErrorKind::Xrun, true));
+        assert!(!fatal_input_notification(ErrorKind::RealtimeDenied, true));
+        assert!(!fatal_input_notification(ErrorKind::DeviceChanged, false));
+        assert!(fatal_input_notification(ErrorKind::DeviceChanged, true));
+        assert!(fatal_input_notification(
+            ErrorKind::DeviceNotAvailable,
+            false
+        ));
+        assert!(fatal_input_notification(ErrorKind::PermissionDenied, false));
+    }
+    #[test]
+    fn zero_filled_remote_startup_does_not_count_as_received_speech() {
+        let (sender, receiver) = mpsc::sync_channel(MIC_QUEUE_PACKETS);
+        let mut frame = Vec::new();
+        assert!(!queue_input(&[0.0_f32; 320], 1, 320, &mut frame, &sender).unwrap());
+        assert_eq!(receiver.try_recv().unwrap(), vec![0.; 320]);
+        assert!(queue_input(&[0.01_f32; 320], 1, 320, &mut frame, &sender).unwrap());
+    }
     #[test]
     fn remote_audio_burst_keeps_all_samples_and_callback_tails() {
         let (sender, receiver) = mpsc::sync_channel(MIC_QUEUE_PACKETS);
