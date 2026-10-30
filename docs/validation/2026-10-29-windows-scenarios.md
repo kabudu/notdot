@@ -71,3 +71,19 @@ A direct WASAPI comparison then measured actual device-position gaps, without re
 The same comparison through CPAL reproduced the result: the default delivered 2,375 ms in 5,100 ms with 215 underrun/overrun notifications; a 4,410-frame ring delivered 4,920 ms in 5,074 ms with zero errors. Unsupported 22.05 kHz/16 kHz mono formats were skipped rather than forced. The app now requests this 100 ms ring on Windows while preserving the device's default sample format, rate, channels and callback period. A rejected buffer configuration gets exactly one attempt with the original configuration; permission, device and other failures are not retried. Mac/Linux retain their original configuration.
 
 Three focused builder-boundary tests and Clippy pass. Independent source review found no actionable issue in the buffer ownership, fallback or allocation bounds. The updated Windows executables have built; their native regression and full acoustic acceptance remain pending at this checkpoint. This fix does not add a transcription request, change the model, or loosen speech thresholds.
+
+
+## Updated Windows voice acceptance — 30 October
+
+The `66587d1` production executable was verified on the laptop with SHA-256 `629e36dca9a192d0c6234cd518d648f1ed51caee9ebc956c68c772ee87a28b16`. Its native app suite passed **53 tests, zero failures, seven ignored**, in 70.32 seconds.
+
+Generated speech travelled through the Mac speaker, forwarded Windows microphone, Deepgram, Terra Medium and ElevenLabs playback. The subtraction fixture reached thinking and spoken playback; its exact transcript/final text was not independently read in this pass. The read-only oracle verified these subsequent public results:
+
+- “Please calculate five plus seven.” → “Twelve.”
+- “What is five times seven?” → “Thirty-five.”
+
+The oracle confirmed the actual model and medium effort. A mistimed operator fixture supplied only “seven.” and was excluded from successful recognition results.
+
+Capture cancellation and no-speech activation added no model turn. During the compiler-response test, Escape returned thinking to idle in **225 ms**; the persisted turn was interrupted, with no public final or subsequent speaking transition. **Playback cancellation is not yet verified.** The interrupted-turn oracle can mistake Codex's injected abort context for spoken input; that field was excluded from the cancellation evidence.
+
+Reduced motion remained enabled. Current checks used generated fixtures and playback/state metadata; earlier human RDP voice passes do not establish fresh human hearing or full-motion animation acceptance. Live wake, device/startup and installed-update gates remain separate.
