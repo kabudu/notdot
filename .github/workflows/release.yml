@@ -24,11 +24,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            platform: darwin-aarch64
-            bundles: app
-          - os: windows-latest
+          - os: macos-15
+            target: universal-apple-darwin
+            platform: darwin-universal
+            bundles: app,dmg
+          - os: windows-2022
             target: x86_64-pc-windows-msvc
             platform: windows-x86_64
             bundles: nsis
@@ -49,11 +49,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
           toolchain: 1.97.0
-          targets: wasm32-unknown-unknown,${{ matrix.target }}
+          targets: wasm32-unknown-unknown,${{ matrix.target == 'universal-apple-darwin' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
           components: rustfmt,clippy
       - name: Linux prerequisites
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libssl-dev libdbus-1-dev libasound2-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-base gstreamer1.0-plugins-bad gstreamer1.0-pulseaudio gstreamer1.0-libav speech-dispatcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+          else
+            sed -n 's/^deb /deb-src /p' /etc/apt/sources.list | sudo tee /etc/apt/sources.list.d/notdot-source.list > /dev/null
+          fi
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libssl-dev libdbus-1-dev libasound2-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-base gstreamer1.0-plugins-bad gstreamer1.0-pulseaudio gstreamer1.0-libav speech-dispatcher
       - name: Validate version and release configuration
         env:
           RELEASE_VERSION: ${{ inputs.version }}
@@ -90,11 +99,17 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: cargo tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config src-tauri/tauri.release.conf.json
-      - name: Build signed and notarized macOS bundles
+      - name: Record Windows toolset and redistribution provenance
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/windows-release-provenance.ps1
+      - name: Build signed and notarized universal macOS bundles
         if: runner.os == 'macOS'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          GGML_NATIVE: "OFF"
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -108,22 +123,41 @@ jobs:
             test -n "${!field}" || { echo "Missing required signing configuration: $field"; exit 1; }
           done
           cargo tauri build --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}" --config src-tauri/tauri.release.conf.json
-          python3 scripts/verify_macos_release.py "target/${{ matrix.target }}/release/bundle/macos/notdot.app"
+          python3 scripts/finalize_macos_release.py "target/${{ matrix.target }}/release/bundle"
       - name: Build updater-signed Linux bundles
         if: runner.os == 'Linux'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: cargo tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config src-tauri/tauri.release.conf.json
+      - name: Collect exact Linux notices and corresponding sources
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          appdir="target/${{ matrix.target }}/release/bundle/appimage/notdot.AppDir"
+          mapfile -d '' images < <(find "target/${{ matrix.target }}/release/bundle/appimage" -maxdepth 1 -type f -name '*.AppImage' -print0)
+          test "${#images[@]}" -eq 1
+          image="${images[0]}"
+          offset="$("$image" --appimage-offset)"
+          binary_sha="$(sha256sum "$appdir/usr/bin/notdot" | cut -d ' ' -f 1)"
+          mkdir -p .local/release-sources
+          python3 scripts/prepare_appimage_source_inputs.py --appdir "$appdir" --appimage "$image" --squashfs-offset "$offset" --project "$PWD" --output .local/release-sources/launcher-inputs
+          python3 scripts/collect_linux_distribution.py "$appdir" .local/release-sources/notdot-corresponding-source --appimage "$image" --squashfs-offset "$offset" --app-binary-sha256 "$binary_sha" --project "$PWD" --separately-covered .local/release-sources/launcher-inputs/independently-covered.json
+          cp .local/release-sources/notdot-corresponding-source.tar.gz "target/${{ matrix.target }}/release/bundle/appimage/notdot-corresponding-source.tar.gz"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ${{ matrix.platform }}
           if-no-files-found: error
+          compression-level: 0
           path: |
             target/${{ matrix.target }}/release/bundle/**/*.app.tar.gz*
+            target/${{ matrix.target }}/release/bundle/**/*.dmg
             target/${{ matrix.target }}/release/bundle/**/*-setup.exe*
             target/${{ matrix.target }}/release/bundle/**/*.AppImage*
             target/${{ matrix.target }}/release/bundle/**/*.deb
+            target/${{ matrix.target }}/release/bundle/**/notdot-corresponding-source.tar.gz
+            target/windows-release-provenance/*
   draft:
     needs: build
     runs-on: ubuntu-22.04
@@ -140,7 +174,7 @@ jobs:
       - name: Stage complete updater manifest
         env:
           RELEASE_VERSION: ${{ inputs.version }}
-        run: python3 scripts/prepare_release.py --version "$RELEASE_VERSION" --input incoming --output staged
+        run: python3 scripts/prepare_release.py --version "$RELEASE_VERSION" --input incoming --output staged --revision "$GITHUB_SHA"
       - name: Create draft for platform acceptance
         env:
           GH_TOKEN: ${{ github.token }}

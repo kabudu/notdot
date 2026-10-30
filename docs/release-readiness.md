@@ -6,7 +6,7 @@ The repository remains private. GitHub Actions is disabled at repository level a
 
 ## Current candidate
 
-The voice backend is frozen at `3ca1b45`. Candidate `40ce478` also includes clearer saved-key instructions and a fix that restores minimized windows when opening app controls. Those changes leave the tested voice backend unchanged. Normal packages have been built for all three operating systems. This is a test candidate, not a published release.
+The voice backend remains the one tested at `3ca1b45`; later changes improve saved-key guidance, window restoration and universal Mac updater addresses without changing voice processing. A universal Mac app now contains both Intel and Apple Silicon slices, targeting macOS 14+. Native update/restart fixtures pass on Mac and Windows. These are private test candidates, not published releases.
 
 | Platform | Verified | Still open |
 | --- | --- | --- |
@@ -45,14 +45,14 @@ The production updater public key is committed in assets/updater.pub and the Tau
 
 Updater signing is separate from publisher identity signing. Windows first release may be Authenticode-unsigned, as requested, while still requiring updater signatures. The owner supplied the Apple repository secrets, and the release workflow uses them for Developer ID signing and notarization with verification of the app and its actual updater archive. Hosted signing has not run while Actions remains disabled. Current local Mac artifacts are development builds, not a publicly cleared distribution.
 
-The prepared manual workflow is additionally gated on a public repository and PUBLIC_RELEASES_ENABLED=true. It builds native platform packages, creates a complete version-bound manifest and checksums, and only creates a draft release against an existing tag. It does not automatically publish that draft. Release notes, version agreement, complete artifact set and installed-platform validation are required before public opening. scripts/prepare_release.py stages files without publishing. This follows the build, signing, immutable-tag and verification boundaries reviewed in kabudu/lascoria's release workflow. The local lascoria-web checkout is a separate website repository.
+The prepared manual workflow is additionally gated on a public repository and PUBLIC_RELEASES_ENABLED=true. It builds a universal Mac app and disk image plus native Windows/Linux packages, creates a complete version-bound manifest and checksums, and only creates a draft release against the exact matching existing tag. Both Mac updater targets use the same universal archive. Linux publication requires the matching corresponding-source companion; Debian packages are staged too. It does not automatically publish that draft. Release notes, version agreement, complete artifact set and installed-platform validation are required before public opening. scripts/prepare_release.py stages files without publishing. This follows the build, signing, immutable-tag and verification boundaries reviewed in kabudu/lascoria's release workflow. The local lascoria-web checkout is a separate website repository.
 
 ## Platform acceptance gates
 
 - [ ] macOS: branded installed app, startup registration, watcher activation, About, microphone, headless Terra/tool turn, spoken update consent, replacement and relaunch.
 - [ ] Windows x64: unsigned current-user NSIS install, WebView2, native Codex discovery/sign-in, keychain, microphone/audio over remote desktop, startup, updater replacement and relaunch.
 - [ ] Linux x64: Debian 12 / Ubuntu 22.04 compatible build, WebKitGTK 4.1, Secret Service, speech-dispatcher with an installed speech engine, media codecs, microphone, native runtime and installed AppImage update/restart. Debian packages require system dependencies and may require package-manager privileges; hands-free updates target the user-owned AppImage.
-- [ ] Optional Intel macOS: build and hardware acceptance before adding it to the release matrix. The initial prepared matrix is macOS arm64, Windows x64 and Linux x64.
+- [x] Universal Mac packaging: both architecture slices built and verified, with the same updater archive offered to Intel and Apple Silicon. Prepared CI validates on both native Mac runner architectures. Intel execution was not established locally because Rosetta is absent; hosted execution remains pending. The release matrix is universal macOS, Windows x64 and Linux x64.
 - [ ] Public assets, release notes, provenance, license inventory and anonymous manifest/download verification.
 
 Run scripts/ci-local.sh before committing delivery changes. Do not mark unchecked platform gates complete based only on cross-compilation.
@@ -76,3 +76,9 @@ The optional persistent wake helper preserves the generic app's CPU minimum. It 
 Before accepting a candidate with this resource, verify the installed helper hash and path, `fallback_decoder=accelerated`, all five positive/negative full-context fixtures through the persistent worker, actual wake activation, cancellation with no lingering helper, and missing/tampered/unsupported selection falling back without an unsafe launch. Initial setup is separately bounded before microphone capture; helper failure does not trigger a synchronous second decode of the same utterance. Package completeness, native installed-device tests and total wake latency remain release gates even when component tests pass. No public CI, publication, hardware-minimum change or new provider is enabled by this implementation.
 
 The generic Windows full-context decoder remains too slow for the production three-second deadline on the tested laptop (about nine seconds with four threads). Its full five-fixture correctness was checked separately with a fifteen-second diagnostic budget. Do not count that diagnostic as live wake acceptance: production acceptance must verify the packaged accelerated backend and the complete microphone path.
+
+## Installed update and universal packaging evidence, 30 October
+
+Mac and Windows disposable fixtures exercised the actual pinned updater, installed replacement and automatic restart, real Core Bridge shutdown/reconnect, duplicate-instance rejection, one active writer and preserved synthetic profile bytes. Signed-malformed packages failed and recovered before successful updates. These are native component lifecycle checks, not claims that notdot's public GitHub feed or spoken consent flow has run against a published release. See the dated platform reports. Linux native AppImage lifecycle testing is in progress.
+
+The universal Mac app passed strict signature verification for both slices and contains matching wake/notice resources; its 71,594,877-byte updater transport is within the 256 MiB limit. It remains ad-hoc signed locally. The public release guard rejected it at the Developer ID boundary, as intended. Prepared publishing verifies Developer ID/team, both slices, stapled tickets, the exact updater archive, and the actual mounted disk image. Hosted signing/notarization stays deferred until the owner makes the repository public and enables Actions. No Apple credential was exported from GitHub or requested in chat.
