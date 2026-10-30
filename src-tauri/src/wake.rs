@@ -81,11 +81,15 @@ pub struct Status {
     pub candidates: u64,
     pub rejected_energy: u64,
     pub rejected_prefix: u64,
+    pub fallback_decoder: String,
 }
 struct Inner {
     config: Config,
     revision: u64,
     epoch: u64,
+    suspended: Option<u64>,
+    released: Option<u64>,
+    release_failed: Option<u64>,
     lease: Option<Instant>,
     status: Status,
     pending: Option<(u64, Vec<u8>, Instant)>,
@@ -96,6 +100,22 @@ struct Inner {
 }
 pub struct Wake {
     inner: Arc<Mutex<Inner>>,
+}
+// RAII restores permission for future frontend leases after any failed install.
+// It deliberately never restores stale capture tokens or opens the microphone.
+pub struct DecoderRelease {
+    inner: Arc<Mutex<Inner>>,
+    token: u64,
+}
+impl Drop for DecoderRelease {
+    fn drop(&mut self) {
+        let mut i = self.inner.lock().expect("wake state");
+        if i.suspended == Some(self.token) {
+            i.suspended = None;
+            i.released = None;
+            i.release_failed = None;
+        }
+    }
 }
 impl Wake {
     pub fn new(
@@ -109,6 +129,9 @@ impl Wake {
             config,
             revision: 1,
             epoch: 0,
+            suspended: None,
+            released: None,
+            release_failed: None,
             lease: None,
             pending: None,
             manual_token: None,
@@ -162,6 +185,9 @@ impl Wake {
     pub fn ready(&self, ready: bool) {
         let mut i = self.inner.lock().expect("wake state");
         if ready {
+            if i.suspended.is_some() {
+                return;
+            }
             i.lease = Some(Instant::now());
         } else {
             // A delayed idle heartbeat must not cancel a newer manual click.
@@ -186,12 +212,61 @@ impl Wake {
         i.pending = None;
         i.status.request_id = None;
     }
+    fn begin_decoder_release(&self) -> Result<DecoderRelease, String> {
+        let mut i = self.inner.lock().expect("wake state");
+        if i.suspended.is_some() {
+            return Err("Listening is already paused for an update".into());
+        }
+        if i.manual_token.is_some() || i.status.phase == "capturing" {
+            return Err("Finish recording before updating".into());
+        }
+        i.epoch = i.epoch.wrapping_add(1);
+        let token = i.epoch;
+        i.suspended = Some(token);
+        i.released = None;
+        i.release_failed = None;
+        i.lease = None;
+        i.pending = None;
+        i.status.request_id = None;
+        Ok(DecoderRelease {
+            inner: self.inner.clone(),
+            token,
+        })
+    }
+    pub async fn release_decoder_for_update(&self) -> Result<DecoderRelease, String> {
+        let guard = self.begin_decoder_release()?;
+        let release = async {
+            loop {
+                {
+                    let i = self.inner.lock().expect("wake state");
+                    if i.release_failed == Some(guard.token) {
+                        return Err(
+                            "The wake helper could not close safely. Restart notdot before updating."
+                                .to_owned(),
+                        );
+                    }
+                    if i.released == Some(guard.token) {
+                        return Ok(());
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        // Includes a possible initial three-second helper setup and child reap.
+        tokio::time::timeout(Duration::from_secs(6), release)
+            .await
+            .map_err(|_| "Listening could not stop safely. Try the update again.".to_owned())??;
+        Ok(guard)
+    }
     pub fn start_manual(&self, token: &str, limit: u32) -> Result<(), String> {
         notdot_core::request_cancel::Requests::validate(token)?;
         if ![12, 60].contains(&limit) {
             return Err("Invalid recording limit".into());
         }
         let mut i = self.inner.lock().expect("wake state");
+        if i.suspended.is_some() {
+            return Err("Listening is paused while installing an update".into());
+        }
         if i.config.muted || i.cancelled.is_cancelled(token) {
             return Err("Voice capture cancelled or muted".into());
         }
@@ -814,6 +889,32 @@ impl Worker {
         self.discard_capture();
     }
     fn tick(&mut self, models: &Path, inner: &Mutex<Inner>) {
+        let suspension = inner.lock().expect("wake state").suspended;
+        if let Some(token) = suspension {
+            self.mic = None;
+            self.discard_capture();
+            // Fallback Drop cancels its inference worker, then kills/reaps its child.
+            // Acknowledge only after all package/model handles have been released.
+            let released = self
+                .detector
+                .take()
+                .is_none_or(|mut detector| detector.fallback.shutdown())
+                && notdot_wake_runtime::client::all_helpers_reaped();
+            self.speech_gate = None;
+            let mut i = inner.lock().expect("wake state");
+            if i.suspended == Some(token) {
+                if released && i.release_failed != Some(token) {
+                    i.released = Some(token);
+                } else {
+                    i.release_failed = Some(token);
+                }
+                i.status.phase = "paused".into();
+                i.status.message = "Listening is paused while notdot updates.".into();
+                i.status.rms = 0.;
+                i.status.fallback_decoder.clear();
+            }
+            return;
+        }
         let (config, revision, epoch, allowed, pending, manual) = {
             let i = inner.lock().expect("wake state");
             (
@@ -1129,6 +1230,7 @@ impl Worker {
             i.status.candidates = detector.candidates;
             i.status.rejected_energy = detector.rejected_energy;
             i.status.rejected_prefix = detector.rejected_prefix;
+            i.status.fallback_decoder = detector.fallback.backend().into();
         }
         false
     }
@@ -1141,6 +1243,17 @@ fn fixture_root() -> PathBuf {
     std::env::var_os("NOTDOT_TEST_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+}
+// Production has one inference owner. Model fixtures share this test-only gate:
+// Linux ONNX logging is process-global, and Windows helper reap accounting and
+// decode deadlines must not be distorted by unrelated concurrent fixtures.
+#[cfg(test)]
+fn model_fixture_guard() -> std::sync::MutexGuard<'static, ()> {
+    static FIXTURES: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
+    FIXTURES
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("model fixture")
 }
 #[cfg(test)]
 mod tests {
@@ -1301,10 +1414,6 @@ mod tests {
         assert!(matches!(result, Err(mpsc::TrySendError::Full(_))));
         assert_eq!(receiver.try_iter().count(), MIC_QUEUE_PACKETS);
     }
-    // Production has one inference worker. Parallel fixture constructors race
-    // ONNX Runtime's process-global default LoggingManager on Linux. Keep the
-    // complete model fixtures serial (including teardown), retaining assertions.
-    pub(super) static MODEL_FIXTURE: Mutex<()> = Mutex::new(());
     fn models() -> PathBuf {
         super::fixture_root().join("resources/wake")
     }
@@ -1343,7 +1452,7 @@ mod tests {
     #[test]
     #[ignore = "private local human fixture; audio must not be committed"]
     fn local_human_wake_fixture() {
-        let _models = MODEL_FIXTURE.lock().unwrap();
+        let _models = model_fixture_guard();
         let path = std::env::var("NOTDOT_WAKE_FIXTURE").expect("set private WAV path");
         let mut reader = hound::WavReader::open(path).unwrap();
         assert_eq!(reader.spec().sample_rate, 16000);
@@ -1364,7 +1473,7 @@ mod tests {
     }
     #[test]
     fn wake_after_extended_idle_and_rejected_candidates() {
-        let _models = MODEL_FIXTURE.lock().unwrap();
+        let _models = model_fixture_guard();
         for idle in [2, 5, 25, 65] {
             let mut d = Detector::new(&models(), "Hey Ava").unwrap();
             for _ in 0..idle * 50 {
@@ -1394,7 +1503,7 @@ mod tests {
     }
     #[test]
     fn bundled_detector_hears_custom_phrases_and_rejects_unrelated_audio() {
-        let _models = MODEL_FIXTURE.lock().unwrap();
+        let _models = model_fixture_guard();
         let mut d = Detector::new(&models(), &phrase("Ava", false).unwrap()).unwrap();
         assert!(detects(&mut d, &audio("hey-ava-uk.wav")));
         let at_48k: Vec<_> = audio("hey-ava.wav")
@@ -1421,7 +1530,7 @@ mod tests {
     }
     #[test]
     fn real_keyword_to_capture_to_one_shot_wav_excludes_background_audio() {
-        let _models = MODEL_FIXTURE.lock().unwrap();
+        let _models = model_fixture_guard();
         let wake = isolated();
         wake.inner.lock().unwrap().pending = None;
         let (events, mut stream_events) = tokio::sync::mpsc::channel(64);
@@ -1569,6 +1678,9 @@ mod tests {
                 },
                 revision: 1,
                 epoch: 0,
+                suspended: None,
+                released: None,
+                release_failed: None,
                 lease: Some(Instant::now()),
                 status: Status::default(),
                 manual_token: None,
@@ -1578,6 +1690,72 @@ mod tests {
                 pending: Some((42, vec![1, 2, 3], Instant::now())),
             })),
         }
+    }
+    #[test]
+    fn update_release_waits_for_worker_ack_and_failed_install_requires_fresh_lease() {
+        let _models = model_fixture_guard();
+        let wake = isolated();
+        let guard = wake.begin_decoder_release().unwrap();
+        let token = guard.token;
+        assert_eq!(wake.inner.lock().unwrap().released, None);
+        wake.ready(true);
+        assert!(wake.inner.lock().unwrap().lease.is_none());
+        assert!(wake.start_manual("during-update", 60).is_err());
+        let mut worker = Worker::default();
+        // No model/microphone access is allowed on the suspended path.
+        worker.tick(Path::new("/deliberately-missing-models"), &wake.inner);
+        assert_eq!(wake.inner.lock().unwrap().released, Some(token));
+        assert!(worker.detector.is_none());
+        assert!(worker.mic.is_none());
+        // The installation hook may run only after the acknowledgement above.
+        let failed_install = || -> Result<(), ()> {
+            assert_eq!(wake.inner.lock().unwrap().released, Some(token));
+            Err(())
+        };
+        assert!(failed_install().is_err());
+        drop(guard);
+        assert!(wake.inner.lock().unwrap().lease.is_none());
+        assert!(wake.inner.lock().unwrap().manual_token.is_none());
+        wake.ready(true);
+        assert!(wake.inner.lock().unwrap().lease.is_some());
+    }
+    #[test]
+    fn unconfirmed_decoder_release_never_becomes_an_ack_on_a_later_empty_tick() {
+        let _models = model_fixture_guard();
+        let wake = isolated();
+        let guard = wake.begin_decoder_release().unwrap();
+        wake.inner.lock().unwrap().release_failed = Some(guard.token);
+        let mut worker = Worker::default();
+        worker.tick(Path::new("/missing-models"), &wake.inner);
+        worker.tick(Path::new("/missing-models"), &wake.inner);
+        let i = wake.inner.lock().unwrap();
+        assert_eq!(i.release_failed, Some(guard.token));
+        assert!(i.released.is_none());
+    }
+    #[test]
+    fn failed_install_preserves_new_mute_and_cancellation_and_never_restarts_recording() {
+        let wake = isolated();
+        let guard = wake.begin_decoder_release().unwrap();
+        wake.pause_all();
+        wake.inner.lock().unwrap().config.muted = true;
+        drop(guard);
+        let i = wake.inner.lock().unwrap();
+        assert!(i.config.muted);
+        assert!(i.lease.is_none());
+        assert!(i.manual_token.is_none());
+        drop(i);
+        let wake = isolated();
+        wake.inner.lock().unwrap().status.phase = "capturing".into();
+        assert!(wake.inner.lock().unwrap().manual_token.is_none());
+        assert!(wake.begin_decoder_release().is_err());
+        assert_eq!(wake.inner.lock().unwrap().status.phase, "capturing");
+        let wake = isolated();
+        wake.start_manual("still-recording", 60).unwrap();
+        assert!(wake.begin_decoder_release().is_err());
+        assert_eq!(
+            wake.inner.lock().unwrap().manual_token.as_deref(),
+            Some("still-recording")
+        );
     }
     #[test]
     fn microphone_failure_keeps_its_reason_when_the_frontend_cancels_cleanup() {

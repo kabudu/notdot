@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 cargo fmt --all --check
-cargo test -p notdot-core -p notdot-voice -p notdot --locked
-cargo clippy -p notdot-core -p notdot-voice -p notdot --all-targets --locked -- -D warnings
+cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --locked
+cargo clippy -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --all-targets --locked -- -D warnings
 cargo clippy -p notdot-orb --target wasm32-unknown-unknown --locked -- -D warnings
 cargo clippy -p notdot-orb --target wasm32-unknown-unknown --features debug-ui --locked -- -D warnings
 mkdir -p .local

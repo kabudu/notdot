@@ -1,21 +1,174 @@
 //! Local, speech-gated recognition for phrases the small keyword model misses.
 //! Audio is bounded, ephemeral, and never sent to a voice provider or written.
 use super::VoiceGate;
-use rubato::{
-    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
-};
+use notdot_wake_runtime::engine::DecodeLimits;
+#[cfg(any(windows, test))]
+use std::time::{Duration, Instant};
 use std::{
     collections::VecDeque,
     path::Path,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
         mpsc,
     },
     thread::JoinHandle,
-    time::{Duration, Instant},
 };
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+use whisper_rs::{WhisperContext, WhisperContextParameters};
+
+fn generic_context(path: &Path) -> Result<WhisperContext, String> {
+    whisper_rs::install_logging_hooks();
+    let mut params = WhisperContextParameters::default();
+    params.use_gpu(false);
+    WhisperContext::new_with_params(path, params)
+        .map_err(|_| "Could not load the bundled local wake recognizer".into())
+}
+enum Decoder {
+    Generic(WhisperContext),
+    #[cfg(windows)]
+    Accelerated {
+        runtime: tokio::runtime::Runtime,
+        client: Option<notdot_wake_runtime::client::Client>,
+        resource_root: std::path::PathBuf,
+        model: std::path::PathBuf,
+    },
+    #[cfg(windows)]
+    GenericPending(std::path::PathBuf),
+}
+impl Decoder {
+    fn new(model: &Path, phrase: &str) -> Result<Self, String> {
+        #[cfg(windows)]
+        if let Some(root) = model.parent().and_then(Path::parent) {
+            let digest = option_env!("NOTDOT_WAKE_HELPER_SHA256").unwrap_or("");
+            if let Some(helper) = notdot_wake_runtime::package::select(
+                root,
+                digest,
+                notdot_wake_runtime::package::capable_cpu(),
+            ) {
+                if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    if let Ok(client) = runtime.block_on(
+                        notdot_wake_runtime::client::Client::start(&helper, model, phrase),
+                    ) {
+                        return Ok(Self::Accelerated {
+                            runtime,
+                            client: Some(client),
+                            resource_root: root.to_owned(),
+                            model: model.to_owned(),
+                        });
+                    }
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = phrase;
+        Ok(Self::Generic(generic_context(model)?))
+    }
+    fn identity(&self) -> &'static str {
+        match self {
+            Self::Generic(_) => "generic",
+            #[cfg(windows)]
+            Self::Accelerated { .. } => "accelerated",
+            #[cfg(windows)]
+            Self::GenericPending(_) => "generic",
+        }
+    }
+    fn recognize(
+        &mut self,
+        phrase: &str,
+        samples: &[f32],
+        rate: u32,
+        epoch: Arc<AtomicU64>,
+        expected: u64,
+    ) -> Result<bool, String> {
+        if epoch.load(Ordering::Relaxed) != expected {
+            return Ok(false);
+        }
+        #[cfg(windows)]
+        if let Self::GenericPending(path) = self {
+            let context = generic_context(path)?;
+            *self = Self::Generic(context);
+        }
+        match self {
+            Self::Generic(context) => recognize(context, phrase, samples, rate, epoch, expected),
+            #[cfg(windows)]
+            Self::Accelerated {
+                runtime,
+                client,
+                resource_root,
+                model,
+            } => {
+                let audio = notdot_wake_runtime::engine::normalize(samples, rate)?;
+                let start = Instant::now();
+                let result = runtime.block_on(async {
+                    if client.is_none() {
+                        let helper = notdot_wake_runtime::package::select(
+                            resource_root,
+                            option_env!("NOTDOT_WAKE_HELPER_SHA256").unwrap_or(""),
+                            notdot_wake_runtime::package::capable_cpu(),
+                        )
+                        .ok_or(notdot_wake_runtime::client::Failure::Unavailable)?;
+                        *client = Some(
+                            notdot_wake_runtime::client::Client::start_cancellable(
+                                &helper,
+                                model,
+                                phrase,
+                                Some((epoch.clone(), expected)),
+                            )
+                            .await?,
+                        );
+                    }
+                    client
+                        .as_mut()
+                        .expect("helper initialized")
+                        .recognize(
+                            &audio,
+                            epoch,
+                            expected,
+                            Duration::from_secs(3).saturating_sub(start.elapsed()),
+                        )
+                        .await
+                });
+                match result {
+                    Ok(heard) => Ok(heard),
+                    Err(notdot_wake_runtime::client::Failure::Cancelled) => {
+                        *client = None;
+                        Ok(false)
+                    }
+                    Err(notdot_wake_runtime::client::Failure::Unavailable) => {
+                        // Do not decode this utterance twice or extend its deadline.
+                        // A subsequent utterance uses the unchanged generic decoder.
+                        let path = model.clone();
+                        *self = Self::GenericPending(path);
+                        Ok(false)
+                    }
+                }
+            }
+            #[cfg(windows)]
+            Self::GenericPending(_) => unreachable!("initialized above"),
+        }
+    }
+}
+impl Decoder {
+    fn shutdown(&mut self) -> bool {
+        #[cfg(windows)]
+        if let Self::Accelerated {
+            runtime, client, ..
+        } = self
+            && let Some(mut client) = client.take()
+        {
+            return runtime.block_on(client.shutdown());
+        }
+        true
+    }
+}
+impl Drop for Decoder {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
+    }
+}
 
 struct Job {
     epoch: u64,
@@ -24,8 +177,9 @@ struct Job {
 }
 pub(super) struct Fallback {
     sender: Option<mpsc::SyncSender<Job>>,
-    receiver: mpsc::Receiver<(u64, Result<bool, String>)>,
-    thread: Option<JoinHandle<()>>,
+    receiver: mpsc::Receiver<(u64, Result<bool, String>, &'static str)>,
+    backend: &'static str,
+    thread: Option<JoinHandle<bool>>,
     epoch: Arc<AtomicU64>,
     busy: bool,
     gate: VoiceGate,
@@ -38,11 +192,8 @@ pub(super) struct Fallback {
 }
 impl Fallback {
     pub(super) fn new(path: &Path, phrase: &str) -> Result<Self, String> {
-        whisper_rs::install_logging_hooks();
-        let mut context_params = WhisperContextParameters::default();
-        context_params.use_gpu(false);
-        let context = WhisperContext::new_with_params(path, context_params)
-            .map_err(|_| "Could not load the bundled local wake recognizer")?;
+        let mut decoder = Decoder::new(path, phrase)?;
+        let backend = decoder.identity();
         let (sender, jobs) = mpsc::sync_channel::<Job>(1);
         let (results, receiver) = mpsc::sync_channel(1);
         let epoch = Arc::new(AtomicU64::new(0));
@@ -52,21 +203,22 @@ impl Fallback {
             .name("notdot-wake-fallback".into())
             .spawn(move || {
                 while let Ok(job) = jobs.recv() {
-                    let result = recognize(
-                        &context,
+                    let result = decoder.recognize(
                         &phrase,
                         &job.samples,
                         job.rate,
                         worker_epoch.clone(),
                         job.epoch,
                     );
-                    let _ = results.try_send((job.epoch, result));
+                    let _ = results.try_send((job.epoch, result, decoder.identity()));
                 }
+                decoder.shutdown()
             })
             .map_err(|_| "Could not start local wake recognition")?;
         Ok(Self {
             sender: Some(sender),
             receiver,
+            backend,
             thread: Some(thread),
             epoch,
             busy: false,
@@ -79,6 +231,16 @@ impl Fallback {
             speech: 0,
             error: None,
         })
+    }
+    pub(super) fn shutdown(&mut self) -> bool {
+        self.epoch.fetch_add(1, Ordering::Relaxed);
+        self.sender.take();
+        self.thread
+            .take()
+            .is_none_or(|thread| thread.join().unwrap_or(false))
+    }
+    pub(super) fn backend(&self) -> &'static str {
+        self.backend
     }
     #[cfg(test)]
     pub(super) fn is_busy(&self) -> bool {
@@ -93,7 +255,8 @@ impl Fallback {
         self.gate = VoiceGate::default();
     }
     pub(super) fn accept(&mut self, rate: u32, samples: &[f32]) -> bool {
-        if let Ok((epoch, result)) = self.receiver.try_recv() {
+        if let Ok((epoch, result, backend)) = self.receiver.try_recv() {
+            self.backend = backend;
             self.busy = false;
             if epoch == self.epoch.load(Ordering::Relaxed) {
                 match result {
@@ -148,11 +311,7 @@ impl Fallback {
 }
 impl Drop for Fallback {
     fn drop(&mut self) {
-        self.epoch.fetch_add(1, Ordering::Relaxed);
-        self.sender.take();
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        let _ = self.shutdown();
     }
 }
 fn recognize(
@@ -173,18 +332,6 @@ fn recognize(
         DecodeLimits::default(),
     )
 }
-struct DecodeLimits {
-    budget: Duration,
-    threads: i32,
-}
-impl Default for DecodeLimits {
-    fn default() -> Self {
-        Self {
-            budget: Duration::from_secs(3),
-            threads: 2,
-        }
-    }
-}
 fn recognize_with_limits(
     context: &WhisperContext,
     phrase: &str,
@@ -194,93 +341,20 @@ fn recognize_with_limits(
     expected: u64,
     limits: DecodeLimits,
 ) -> Result<bool, String> {
-    whisper_rs::install_logging_hooks();
-    if epoch.load(Ordering::Relaxed) != expected {
-        return Ok(false);
-    }
-    let audio = if rate == 16000 {
-        samples.to_vec()
-    } else {
-        let params = SincInterpolationParameters {
-            sinc_len: 128,
-            f_cutoff: 0.95,
-            interpolation: SincInterpolationType::Linear,
-            oversampling_factor: 128,
-            window: WindowFunction::BlackmanHarris2,
-        };
-        let mut resampler =
-            SincFixedIn::<f32>::new(16000. / f64::from(rate), 1., params, samples.len(), 1)
-                .map_err(|e| e.to_string())?;
-        resampler
-            .process(&[samples], None)
-            .map_err(|e| e.to_string())?
-            .remove(0)
-    };
-    let mut state = context.create_state().map_err(|e| e.to_string())?;
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    params.set_n_threads(limits.threads);
-    params.set_max_tokens(32);
-    params.set_temperature_inc(0.);
-    params.set_suppress_nst(true);
-    params.set_language(Some("en"));
-    params.set_translate(false);
-    params.set_no_context(true);
-    params.set_no_timestamps(true);
-    params.set_print_special(false);
-    params.set_print_progress(false);
-    params.set_print_realtime(false);
-    params.set_print_timestamps(false);
-    params.set_initial_prompt(phrase.strip_prefix("Hey ").unwrap_or(phrase));
-    let deadline = Instant::now() + limits.budget;
-    let timed_out = Arc::new(AtomicBool::new(false));
-    let abort_timeout = timed_out.clone();
-    let cancelled = epoch.clone();
-    let abort: Box<dyn FnMut() -> bool> = Box::new(move || {
-        if cancelled.load(Ordering::Relaxed) != expected {
-            return true;
-        }
-        let expired = Instant::now() > deadline;
-        if expired {
-            abort_timeout.store(true, Ordering::Relaxed);
-        }
-        expired
-    });
-    params.set_abort_callback_safe::<_, Box<dyn FnMut() -> bool>>(Some(abort));
-    if let Err(e) = state.full(params, &audio) {
-        return if epoch.load(Ordering::Relaxed) != expected {
-            Ok(false)
-        } else if timed_out.load(Ordering::Relaxed) {
-            Err("Local wake recognition exceeded its time limit".into())
-        } else {
-            Err(format!("Local wake recognition could not finish: {e}"))
-        };
-    }
-    let mut text = String::new();
-    for segment in state.as_iter() {
-        if segment.no_speech_probability() > 0.6 {
-            return Ok(false);
-        }
-        text.push_str(segment.to_str().map_err(|e| e.to_string())?);
-    }
-    Ok(addressed(&text, phrase))
+    notdot_wake_runtime::engine::recognize(context, phrase, samples, rate, epoch, expected, limits)
 }
+#[cfg(test)]
 fn addressed(text: &str, phrase: &str) -> bool {
-    let words = |s: &str| {
-        s.split(|c: char| !c.is_ascii_alphabetic())
-            .filter(|s| !s.is_empty())
-            .map(str::to_ascii_lowercase)
-            .collect::<Vec<_>>()
-    };
-    let expected = words(phrase);
-    let actual = words(text);
-    !expected.is_empty() && actual.starts_with(&expected)
+    notdot_wake_runtime::engine::addressed(text, phrase)
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     #[ignore = "bounded local wake decode comparison; synthetic audio, no microphone or provider"]
     fn decode_budget_diagnostic() {
+        let _models = super::super::model_fixture_guard();
         let root = super::super::fixture_root();
         for (flash_attn, threads) in [(false, 2), (true, 2), (false, 4)] {
             let mut p = WhisperContextParameters::default();
@@ -335,6 +409,7 @@ mod tests {
 
     #[test]
     fn short_pause_inside_wake_phrase_does_not_split_the_decode() {
+        let _models = super::super::model_fixture_guard();
         let root = super::super::fixture_root();
         let mut f = Fallback::new(
             &root.join("resources/wake/ggml-tiny.en-q5_1.bin"),
@@ -373,12 +448,22 @@ mod tests {
     }
     #[test]
     fn bundled_phrases_reject_name_only_unrelated_audio_and_cancelled_work() {
+        let _models = super::super::model_fixture_guard();
         let root = super::super::fixture_root();
-        let mut p = WhisperContextParameters::default();
-        p.use_gpu(false);
-        let context =
-            WhisperContext::new_with_params(root.join("resources/wake/ggml-tiny.en-q5_1.bin"), p)
-                .unwrap();
+        let model = root.join("resources/wake/ggml-tiny.en-q5_1.bin");
+        let mut decoder = Decoder::new(&model, "Hey Ava").unwrap();
+        #[cfg(windows)]
+        if notdot_wake_runtime::package::capable_cpu()
+            && !option_env!("NOTDOT_WAKE_HELPER_SHA256")
+                .unwrap_or("")
+                .is_empty()
+        {
+            assert_eq!(
+                decoder.identity(),
+                "accelerated",
+                "native fixture resources must include the verified packaged helper"
+            );
+        }
         for (name, expected) in [
             ("hey-ava.wav", true),
             ("hey-ava-uk.wav", true),
@@ -393,17 +478,14 @@ mod tests {
                 .map(|s| f32::from(s.unwrap()) / 32768.)
                 .collect();
             samples.resize(samples.len() + rate as usize / 2, 0.);
-            let heard = recognize(
-                &context,
-                "Hey Ava",
-                &samples,
-                rate,
-                Arc::new(AtomicU64::new(0)),
-                0,
-            )
-            .unwrap();
+            let heard = decoder
+                .recognize("Hey Ava", &samples, rate, Arc::new(AtomicU64::new(0)), 0)
+                .unwrap();
             assert_eq!(heard, expected, "{name}");
         }
+        // Keep direct generic cancellation/deadline coverage separate from the
+        // correctness corpus, which must exercise the production-selected path.
+        let context = generic_context(&model).unwrap();
         let timeout = recognize_with_limits(
             &context,
             "Hey Ava",
@@ -434,6 +516,7 @@ mod tests {
     }
     #[test]
     fn reset_discards_an_in_flight_match_and_quiet_audio_does_not_queue_work() {
+        let _models = super::super::model_fixture_guard();
         let root = super::super::fixture_root();
         let mut f = Fallback::new(
             &root.join("resources/wake/ggml-tiny.en-q5_1.bin"),
@@ -470,6 +553,7 @@ mod tests {
     #[test]
     #[ignore = "private local audio fixture through the asynchronous speech gate"]
     fn local_stream_fixture() {
+        let _models = super::super::model_fixture_guard();
         let root = super::super::fixture_root();
         let path = std::env::var("NOTDOT_WAKE_FIXTURE").unwrap();
         let mut wav = hound::WavReader::open(path).unwrap();
@@ -521,6 +605,7 @@ mod tests {
     #[test]
     #[ignore = "private local audio fixture; never commit the recording"]
     fn local_phrase_fixture() {
+        let _models = super::super::model_fixture_guard();
         let root = super::super::fixture_root();
         let path = std::env::var("NOTDOT_WAKE_FIXTURE").unwrap();
         let mut wav = hound::WavReader::open(path).unwrap();

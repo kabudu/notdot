@@ -7,3 +7,7 @@ __pycache__/
 /ui-dist/
 
 /src-tauri/gen/
+
+/src-tauri/resources/wake-accelerated/*.exe
+/src-tauri/resources/wake-accelerated/*.tmp
+/src-tauri/resources/wake-accelerated/BUILD.json
