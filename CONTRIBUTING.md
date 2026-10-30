@@ -10,6 +10,8 @@ For a bug, open an issue with your OS, notdot/runtime versions, reproduction ste
 
 Start with the [Settings guide](docs/settings.md) to understand the app, then follow the [development guide](docs/guide.md). Create a focused branch, keep changes reviewable, and explain the problem and resulting behaviour in your pull request. Run `scripts/ci-local.sh` for application changes. For documentation-only changes, check links and examples; for the website, run `python3 scripts/check_site.py` and inspect narrow and wide layouts.
 
+Documentation and website edits run quick content and link checks in GitHub Actions. Changes to the app, dependencies or build process run the full Mac, Windows and Linux checks. Release builds always run the full checks.
+
 Voice changes need real microphone → transcription → response → audible playback evidence, including cancellation and failure handling. Clearly distinguish mocks, synthetic fixtures and hardware testing. Never commit credentials, personal recordings or private conversation history. Use your own accounts and staged, non-sensitive demo content.
 
 Preserve the voice-only orb interface, keyboard access, reduced-motion support, provider abstraction and explicit limits on what the app may do. Add meaningful regression coverage for changed behaviour. Include platform limitations and untested paths in the PR.
