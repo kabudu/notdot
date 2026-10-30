@@ -1561,6 +1561,16 @@ mod tests {
     }
     fn detects_rate(detector: &mut Detector, samples: &[f32], rate: u32) -> bool {
         detector.reset();
+        // A prior KWS match can leave the independent fallback cancelling.
+        // Settle that job before replaying the next fixture faster than realtime.
+        let mut cancelled_match = false;
+        drain_fixture_fallback(
+            detector,
+            rate,
+            &mut cancelled_match,
+            "cancelled previous fixture",
+        );
+        assert!(!cancelled_match, "a reset must discard the previous match");
         let _ = detector.accept(rate, &vec![0.; rate as usize / 2]);
         let mut detected = false;
         for chunk in samples.chunks(rate as usize / 50) {
@@ -1569,14 +1579,51 @@ mod tests {
         for _ in 0..40 {
             detected |= detector.accept(rate, &vec![0.; rate as usize / 50]);
         }
-        for _ in 0..350 {
-            if detected || !detector.fallback.is_busy() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-            detected |= detector.accept(rate, &vec![0.; rate as usize / 50]);
+        // A winning KWS result cancels unused fallback work, as capture does.
+        // Settle cancellation before another fixture's instantaneous replay.
+        drain_fixture_fallback(detector, rate, &mut detected, "current fixture");
+        assert!(
+            detector.fallback.error.is_none(),
+            "fixture decode failed: rate={rate} detected={detected} error={:?}",
+            detector.fallback.error
+        );
+        if !detected {
+            eprintln!(
+                "fixture rejected: rate={rate} candidates={} rejected_energy={} rejected_prefix={} fallback_busy={}",
+                detector.candidates,
+                detector.rejected_energy,
+                detector.rejected_prefix,
+                detector.fallback.is_busy()
+            );
         }
         detected
+    }
+    fn drain_fixture_fallback(
+        detector: &mut Detector,
+        rate: u32,
+        detected: &mut bool,
+        stage: &str,
+    ) {
+        let start = Instant::now();
+        if *detected {
+            detector.fallback.reset();
+        }
+        for _ in 0..350 {
+            if !detector.fallback.is_busy() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+            if detector.accept(rate, &vec![0.; rate as usize / 50]) && !*detected {
+                *detected = true;
+                detector.fallback.reset();
+            }
+        }
+        assert!(
+            !detector.fallback.is_busy(),
+            "{stage} did not settle: elapsed={:?} rate={rate} detected={detected} error={:?}",
+            start.elapsed(),
+            detector.fallback.error
+        );
     }
     #[cfg(target_os = "linux")]
     #[test]
@@ -1826,7 +1873,10 @@ mod tests {
             "name alone must not activate Hey Ava"
         );
         let mut name_only = Detector::new(&models(), &phrase("Ava", true).unwrap()).unwrap();
-        assert!(detects(&mut name_only, &audio("ava.wav")));
+        assert!(
+            detects(&mut name_only, &audio("ava.wav")),
+            "Ava fixture must activate name-only mode"
+        );
         let mut renamed = Detector::new(&models(), &phrase("Orion", false).unwrap()).unwrap();
         assert!(
             !detects(&mut renamed, &audio("hey-ava.wav")),

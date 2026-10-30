@@ -15,6 +15,13 @@ tokio.workspace = true
 name = "notdot-wake-helper"
 path = "src/bin/helper.rs"
 
+# Model-free OS-process fixture for integration tests, not a packaged helper.
+[[bin]]
+name = "notdot-wake-protocol-fixture"
+path = "tests/support/protocol_helper.rs"
+test = false
+bench = false
+
 [dev-dependencies]
 hound = "3"
 tempfile = "3"

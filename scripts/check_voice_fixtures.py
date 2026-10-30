@@ -7,7 +7,7 @@ import wave
 
 
 def check(root=Path('src-tauri/tests/fixtures')):
-    record = json.loads((root / 'VOICE-FIXTURES.json').read_text())
+    record = json.loads((root / 'VOICE-FIXTURES.json').read_text(encoding='utf-8'))
     expected = {'hey-ava.wav', 'hey-ava-uk.wav', 'hey-ava-us.wav', 'ava.wav', 'negative.wav'}
     if {row['file'] for row in record['files']} != expected or len(record['files']) != 5 or {path.name for path in root.glob('*.wav')} != expected:
         raise ValueError('The five-file wake corpus must be inventoried exactly')
