@@ -1908,7 +1908,26 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(wake.status().phase, "capturing");
+        // The live worker receives readiness heartbeats while its asynchronous
+        // fallback decodes. Instantaneous fixture replay must also wait for that
+        // real transition instead of assuming a synchronous keyword match.
+        let waiting = Instant::now();
+        for _ in 0..350 {
+            if worker.capture.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+            wake.ready(true);
+            worker.frame(&wake.inner, &[0.; 320], 16000, 1, 0);
+        }
+        assert_eq!(
+            wake.status().phase,
+            "capturing",
+            "wake transition did not finish: elapsed={:?} fallback_busy={} fallback_error={:?}",
+            waiting.elapsed(),
+            worker.detector.as_ref().unwrap().fallback.is_busy(),
+            worker.detector.as_ref().unwrap().fallback.error
+        );
         assert!(matches!(
             stream_events.try_recv().unwrap(),
             CaptureEvent::Start { .. }

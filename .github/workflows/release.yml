@@ -36,8 +36,6 @@ jobs:
             platform: linux-x86_64
             bundles: appimage,deb
     runs-on: ${{ matrix.os }}
-    env:
-      GGML_NATIVE: "OFF"
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -82,6 +80,9 @@ jobs:
         shell: pwsh
         run: |
           @('GGML_NATIVE', 'GGML_SSE42', 'GGML_AVX', 'GGML_AVX2', 'GGML_FMA', 'GGML_F16C', 'GGML_BMI2', 'GGML_AVX_VNNI', 'GGML_AVX512', 'GGML_AVX512_VBMI', 'GGML_AVX512_VNNI', 'GGML_AVX512_BF16', 'GGML_AMX_TILE', 'GGML_AMX_INT8', 'GGML_AMX_BF16') | ForEach-Object { Add-Content -Path $env:GITHUB_ENV -Value "$_=OFF" }
+      - name: Configure a consistent generic Linux CPU build
+        if: runner.os == 'Linux'
+        run: echo "GGML_NATIVE=OFF" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: release-${{ matrix.target }}-generic-v1
