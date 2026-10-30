@@ -183,8 +183,16 @@ fn validate_package_url(
         "linux" => ("linux", ".AppImage"),
         _ => return Err("Updates are not supported on this operating system".into()),
     };
+    let package_arch = if os == "macos" {
+        if !matches!(arch, "aarch64" | "x86_64") {
+            return Err("Updates are not supported on this Mac architecture".into());
+        }
+        "universal"
+    } else {
+        arch
+    };
     let expected = format!(
-        "/kabudu/notdot/releases/download/v{version}/notdot_{version}_{platform}-{arch}{suffix}"
+        "/kabudu/notdot/releases/download/v{version}/notdot_{version}_{platform}-{package_arch}{suffix}"
     );
     if version.contains('-')
         || version.contains('+')
@@ -479,6 +487,33 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn mac_updates_require_the_same_universal_package_on_both_architectures() {
+        let address = "https://github.com/kabudu/notdot/releases/download/v1.2.3/notdot_1.2.3_darwin-universal.app.tar.gz";
+        let url = address.parse().unwrap();
+        for arch in ["aarch64", "x86_64"] {
+            assert!(validate_package_url(&url, "1.2.3", "macos", arch).is_ok());
+            assert!(validate_package_url(&url, "1.2.4", "macos", arch).is_err());
+            let thin = address.replace("universal", arch).parse().unwrap();
+            assert!(validate_package_url(&thin, "1.2.3", "macos", arch).is_err());
+            for changed in [
+                address.replace("https:", "http:"),
+                address.replace("kabudu/notdot", "other/notdot"),
+                address.replace("github.com", "example.com"),
+                format!("{address}?download=1"),
+                format!("{address}#fragment"),
+            ] {
+                assert!(
+                    validate_package_url(&changed.parse().unwrap(), "1.2.3", "macos", arch)
+                        .is_err()
+                );
+            }
+        }
+        assert!(validate_package_url(&url, "1.2.3", "macos", "armv7").is_err());
+        assert!(validate_package_url(&url, "1.2.3", "windows", "x86_64").is_err());
+        assert!(validate_package_url(&url, "1.2.3", "linux", "x86_64").is_err());
+    }
+
     #[test]
     fn failed_install_clears_spoken_consent_and_preserves_restart_journal() {
         let dir = std::env::temp_dir().join(format!(
