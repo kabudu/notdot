@@ -55,7 +55,7 @@ def main():
         raise SystemExit("Build on Windows with clang-cl, or choose the existing cross-build container")
     env = os.environ.copy()
     env.update(FLAGS)
-    env.update(CMAKE_C_FLAGS=GUARD, CMAKE_CXX_FLAGS=GUARD, CARGO_BUILD_JOBS="2")
+    env.update(CMAKE_C_FLAGS=GUARD, CMAKE_CXX_FLAGS=GUARD + " /EHsc", CARGO_BUILD_JOBS="2")
     target.mkdir(parents=True, exist_ok=True)
     base = ["build", "-p", "notdot-wake-runtime", "--bin", "notdot-wake-helper",
             "--features", "accelerated", "--release", "--target", "x86_64-pc-windows-msvc", "--locked", "-j", "2"]
@@ -64,7 +64,7 @@ def main():
                "-v", f"{ROOT}:/work", "-v", f"{target}:/work/.local/windows-e2e/target",
                "-v", "notdot-windows-cargo:/usr/local/cargo/registry",
                "-v", "notdot-windows-xwin:/root/.cache"]
-        for key, value in {**FLAGS, "CMAKE_C_FLAGS": GUARD, "CMAKE_CXX_FLAGS": GUARD,
+        for key, value in {**FLAGS, "CMAKE_C_FLAGS": GUARD, "CMAKE_CXX_FLAGS": GUARD + " /EHsc",
                            "CARGO_TARGET_DIR": "/work/.local/windows-e2e/target", "CARGO_BUILD_JOBS": "2"}.items():
             cmd.extend(["-e", f"{key}={value}"])
         cmd.extend([args.container_image, "cargo", "xwin", *base])
