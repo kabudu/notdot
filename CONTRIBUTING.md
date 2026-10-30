@@ -19,3 +19,5 @@ Preserve the voice-only orb interface, keyboard access, reduced-motion support, 
 By intentionally submitting a contribution, you agree it is licensed under Apache-2.0, unless explicitly agreed otherwise. Only contribute work you are entitled to share; retain third-party attribution. No CLA is required. See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 Maintainers review contributions as availability permits; there is no guaranteed response time. Current development is a preview, with release gates tracked in [release readiness](docs/release-readiness.md).
+
+Local validation uses Python 3.12 or later for safe release-archive checks. `scripts/ci-local.sh` uses `python3.12` when the default Python is older. You can select another compatible interpreter with `NOTDOT_TEST_PYTHON`.
