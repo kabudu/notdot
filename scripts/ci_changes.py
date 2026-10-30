@@ -10,7 +10,7 @@ import subprocess
 ROOT_CONTENT = {'README.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'SECURITY.md', 'CODE_OF_CONDUCT.md', 'ROADMAP.md'}
 DOC_SUFFIXES = {'.md', '.html', '.css', '.js'}
 SITE_SUFFIXES = DOC_SUFFIXES | {'.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.mp4', '.webm', '.vtt', '.woff', '.woff2', '.txt'}
-PLATFORMS = ('windows-native', 'windows-metadata', 'macos', 'linux-native')
+PLATFORMS = ('release-tools', 'windows-native', 'windows-metadata', 'macos', 'linux-native')
 SHA = re.compile(r'[0-9a-f]{40}')
 RAW = re.compile(rb':([0-7]{6}) ([0-7]{6}) [0-9a-f]{40} [0-9a-f]{40} ([A-Z])')
 
