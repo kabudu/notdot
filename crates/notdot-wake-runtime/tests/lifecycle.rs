@@ -10,6 +10,10 @@ use std::{
     },
     time::Duration,
 };
+// Each scenario follows the app's single-helper lifecycle. Competing model
+// loads from unrelated tests must not consume its real startup deadline.
+static HELPER_SCENARIO: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn helper() -> PathBuf {
     std::env::var_os("NOTDOT_HELPER_TEST_EXE")
         .map(PathBuf::from)
@@ -28,6 +32,7 @@ fn model() -> PathBuf {
 }
 #[tokio::test]
 async fn cancellation_and_timeout_kill_and_reap_the_helper() {
+    let _scenario = HELPER_SCENARIO.lock().await;
     let mut cancelled = Client::start(&helper(), &model(), "Hey Ava").await.unwrap();
     assert!(cancelled.pid().is_some());
     assert_eq!(
@@ -53,6 +58,7 @@ async fn cancellation_and_timeout_kill_and_reap_the_helper() {
 }
 #[tokio::test]
 async fn cancellation_after_request_begins_reaps_before_the_install_hook() {
+    let _scenario = HELPER_SCENARIO.lock().await;
     let mut client = Client::start(&helper(), &model(), "Hey Ava").await.unwrap();
     let epoch = Arc::new(AtomicU64::new(0));
     let audio = vec![0.01; protocol::MAX_SAMPLES];
@@ -81,6 +87,7 @@ async fn cancellation_after_request_begins_reaps_before_the_install_hook() {
 }
 #[tokio::test]
 async fn invalid_model_or_phrase_never_starts_a_ready_worker() {
+    let _scenario = HELPER_SCENARIO.lock().await;
     let directory = tempfile::tempdir().unwrap();
     let invalid = directory.path().join("bad-model.bin");
     std::fs::write(&invalid, b"synthetic invalid model").unwrap();
@@ -97,6 +104,7 @@ async fn invalid_model_or_phrase_never_starts_a_ready_worker() {
 #[tokio::test]
 #[ignore = "full bundled model decode; run on the chosen native architecture"]
 async fn worker_reuses_one_model_process_and_matches_the_shared_engine() {
+    let _scenario = HELPER_SCENARIO.lock().await;
     let mut client = Client::start(&helper(), &model(), "Hey Ava").await.unwrap();
     let pid = client.pid();
     for (name, expected) in [
