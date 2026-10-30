@@ -36,6 +36,8 @@ jobs:
             platform: linux-x86_64
             bundles: appimage,deb
     runs-on: ${{ matrix.os }}
+    env:
+      GGML_NATIVE: "OFF"
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
