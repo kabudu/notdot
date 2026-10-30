@@ -60,3 +60,28 @@ All four checks passed:
 The mock Tauri host supplied configuration, but the verifier and filesystem installer were the real dependency code. The synthetic executable bytes were never run. This closes that bounded local installer boundary only: it does not establish the in-app consent/download UI, large-package behavior, live production-key verification, installed-app restart/sole-writer recovery, publisher identity, notarisation, or OS-protected installation. Those remain release gates.
 
 Ignored evidence: `.local/macos-readiness/dede90f-audit.json`, the Rust licence inventory, `license-metadata-after.json`, `installer-probe/`, and `installer-probe-results.jsonl`. Only fixture public material and signatures remain; no fixture private key persists.
+
+## Current production package — `3ca1b45`
+
+The newly built normal macOS app (`com.kabudu.notdot`, version 0.1.0) passed strict deep signature verification. It is **locally ad-hoc signed**, arm64, requires macOS 14+, and has the microphone usage description and exactly the `com.apple.security.device.audio-input` entitlement. This is not Developer ID signing or notarisation.
+
+All **23 wake resource files** and **322 notice-bundle files** match the current source bytes, with identical file inventories. Bundle size is 101,117,363 bytes. The executable SHA-256 is `ac2ca0e555a207047252e044914ac0229a71f7a55c3390eb2127efea24170cff`; detailed hashes are retained in `.local/macos-readiness/3ca1b45-bundle-verification.json`.
+
+This was a file/signature check only: no app launch, UI, microphone, playback, provider or credential access, and no broad test rerun. Current production live-voice acceptance remains open. The coordinator's separate optimized QA instance is awaiting an observed local saved-key approval; approvals are being held for the user's return, and no new approval was requested by this check.
+
+## Window-restore package refresh — `40ce478`
+
+The four reviewed window-restore additions were packaged into both Mac acceptance artifacts without launching them. Both are version 0.1.0, arm64/macOS 14+, locally ad-hoc signed, pass strict deep signature verification, retain exactly the microphone entitlement, and match all 23 wake-resource plus 322 notice-file source hashes.
+
+| Artifact | Identifier | Executable SHA-256 |
+| --- | --- | --- |
+| `target/release/bundle/macos/notdot.app` | `com.kabudu.notdot` | `4cdd18d952ace35c9deb7fad5fe0841e68375bf09e3291c83b5d5a047b04dc2b` |
+| `target/release/bundle/macos/notdot QA Final.app` | `com.kabudu.notdot.qa` | `55f830a175bf0d29de18cf367eca5b7366cafbabf233862d0a116ea43f1fba51` |
+
+The original running `notdot QA.app` executable is unchanged from its preserved fingerprint. The separate QA Final build also left the prepared production bundle unchanged. No UI, audio, credentials, approval requests or native voice tests were used. The unlaunched QA Final artifact is prepared for the coordinator's batched local approvals when the user returns; current Mac live-voice acceptance remains open. Detailed checks are in `.local/macos-readiness/40ce478-production-verification.json` and `40ce478-qa-final-verification.json`.
+
+## Final QA launch and ordinary UI — `40ce478`
+
+The coordinator subsequently quit the obsolete running QA app through its own menu and launched the separate `notdot QA Final.app` above. It launched responsively without requesting saved-key access. Settings exposes the current collapsed sections, Terra Medium summary and the revised Deepgram/ElevenLabs guidance, including that an existing key does not need re-entering. No key-access, preview or microphone control was activated; no settings were saved. Wake listening correctly remains paused until saved-key access is authorised. Current Mac voice acceptance is still pending the owner's return for grouped local approvals.
+
+The app menu exposes About, Settings, Check for Updates and Quit. About displays the logo and version and dismisses with Escape. However, the native Computer Use accessibility snapshot exposes no About contents while this dialog is open, both on its own and over Settings; closing it restores the normal accessible tree. This is an unresolved accessibility observation, not a screen-reader acceptance pass or a proven cause. It needs bounded follow-up before claiming complete accessibility coverage. No additional rebuild or OS approval was initiated for this observation.
