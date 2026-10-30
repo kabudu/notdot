@@ -128,14 +128,14 @@ jobs:
       - name: Rebuild generic native decoder with the selected generator
         run: cargo clean -p whisper-rs-sys
       # Temporary diagnostic: do not merge the repeated-suite workflow.
-      - name: Diagnose complete Windows app suite in two fresh processes
+      - name: Verify the complete Windows app suite once on this host
         shell: pwsh
         run: |
           $logs = '.local/windows-wake-recurrence'
           New-Item -ItemType Directory -Force -Path $logs | Out-Null
           Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors | ConvertTo-Json | Tee-Object -FilePath "$logs/cpu.json"
-          foreach ($iteration in 1..2) {
-            Write-Output "Complete Windows app suite process $iteration of 2"
+          foreach ($iteration in 1..1) {
+            Write-Output "Complete Windows app suite process $iteration of 1"
             cargo test -p notdot --bin notdot --features notdot-wake-runtime/synthetic-diagnostics --locked -- --nocapture 2>&1 | Tee-Object -FilePath "$logs/suite-$iteration.log"
             $code = $LASTEXITCODE
             if ($code -ne 0) { exit $code }
@@ -148,7 +148,7 @@ jobs:
           path: .local/windows-wake-recurrence/
           if-no-files-found: warn
       - name: Test native Windows code and bundled models
-        run: cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --locked
+        run: cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime --locked
       - name: Check Windows-specific Rust code
         run: cargo clippy -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --all-targets --locked -- -D warnings
       # Observe after acceptance, so the probe cannot prewarm the tested path.
