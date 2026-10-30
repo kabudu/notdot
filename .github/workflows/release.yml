@@ -92,6 +92,8 @@ jobs:
           key: release-${{ matrix.target }}-generic-v1
           env-vars: GGML_ MACOSX_DEPLOYMENT_TARGET
           cache-on-failure: true
+      - name: Repair pruned Sherpa native library cache
+        run: python scripts/repair_sherpa_cache.py --target "${{ matrix.target }}"
       # whisper-rs-sys does not track changed CXXFLAGS. Clear both Cargo target
       # layouts before tests so the release cannot restore a mixed-ABI library.
       - name: Rebuild the Linux native C++ boundary
