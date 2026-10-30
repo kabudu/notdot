@@ -10,14 +10,22 @@ import tarfile
 import tempfile
 
 
+def verify_signer(path, team):
+    details = subprocess.run(['codesign', '--display', '--verbose=4', str(path)], check=True, capture_output=True, text=True).stderr
+    if f'TeamIdentifier={team}' not in details.splitlines() or not any(line.startswith('Authority=Developer ID Application:') for line in details.splitlines()):
+        raise ValueError('Release container must use the configured Developer ID team, not ad-hoc signing')
+
+
 def verify_bundle(app, team, version):
     info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
     if info.get('CFBundleIdentifier') != 'com.kabudu.notdot' or info.get('CFBundleShortVersionString') != version:
         raise ValueError('Unexpected app identity or version')
+    executable = app / 'Contents/MacOS' / info['CFBundleExecutable']
+    slices = subprocess.check_output(['lipo', '-archs', str(executable)], text=True).split()
+    if set(slices) != {'arm64', 'x86_64'}:
+        raise ValueError('Release app must be universal: arm64 and x86_64')
     subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
-    details = subprocess.run(['codesign', '--display', '--verbose=4', str(app)], check=True, capture_output=True, text=True).stderr
-    if f'TeamIdentifier={team}' not in details.splitlines() or not any(line.startswith('Authority=Developer ID Application:') for line in details.splitlines()):
-        raise ValueError('Release app must use the configured Developer ID team, not ad-hoc signing')
+    verify_signer(app, team)
     subprocess.run(['xcrun', 'stapler', 'validate', str(app)], check=True)
     subprocess.run(['spctl', '--assess', '--type', 'execute', str(app)], check=True)
 

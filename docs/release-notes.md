@@ -1,11 +1,11 @@
-notdot provides an orb-only voice companion backed by a persistent Codex conversation.
+Talk to notdot through a desktop orb that listens, replies aloud and keeps your conversation going with ChatGPT Codex.
 
-These notes describe changes and known limits for people trying a development build. For help choosing options, use the [Settings guide](settings.md).
+- **Speak hands-free.** Use your chosen wake phrase, or click once and pause when you finish.
+- **Choose a voice.** Search and preview voices, with separate choices for speech recognition and replies.
+- **Control memory.** Review, edit, forget or reset saved notes, and choose whether notdot learns useful context.
+- **Make it yours.** Set the name, orb colour, reminders and startup preferences.
+- **Stay up to date.** Get update notices and choose when to install, with progress and automatic restart.
 
-This is an unreleased development version. Public download and in-app installation acceptance are not complete.
+Download the universal Mac disk image for Apple Silicon or Intel, the Windows installer, or the Linux AppImage or Debian package. Windows installers do not have publisher signing. Linux corresponding sources and third-party terms accompany the downloads.
 
-- Voice backend selection, account voice search and preview.
-- Local explicit memory and configurable startup.
-- Signed update checks with spoken consent and installation progress.
-
-macOS is locally exercised. Windows and Linux acceptance is tracked in release-readiness.md; do not publish this development draft as a production release.
+You need Codex signed into your account and your own speech-service keys. See the [setup guide](https://github.com/kabudu/notdot/blob/master/docs/guide.md) and [Settings guide](https://github.com/kabudu/notdot/blob/master/docs/settings.md).
