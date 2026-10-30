@@ -1,54 +1,58 @@
-<p align="center"><img src="assets/logomark.svg" width="96" alt="notdot logomark"></p>
+<p align="center"><img src="assets/logomark.svg" width="96" alt="notdot"></p>
 
 # notdot
 
-**A voice companion. Just an orb. Your desktop, a little more personal.**
+**A voice companion for your desktop.**
 
-Talk to a small, expressive orb that listens, thinks and speaks. Built with Rust, Tauri and a Rust/WASM interface, notdot brings a saved Codex conversation, optional local memory and your choice of colour to the desktop.
+Talk to an animated orb that listens and replies aloud. notdot works with the ChatGPT Codex app and can remember useful details with your permission.
 
-**Development preview.** No public binary release yet. macOS is the primary development platform; Windows and Linux builds still need hardware acceptance. Independent project, not affiliated with OpenAI or ElevenLabs.
+[Getting started](#getting-started) · [Privacy](#privacy-and-memory) · [Contributing](CONTRIBUTING.md) · [Apache 2.0](LICENSE)
 
-## Meet your orb
+## What you can do
 
-- **Voice first:** click once or press Space, speak, then pause to send; Escape cancels. Optional local name-based wake phrases are experimental.
-- **Continuity:** one saved chat. Send requests through notdot; use Desktop to read its saved history. Sending from both apps at once is not supported.
-- **Memory you control:** optional memories linked to the chats they came from, review, correction, forgetting and a complete local memory reset. This changes what the AI knows about you; it does not retrain the model.
-- **Make it yours:** name, live colour preview, searchable voices with previews, one model-and-thinking-level picker.
-- **Considerate by design:** separate choices for remembering and interrupting, quiet hours, usage alerts and support for reduced motion.
+- **Talk naturally.** Click once, speak, then pause to send. Press Escape to cancel. Experimental wake phrases let you start hands-free.
+- **Keep a conversation going.** Continue the same chat after restarting notdot. You can view its history in Codex.
+- **Choose what it remembers.** Turn learning on or off, review and edit saved memories, forget individual notes or reset them all.
+- **Make it yours.** Choose its name, orb colour, voice and how much it can interrupt you.
 
-ElevenLabs is the first voice service; the Rust interface supports adding others. GPT-6.1 Terra / Medium is the default, with available models and thinking levels checked with your installed Codex tool.
+The orb shows when notdot is listening, thinking and speaking. Settings opens when you right-click the orb or use Command/Control + comma.
 
-## See it in action
+## Getting started
 
-A new voice demo is being prepared. We’re waiting for a quiet recording session so you can hear both sides clearly.
+notdot is in development. Public installers are not available yet; macOS, Windows and Linux testing is in progress.
 
-[Website source](docs/index.html) · [Recording plan](docs/demo.md)
+To use it, you need:
 
-## Run from source
+1. Codex installed and signed into your ChatGPT account.
+2. A supported speech service and your own API key. Deepgram can transcribe your speech; ElevenLabs can provide the spoken replies. Service charges may apply.
+3. A microphone and speakers or headphones.
 
-You need macOS 14+, Rust 1.97+, a compatible Codex tool signed into your account, and an ElevenLabs account/key for voice. Services may require paid usage. Install Codex separately.
+For now, [build from source](docs/guide.md). In notdot’s Settings, add your speech-service keys and choose a voice. The [Settings guide](docs/settings.md) explains the available options.
 
-```sh
-git clone https://github.com/kabudu/notdot.git
-cd notdot
-rustup target add wasm32-unknown-unknown
-cargo install trunk --locked
-cargo install tauri-cli --locked
-cargo tauri dev
-```
+Use notdot to send messages in its chat. Keep the Codex app for viewing that chat’s history; sending from both apps at once is not supported. The Codex window does not need to stay in the foreground.
 
-Open Settings with right-click or Cmd/Ctrl+, then configure your voice service and choose a voice. Keys stay in the OS keychain. For everyday options, read the [Settings guide](docs/settings.md). Build and platform details are in the [developer guide](docs/guide.md).
+## Privacy and memory
 
-## Where your data goes
+Wake detection runs on your computer. Background listening is not sent to a speech service. After activation, your chosen services transcribe your request and generate the spoken reply. Codex receives your request and any relevant memories.
 
-Wake detection is local before activation. After you start a request, its recording goes to your voice service. The words from your request and relevant saved memories go to the model through Codex. Memory and settings stay in the app’s folder on your computer. Turning memory off stops saving and using those notes; it keeps your chat history. Resetting local memory does not erase old Desktop chats or backups. See [security and privacy boundaries](SECURITY.md).
+Saved memories stay on your computer. Turning learning off stops saving and using those notes, while keeping existing notes and chat history. Resetting memory does not delete saved Codex chats or backups.
 
-## Explore and contribute
+Voice-service keys are stored in your operating system’s credential store. Read [Security](SECURITY.md) for details and how to report a vulnerability.
 
-[User & developer guide](docs/guide.md) · [Architecture and bridge investigation](docs/bridge-investigation.md) · [Validation evidence](docs/validation/2026-10-27-acceptance.md) · [Release readiness](docs/release-readiness.md) · [Changelog](CHANGELOG.md)
+## Contributing
 
-Bug reports and focused pull requests are welcome. Start with [Contributing](CONTRIBUTING.md), follow the [community conduct policy](CODE_OF_CONDUCT.md), and report vulnerabilities through [Security](SECURITY.md).
+Bug reports, documentation improvements and focused pull requests are welcome. Start with [Contributing](CONTRIBUTING.md) for setup, tests and the pull-request process. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+| Looking for | Start here |
+| --- | --- |
+| Everyday settings | [Settings guide](docs/settings.md) |
+| Build and development instructions | [Developer guide](docs/guide.md) |
+| Changes between versions | [Changelog](CHANGELOG.md) |
+| Current testing and release status | [Release readiness](docs/release-readiness.md) |
+| Website | [Website source](docs/index.html) |
 
 ## Licence
 
-Original notdot source and artwork: [Apache License 2.0](LICENSE). Dependencies retain their own licences; see [third-party notices](THIRD_PARTY_NOTICES.md). Product names belong to their respective owners.
+notdot’s original source code and artwork are licensed under the [Apache License 2.0](LICENSE). Bundled libraries and models keep their own licences; see [Third-party notices](THIRD_PARTY_NOTICES.md).
+
+notdot is an independent project and is not affiliated with OpenAI, Deepgram or ElevenLabs.
