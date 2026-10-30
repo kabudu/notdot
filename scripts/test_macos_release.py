@@ -41,3 +41,27 @@ class MacReleaseArchiveTests(unittest.TestCase):
                     verify_archive(archive, 'TEAM', '0.1.0')
                 verify.assert_not_called()
             self.assertFalse((root / 'escape').exists())
+
+
+@unittest.skipUnless(__import__('sys').platform == 'darwin', 'native BSD tar metadata check')
+class NativeMacArchiveCompatibilityTests(unittest.TestCase):
+    def test_ticket_file_survives_without_installer_incompatible_appledouble_entries(self):
+        import os
+        import subprocess
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            app = root / 'notdot.app'
+            (app / 'Contents').mkdir(parents=True)
+            ticket = app / 'Contents/CodeResources'
+            ticket.write_bytes(b'benign-regular-ticket-marker')
+            # Real BSD tar would emit a root ._notdot.app without this policy.
+            subprocess.run(['/usr/bin/xattr', '-w', 'com.notdot.fixture', 'benign-xattr', str(app)], check=True)
+            archive = root / 'notdot.app.tar.gz'
+            environment = dict(os.environ, COPYFILE_DISABLE='1')
+            subprocess.run(['/usr/bin/tar', '-czf', str(archive), '-C', str(root), app.name], check=True, env=environment)
+            with tarfile.open(archive) as package:
+                self.assertFalse(any(part.startswith('._') for member in package.getmembers() for part in Path(member.name).parts))
+            def verify(unpacked, team, version):
+                self.assertEqual((unpacked / 'Contents/CodeResources').read_bytes(), ticket.read_bytes())
+            with patch('verify_macos_release.verify_bundle', side_effect=verify):
+                verify_archive(archive, 'TEAM', '0.1.0')

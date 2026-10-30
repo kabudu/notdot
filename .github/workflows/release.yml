@@ -26,7 +26,7 @@ jobs:
           - os: macos-15
             target: universal-apple-darwin
             platform: darwin-universal
-            bundles: app,dmg
+            bundles: app
           - os: windows-2022
             target: x86_64-pc-windows-msvc
             platform: windows-x86_64
@@ -119,6 +119,13 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/windows-release-provenance.ps1
+      - name: Import Apple identity into a temporary signing keychain
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        shell: bash
+        run: python3 scripts/macos_signing_keychain.py setup "$RUNNER_TEMP/notdot-signing"
       - name: Build signed and notarized universal macOS bundles
         if: runner.os == 'macOS'
         env:
@@ -126,8 +133,6 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           GGML_NATIVE: "OFF"
           MACOSX_DEPLOYMENT_TARGET: "14.0"
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -135,11 +140,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for field in APPLE_CERTIFICATE APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+          for field in APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
             test -n "${!field}" || { echo "Missing required signing configuration: $field"; exit 1; }
           done
-          cargo tauri build --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}" --config src-tauri/tauri.release.conf.json
+          # Already imported explicitly; do not let Tauri create another keychain.
+          env -u APPLE_CERTIFICATE -u APPLE_CERTIFICATE_PASSWORD cargo tauri build --target "${{ matrix.target }}" --bundles app --config src-tauri/tauri.release.conf.json
           python3 scripts/finalize_macos_release.py "target/${{ matrix.target }}/release/bundle"
+      - name: Remove the temporary Apple signing keychain
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: python3 scripts/macos_signing_keychain.py cleanup "$RUNNER_TEMP/notdot-signing"
       - name: Build updater-signed Linux bundles
         if: runner.os == 'Linux'
         env:
