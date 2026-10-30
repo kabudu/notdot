@@ -1579,8 +1579,8 @@ mod tests {
         for _ in 0..40 {
             detected |= detector.accept(rate, &vec![0.; rate as usize / 50]);
         }
-        // Do not end a successful KWS fixture while its fallback still runs:
-        // otherwise the next instantaneous replay races cancellation/reaping.
+        // A winning KWS result cancels unused fallback work, as capture does.
+        // Settle cancellation before another fixture's instantaneous replay.
         drain_fixture_fallback(detector, rate, &mut detected, "current fixture");
         assert!(
             detector.fallback.error.is_none(),
@@ -1605,12 +1605,18 @@ mod tests {
         stage: &str,
     ) {
         let start = Instant::now();
+        if *detected {
+            detector.fallback.reset();
+        }
         for _ in 0..350 {
             if !detector.fallback.is_busy() {
                 return;
             }
             std::thread::sleep(Duration::from_millis(10));
-            *detected |= detector.accept(rate, &vec![0.; rate as usize / 50]);
+            if detector.accept(rate, &vec![0.; rate as usize / 50]) && !*detected {
+                *detected = true;
+                detector.fallback.reset();
+            }
         }
         assert!(
             !detector.fallback.is_busy(),
