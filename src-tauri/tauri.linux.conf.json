@@ -6,7 +6,10 @@
     ],
     "linux": {
       "appimage": {
-        "bundleMediaFramework": true
+        "bundleMediaFramework": true,
+        "files": {
+          "usr/share/common-licenses": "../third_party/linux-common-licenses"
+        }
       },
       "deb": {
         "depends": [
