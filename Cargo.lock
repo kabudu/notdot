@@ -2719,6 +2719,7 @@ dependencies = [
  "keyring",
  "notdot-core",
  "notdot-voice",
+ "notdot-wake-runtime",
  "reqwest 0.12.28",
  "rubato",
  "security-framework 3.7.0",
@@ -2778,6 +2779,18 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "tokio-tungstenite",
+]
+
+[[package]]
+name = "notdot-wake-runtime"
+version = "0.1.0"
+dependencies = [
+ "hound",
+ "rubato",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "whisper-rs",
 ]
 
 [[package]]

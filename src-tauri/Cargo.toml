@@ -9,6 +9,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 notdot-core = { path = "../crates/notdot-core" }
 notdot-voice = { path = "../crates/notdot-voice" }
+notdot-wake-runtime = { path = "../crates/notdot-wake-runtime" }
 tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 tauri-plugin-single-instance = "2"
 serde.workspace = true

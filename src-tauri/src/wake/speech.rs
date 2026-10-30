@@ -98,7 +98,7 @@ mod tests {
     #[test]
     #[ignore = "private local voice fixture; do not commit audio"]
     fn local_speech_fixture() {
-        let _models = super::super::tests::MODEL_FIXTURE.lock().unwrap();
+        let _models = super::super::model_fixture_guard();
         let models = super::super::fixture_root().join("resources/wake");
         let mut gate = SpeechGate::new(&models).unwrap();
         let path = std::env::var("NOTDOT_WAKE_FIXTURE").unwrap();
@@ -126,7 +126,7 @@ mod tests {
     }
     #[test]
     fn spoken_request_ends_despite_non_speech_background_sound() {
-        let _models = super::super::tests::MODEL_FIXTURE.lock().unwrap();
+        let _models = super::super::model_fixture_guard();
         let models = super::super::fixture_root().join("resources/wake");
         let mut wav = hound::WavReader::open(
             super::super::fixture_root().join("tests/fixtures/negative.wav"),

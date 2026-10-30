@@ -327,6 +327,9 @@ async fn install(
     }
     state.snapshot.lock().await.phase = "updating".into();
     let result: Result<(), String> = async {
+        // Keep the guard alive through installation/restart. Failure drops it,
+        // allowing fresh frontend leases without resurrecting an old recording.
+        let _decoder_release = state.wake.release_decoder_for_update().await?;
         let (overflow, mut exceeded) = tokio::sync::watch::channel(false);
         let mut received = 0u64;
         let download = update.download(|chunk, total| {

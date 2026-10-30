@@ -48,12 +48,37 @@ jobs:
         shell: bash
         run: python3 scripts/check_release_version.py "$RELEASE_VERSION"
       - run: cargo fmt --all --check
-      - run: cargo test -p notdot-core -p notdot-voice -p notdot --locked
-      - run: cargo clippy -p notdot --all-targets --locked -- -D warnings
+      - run: cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --locked
+      - run: cargo clippy -p notdot -p notdot-wake-runtime --all-targets --locked -- -D warnings
       - run: cargo clippy -p notdot-orb --target wasm32-unknown-unknown --locked -- -D warnings
       - run: cargo install trunk --version 0.22.1 --locked
       - run: cargo install tauri-cli --version 2.12.4 --locked
+      - name: Prepare optional guarded Windows wake helper
+        if: runner.os == 'Windows'
+        run: python scripts/build_windows_wake_helper.py
+      - name: Build generic Windows updater-signed bundles
+        if: runner.os == 'Windows'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          GGML_NATIVE: "OFF"
+          GGML_SSE42: "OFF"
+          GGML_AVX: "OFF"
+          GGML_AVX2: "OFF"
+          GGML_FMA: "OFF"
+          GGML_F16C: "OFF"
+          GGML_BMI2: "OFF"
+          GGML_AVX_VNNI: "OFF"
+          GGML_AVX512: "OFF"
+          GGML_AVX512_VBMI: "OFF"
+          GGML_AVX512_VNNI: "OFF"
+          GGML_AVX512_BF16: "OFF"
+          GGML_AMX_TILE: "OFF"
+          GGML_AMX_INT8: "OFF"
+          GGML_AMX_BF16: "OFF"
+        run: cargo tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config src-tauri/tauri.release.conf.json
       - name: Build updater-signed platform bundles
+        if: runner.os != 'Windows'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
