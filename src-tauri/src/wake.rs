@@ -1580,6 +1580,95 @@ mod tests {
     }
     #[cfg(target_os = "linux")]
     #[test]
+    #[ignore = "explicit local microphone lease; actual worker heartbeat/status only, no providers or retention"]
+    fn linux_actual_worker_with_ready_lease_metadata_diagnostic() {
+        assert_eq!(
+            std::env::var("NOTDOT_LINUX_WAKE_MIC_DIAGNOSTIC").as_deref(),
+            Ok("1")
+        );
+        let _models = model_fixture_guard();
+        let settings = Settings {
+            name: "ava".into(),
+            wake_enabled: true,
+            ..Settings::default()
+        };
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(128);
+        let wake = Wake::new(models(), &settings, sender);
+        let utc_ms = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        };
+        let start = Instant::now();
+        let mut started = 0u64;
+        let mut audio = 0u64;
+        let mut ended = 0u64;
+        let mut cancelled = 0u64;
+        let mut last_report = Instant::now();
+        let mut announced_ready = false;
+        while start.elapsed() < Duration::from_secs(10) {
+            wake.ready(true);
+            while let Ok(event) = receiver.try_recv() {
+                match event {
+                    CaptureEvent::Start { .. } => started += 1,
+                    CaptureEvent::Audio { .. } => audio += 1,
+                    CaptureEvent::End { .. } => ended += 1,
+                    CaptureEvent::Cancel { .. } => cancelled += 1,
+                }
+            }
+            let status = wake.status();
+            if status.phase == "listening" && !announced_ready {
+                eprintln!("wake_worker_ready utc_ms={}", utc_ms());
+                announced_ready = true;
+            }
+            if last_report.elapsed() >= Duration::from_millis(500) {
+                eprintln!(
+                    "wake_worker_metrics utc_ms={} phase={} frames={} rms={} peak_rms={} candidates={} rejected_energy={} rejected_prefix={} fallback_backend={} starts={} audio_events={} ends={} cancels={} error={}",
+                    utc_ms(),
+                    status.phase,
+                    status.audio_frames,
+                    status.rms,
+                    status.peak_rms,
+                    status.candidates,
+                    status.rejected_energy,
+                    status.rejected_prefix,
+                    status.fallback_decoder,
+                    started,
+                    audio,
+                    ended,
+                    cancelled,
+                    status.phase == "error"
+                );
+                last_report = Instant::now();
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        wake.ready(false);
+        wake.pause_all();
+        let cleanup = Instant::now();
+        while cleanup.elapsed() < Duration::from_secs(2) && wake.status().phase != "paused" {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        eprintln!(
+            "wake_worker_finished utc_ms={} phase={} starts={} audio_events={} ends={} cancels={}",
+            utc_ms(),
+            wake.status().phase,
+            started,
+            audio,
+            ended,
+            cancelled
+        );
+        assert!(announced_ready, "actual worker never reached listening");
+        assert_eq!(
+            wake.status().phase,
+            "paused",
+            "actual worker did not acknowledge lease shutdown"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     #[ignore = "explicit local microphone lease; aggregate diagnostics only, no audio retention or providers"]
     fn linux_microphone_to_detector_metadata_diagnostic() {
         assert_eq!(
