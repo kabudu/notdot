@@ -104,3 +104,13 @@ Exact synthetic turn IDs: first subtraction `01a18b35-6522-7d92-b3ad-2bf25115198
 This closes the current synthetic Mac voice/cancellation pass. Fresh human hearing, pop/noise assessment, wider natural speech, device-loss coverage, installed update/restart and the About accessibility observation remain distinct acceptance work. No rectangular focus border appeared in these captures, but Tab did not establish a positive keyboard-focus-cue pass in the current macOS navigation configuration. No source changed, so the existing `40ce478` full local CI remains applicable.
 
 The startup switch was also exercised in the isolated QA profile: Save correctly refused OS startup changes with “OS startup changes are disabled in the isolated QA profile.” Closing Settings discarded the temporary toggle; persisted startup remained manual and no notdot login agent was created. This verifies the QA safety boundary, not production Mac login registration or actual sign-in launch.
+
+## Prepared universal Mac candidate
+
+A separate-target build from `3ddee56` produced a normal **arm64 + x86_64** app without replacing or launching either active QA app. Both slices declare macOS 14.0, contain native sherpa/Whisper symbols and retain exactly the microphone entitlement. Strict deep, all-architecture ad-hoc signature verification passed; all 23 wake resources and 322 notice files match source hashes. Both native build caches confirm `GGML_NATIVE=OFF` and deployment target 14.0. macOS 15 is the planned CI runner image, not a raised deployment floor.
+
+- App: `.local/macos-universal/target/universal-apple-darwin/release/bundle/macos/notdot.app`; 155,550,403 bytes.
+- Executable SHA-256: `c98bf01ed1c6b962be2cb7dabf0cfa0207c2b7bafae8adc65a432901367905e3`.
+- Prepared unsigned updater container: `.local/macos-universal/notdot_0.1.0_darwin-universal.app.tar.gz`; **71,594,877 bytes**, within the 256 MiB download budget; SHA-256 `04b6ccd427eb0dd7d85e2534c10c05688a8a23882c0f8d5eb665bb45427e8c56`.
+
+This is a locally ad-hoc signed app, not Developer ID/notarised release acceptance. A genuine x86_64 CPU-only Mach-O probe failed with “Bad CPU type” on this host, so Rosetta execution is unavailable. Dual-slice structure is verified; Intel execution and Intel hardware voice are not claimed. No app was launched, no key/approval was requested, and no fresh live-voice pass is attached to this build. Detailed hashes and per-slice checks are in `.local/macos-readiness/universal-verification.json`.
