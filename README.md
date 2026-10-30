@@ -12,7 +12,7 @@ Talk to an animated orb that listens and replies aloud. notdot works with the Ch
 
 A real hands-free exchange, with sound and captions. Turn on sound to hear both voices.
 
-https://github.com/user-attachments/assets/c5d0a84b-e8c3-4d9c-877b-d71aad7eb533
+https://github.com/user-attachments/assets/8279f3a2-af14-4c5b-8960-e69596ca5ad5
 
 [Read the transcript](docs/demo.md#transcript) · [Download the captioned video](docs/site-assets/demo/notdot-demo-captioned.mp4)
 
