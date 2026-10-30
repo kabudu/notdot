@@ -2,7 +2,9 @@
 
 This page tracks the work needed before publishing a release. Items left open are still required. It is a developer checklist, not a list of promises that every feature is already verified.
 
-The repository remains private. GitHub Actions is disabled at repository level at the owner's request. Local validation is authoritative during private development; this is not a hosted-CI pass or public release. No tag, release, visibility change or binary publication is authorized by preparing this workflow.
+The owner authorised the initial 0.1.0 public release on 30 October 2026. GitHub Actions is enabled. The repository is still private because GitHub retains retired audio in read-only references for closed pull requests 1–4 after every normal branch was cleaned. Publication is waiting on that repository-history issue; no hosted release build or public binary has been published. The repository identity, all eight signing secret names and the current demo attachment are preserved. Local validation passes, but it is not a hosted-CI result.
+
+The release workflow extracts the dated version entry from CHANGELOG.md and creates a draft GitHub release with the selected installers, updater files, checksums and required source/provenance assets. Publishing the validated draft makes the initial release and update feed public. The committed release-notes copy must match the changelog entry.
 
 ## Current candidate
 
@@ -15,7 +17,7 @@ The voice backend remains the one tested at `3ca1b45`; later changes improve sav
 | Linux arm64 VM | Normal package renders without special flags; one physical wake turn; controlled virtual-input speech, negative wake examples, playback cancellation and recovery; window restoration; startup registration on/off | Natural-voice, device-loss and actual sign-in startup acceptance remain open |
 | Linux x64 | Build and isolated package checks | Genuine hardware voice and installed AppImage update acceptance remain open |
 
-The Mac is kept awake while testing continues. Temporary Linux audio routing and Windows name/wake settings have been restored. The owner approved both saved-key reads on the final Mac QA build, and the current synthetic voice pass is complete. Generated speech clips establish the exercised paths, not broad recognition accuracy or human hearing. Detailed results are in the [Mac](validation/2026-10-29-macos-readiness.md), [Windows](validation/2026-10-29-windows-scenarios.md) and [Linux](validation/2026-10-29-linux.md) reports.
+The temporary Mac keep-awake guard and Linux idle overrides have been removed after local testing. Temporary Linux audio routing and Windows name/wake settings have been restored. The owner approved both saved-key reads on the final Mac QA build, and the current synthetic voice pass is complete. Generated speech clips establish the exercised paths, not broad recognition accuracy or human hearing. Detailed results are in the [Mac](validation/2026-10-29-macos-readiness.md), [Windows](validation/2026-10-29-windows-scenarios.md) and [Linux](validation/2026-10-29-linux.md) reports.
 
 The complete local validation script passed at `40ce478`: 133 Rust tests, 16 Python checks, formatting, Clippy for the native backend and both UI configurations, and the offline notice check. Thirteen tests requiring explicit native/provider fixtures were skipped by this offline run; platform reports record the separately executed live checks.
 
