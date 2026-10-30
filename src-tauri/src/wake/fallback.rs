@@ -478,10 +478,18 @@ mod tests {
                 .map(|s| f32::from(s.unwrap()) / 32768.)
                 .collect();
             samples.resize(samples.len() + rate as usize / 2, 0.);
+            let backend = decoder.identity();
+            let started = Instant::now();
             let heard = decoder
                 .recognize("Hey Ava", &samples, rate, Arc::new(AtomicU64::new(0)), 0)
                 .unwrap();
-            assert_eq!(heard, expected, "{name}");
+            assert_eq!(
+                heard,
+                expected,
+                "{name}: backend={backend}, after={}, elapsed={:?}",
+                decoder.identity(),
+                started.elapsed()
+            );
         }
         // Keep direct generic cancellation/deadline coverage separate from the
         // correctness corpus, which must exercise the production-selected path.
