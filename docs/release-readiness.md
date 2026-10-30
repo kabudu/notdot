@@ -4,6 +4,21 @@ This page tracks the work needed before publishing a release. Items left open ar
 
 The repository remains private. GitHub Actions is disabled at repository level at the owner's request. Local validation is authoritative during private development; this is not a hosted-CI pass or public release. No tag, release, visibility change or binary publication is authorized by preparing this workflow.
 
+## Current candidate
+
+The voice backend is frozen at `3ca1b45`. Candidate `40ce478` also includes clearer saved-key instructions and a fix that restores minimized windows when opening app controls. Those changes leave the tested voice backend unchanged. Normal packages have been built for all three operating systems. This is a test candidate, not a published release.
+
+| Platform | Verified | Still open |
+| --- | --- | --- |
+| macOS arm64 | Current package identity, strict ad-hoc signature, microphone entitlement, bundled resources and responsive Settings without key reads | About accessibility still needs verification; current-build voice acceptance needs local saved-key approval; publisher signing and installed-update tests remain open |
+| Windows x64 | 55 native tests; helper lifecycle and wake corpus; two consecutive hands-free microphone → Deepgram → Terra Medium → speech turns; playback cancellation; minimized-window restoration; startup registration on/off | Wider natural-speech and device-loss coverage; installed-update and sign-in startup acceptance |
+| Linux arm64 VM | Normal package renders without special flags; one physical wake turn; controlled virtual-input speech, negative wake examples, playback cancellation and recovery; window restoration; startup registration on/off | Physical wake replay was inconsistent; natural-voice, device-loss and actual sign-in startup acceptance remain open |
+| Linux x64 | Build and isolated package checks | Genuine hardware voice and installed AppImage update acceptance remain open |
+
+The Mac is kept awake while testing continues. Temporary Linux audio routing and Windows name/wake settings have been restored. Mac approvals will be grouped for the final test build when the owner is back at the computer. Generated speech clips establish the exercised paths, not broad recognition accuracy or human hearing. Detailed results are in the [Mac](validation/2026-10-29-macos-readiness.md), [Windows](validation/2026-10-29-windows-scenarios.md) and [Linux](validation/2026-10-29-linux.md) reports.
+
+The complete local validation script passed at `40ce478`: 133 Rust tests, 16 Python checks, formatting, Clippy for the native backend and both UI configurations, and the offline notice check. Thirteen tests requiring explicit native/provider fixtures were skipped by this offline run; platform reports record the separately executed live checks.
+
 ## Runtime and startup
 
 notdot owns a standalone Codex app-server child process and its persistent conversation. It does not attach to the desktop GUI's live runtime and does not require its window in front. The installed runtime and valid account sign-in remain dependencies. Its backend is Codex; changing the desktop app to ChatGPT Work or Chat does not switch notdot's engine or provide a Work/Chat conversation bridge. Read-only history viewing is the verified shared use.
@@ -52,7 +67,7 @@ Run scripts/ci-local.sh before committing delivery changes. Do not mark unchecke
 The final Mac launch trial exposed a saved-key read blocking the main thread in macOS Security. Startup now checks only key-entry metadata on a blocking worker, without decrypting the secret. Voice use retains the normal OS credential authorization. The corrected app launches responsively, preserves Ava/hue 195/Bella, and its About screen was visually verified. Local ad-hoc signing seals the development bundle; strict codesign verification passes, without claiming Developer ID or notarization.
 
 
-Wake feature release gate: the new native microphone path needs installed-device permission, unplug/stall, ambient-noise/false-trigger and speaker-echo tests on each OS. Current positive detector fixtures cover UK synthetic speech; one US fixture is a known miss. Keep wake listening opt-in and experimental until user/accent acceptance is established. New bundles include approximately 47 MiB of model/tokenisation/legal resources, including the Whisper wake fallback; checksum verification runs at build time. Rebuild all platform packages from the release revision, audit complete native static-library notices and replace/clear rights for private synthetic test fixtures before public distribution. Earlier local release-preview packages do not contain wake detection.
+Wake feature release gate: the new native microphone path needs installed-device permission, unplug/stall, ambient-noise/false-trigger and speaker-echo tests on each OS. The current proper-name prompt fix passes all three retained synthetic accent fixtures and rejects bare-name and unrelated examples. This does not establish broad hardware or accent reliability; the native Linux physical replay remains inconsistent. Keep wake listening opt-in and experimental until user/accent acceptance is established. New bundles include approximately 47 MiB of model/tokenisation/legal resources, including the Whisper wake fallback; checksum verification runs at build time. Rebuild all platform packages from the release revision, audit complete native static-library notices and replace/clear rights for private synthetic test fixtures before public distribution. Earlier local release-preview packages do not contain wake detection.
 
 ## Optional Windows wake helper gate
 
