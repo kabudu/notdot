@@ -25,13 +25,17 @@ def prepare(output, documents):
     output.mkdir(parents=True)
     (output / '.notdot-generated').write_text(MARKER)
     files = {}
+    allowed_roots = (documents.resolve(), Path('/usr/share/common-licenses').resolve())
     for directory in sorted(documents.iterdir()):
         copyright_file = directory / 'copyright'
         if not copyright_file.is_file():
             continue
+        origin = copyright_file.resolve(strict=True)
+        if not any(origin.is_relative_to(root) for root in allowed_roots) or origin.stat().st_size > 16 * 1024 * 1024:
+            raise ValueError('copyright source escapes the public package notice roots')
         target = output / directory.name / 'copyright'
         target.parent.mkdir()
-        shutil.copyfile(copyright_file, target)
+        shutil.copyfile(origin, target)
         files[str(target.relative_to(output))] = hashlib.sha256(target.read_bytes()).hexdigest()
     if not files:
         raise ValueError('no distro package copyright files found')

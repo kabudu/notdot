@@ -73,7 +73,9 @@ jobs:
           test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/v$RELEASE_VERSION^{commit}")"
           git merge-base --is-ancestor HEAD "origin/${{ github.event.repository.default_branch }}"
       - name: Check bundled dependency notices
-        run: python3 scripts/distribution_notices.py
+        run: |
+          python3 scripts/distribution_notices.py
+          python3 scripts/check_voice_fixtures.py
       - name: Configure generic Windows app CPU floor
         if: runner.os == 'Windows'
         shell: pwsh

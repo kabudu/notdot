@@ -30,3 +30,5 @@ jobs:
           components: rustfmt, clippy
       - name: Run complete local validation
         run: sh scripts/ci-local.sh
+      - name: Exercise the bundled wake model on this native Mac architecture
+        run: cargo test -p notdot-wake-runtime --release --test lifecycle worker_reuses_one_model_process_and_matches_the_shared_engine --locked -- --ignored --exact --test-threads=1
