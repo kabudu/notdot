@@ -28,6 +28,12 @@ class ChangePolicyTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertTrue(requires_full(change(path)))
 
+        # Construct separators explicitly so source/log escaping cannot hide
+        # whether the input contains one Windows separator or two.
+        for separator in (chr(92), chr(92) * 2):
+            with self.subTest(separator_length=len(separator)):
+                self.assertTrue(requires_full(change('docs/file' + separator + 'guide.md')))
+
     def test_deleted_renamed_symlink_executable_and_empty_diffs_require_full(self):
         for raw in [b'', change('README.md', 'D', new='000000'), change('docs/old.md', 'D', new='000000') + change('docs/new.md', 'A', old='000000'), change('README.md', 'T', new='120000'), change('docs/new.md', 'A', old='000000', new='120000'), change('docs/site-assets/site.js', new='100755')]:
             with self.subTest(raw=raw):
