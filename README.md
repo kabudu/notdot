@@ -8,7 +8,7 @@ Talk to an animated orb that listens and replies aloud. notdot works with the Ch
 
 [Download](https://github.com/kabudu/notdot/releases/latest) · [Getting started](#getting-started) · [Privacy](#privacy-and-memory) · [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md) · [Apache 2.0](LICENSE)
 
-## See it in action
+## Voice demo · [elevenlabs.io](https://elevenlabs.io)
 
 A real hands-free exchange, with sound and captions. Turn on sound to hear both voices.
 
@@ -68,6 +68,6 @@ Bug reports, documentation improvements and focused pull requests are welcome. S
 
 ## Licence
 
-notdot’s original source code and artwork are licensed under the [Apache License 2.0](LICENSE). Bundled libraries and models keep their own licences; see [Third-party notices](THIRD_PARTY_NOTICES.md).
+notdot’s original source code and artwork are licensed under the [Apache License 2.0](LICENSE). The demo’s generated reply audio was made on ElevenLabs’ free plan: it is subject to [ElevenLabs’ non-commercial terms](https://elevenlabs.io/docs/help-center/legal/can-i-publish-the-content-i-generate-on-the-platform), and is not included in the Apache licence grant. Bundled libraries and models keep their own licences; see [Third-party notices](THIRD_PARTY_NOTICES.md).
 
 notdot is an independent project and is not affiliated with OpenAI, Deepgram or ElevenLabs.
