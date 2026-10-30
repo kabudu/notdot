@@ -39,8 +39,17 @@ jobs:
         run: python scripts/build_windows_wake_helper.py
       - name: Rebuild generic native decoder with the selected generator
         run: cargo clean -p whisper-rs-sys
-      - name: Test native Windows code and bundled models
-        run: cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --locked
+      - name: Diagnose repeated isolated Windows 48 kHz recognition
+        shell: pwsh
+        run: |
+          $failedRuns = 0
+          1..20 | ForEach-Object {
+            Write-Output "Synthetic 48 kHz fixture attempt $_ of 20"
+            cargo test -p notdot --bin notdot --locked wake::tests::bundled_detector_accepts_48khz_wake_fixture -- --exact --nocapture --test-threads=1
+            if ($LASTEXITCODE -ne 0) { $failedRuns += 1 }
+          }
+          Write-Output "Failed fixture attempts: $failedRuns of 20"
+          if ($failedRuns -ne 0) { exit 1 }
       - name: Check Windows-specific Rust code
         run: cargo clippy -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --all-targets --locked -- -D warnings
       # Observe after acceptance, so the probe cannot prewarm the tested path.
