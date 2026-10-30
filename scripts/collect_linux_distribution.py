@@ -116,6 +116,18 @@ def copy_cached_source(cache, destination, source, version):
     return True
 
 
+def index_installed_files(packages, basenames):
+    installed = {}
+    for package in packages:
+        for value in run('dpkg-query', '-L', package).splitlines():
+            path = Path(value)
+            # dpkg also lists protected state directories unrelated to the image.
+            # Filter metadata first; relevant candidates must remain readable.
+            if path.name in basenames and path.is_file():
+                installed.setdefault(path.name, []).append((package, path))
+    return installed
+
+
 def collect(appdir, output, covered, project, appimage, offset, expected_app_sha256, source_cache=None):
     if not appdir.is_dir() or not (appdir / 'usr/bin/notdot').is_file():
         raise ValueError('AppDir must exist and contain usr/bin/notdot')
@@ -154,13 +166,9 @@ def collect(appdir, output, covered, project, appimage, offset, expected_app_sha
         fields = line.split('\t')
         if len(fields) == 4:
             packages[fields[0]] = dict(zip(('binary', 'version', 'source', 'source_version'), fields))
-    # Index installed paths once; basename narrows the hash comparison.
-    installed = {}
-    for package in packages:
-        for value in run('dpkg-query', '-L', package).splitlines():
-            path = Path(value)
-            if path.is_file():
-                installed.setdefault(path.name, []).append((package, path))
+    # Only bundled file names can contribute a package/source match.
+    basenames = {path.name for path in appdir.rglob('*') if path.is_file() and not path.is_symlink()}
+    installed = index_installed_files(packages, basenames)
     binaries, selected, unknown = [], set(), []
     for path in sorted(appdir.rglob('*')):
         if not path.is_file() or path.is_symlink():
