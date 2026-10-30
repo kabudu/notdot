@@ -23,22 +23,29 @@ The `.deb` depends on distro-provided GTK/WebKit, GStreamer/codecs, audio and sp
 
 ## Linux AppImage
 
-The working media framework is intentionally retained. Its codec pool includes GPL components, so shipping only copyright files or links to upstream home pages is insufficient. Each exact AppImage must have a companion corresponding-source archive at the **same release download location**, containing:
+The working media framework is intentionally retained. Original full common licence texts are tracked in `third_party/linux-common-licenses/`, hash-indexed beside that directory and copied into each AppImage under `usr/share/common-licenses`. The collector verifies their exact presence. This AppImage-only mapping does not overwrite the system-owned common files in Debian packages. Its codec pool includes GPL components, so shipping only copyright files or links to upstream home pages is insufficient. Each exact AppImage must have a companion corresponding-source archive at the **same release download location**, containing:
 
 - the exact notdot revision, lockfile, resources and build scripts, plus vendored locked Rust sources and the pinned native source archives;
 - exact distro source packages, including upstream archives, Debian/Ubuntu patches and build recipes, for every redistributed platform ELF library;
 - package/version-to-file mappings, checksums, original copyright notices and full referenced common licence texts;
 - the retained separate source/notice provenance for notdot's static native components and Rust packages.
 
-Use `scripts/collect_linux_distribution.py` on the **same Debian/Ubuntu builder and AppDir** used for the image. Enable the matching official `deb-src` repositories first. The script fails on unmatched ELF inputs, missing notices, unavailable exact sources or changed tracked application sources. It does not infer licences from filenames. RPATH-patched libraries must retain matching build IDs and matching allocated sections other than the dynamic string/table sections (dynamic symbols are compared semantically); the manifest distinguishes these from byte-identical copies. The excluded tables remain in the actual image and are not presented as byte-identical source provenance.
+Use `scripts/collect_linux_distribution.py` on the **same Debian/Ubuntu builder and AppDir** used for the image. Enable the matching official `deb-src` repositories first. The script fails on unmatched ELF inputs, missing notices, unavailable exact sources, escaping/dangling symlinks, empty/invalid source archives or changed tracked application sources. A known Tauri WebKit `/usr` path relocation is matched narrowly and its modification recipe is retained alongside the original source package. It does not infer licences from filenames. RPATH-patched libraries must retain matching build IDs and matching allocated sections other than the dynamic string/table sections (dynamic symbols are compared semantically); the manifest distinguishes these from byte-identical copies. The excluded tables remain in the actual image and are not presented as byte-identical source provenance.
 
 ```sh
+python3 scripts/prepare_appimage_source_inputs.py \
+  --appdir path/to/AppDir --appimage path/to/notdot.AppImage --squashfs-offset OFFSET \
+  --project path/to/clean/exact-notdot-checkout --output path/to/launcher-sources
 python3 scripts/collect_linux_distribution.py path/to/AppDir path/to/notdot-corresponding-source \
+  --appimage path/to/notdot.AppImage --squashfs-offset OFFSET \
+  --app-binary-sha256 BUILD_RECORD_BINARY_SHA256 \
   --project path/to/clean/exact-notdot-checkout \
-  --separately-covered path/to/reviewed-project-elf-hashes.json
+  --separately-covered path/to/launcher-sources/independently-covered.json
 ```
 
-The separately-covered JSON maps exact hashes only for notdot, its separately inventoried helper/native payload, and independently licensed AppImage launcher inputs to objects containing `notice` and `source` file paths. Both actual files are copied into the source companion; a link or description alone is rejected. An unknown platform library must not be added there to silence a failure. Preserve the JSON with the release record. Publish the resulting `.tar.gz`, checksum and manifest with the AppImage; do not publish a partial output directory from a failed collection. The collector needs `dpkg-dev`, `apt`, `git`, Python 3, Cargo and the same installed packages used by linuxdeploy. A post-build source archive is supplemental to the existing notices, not a replacement.
+The producer checks official AppRun/runtime release assets against the packaged bytes, records immutable source revisions and retains the pinned runtime dependency sources. An unrecognised launcher refuses collection. Runtime metadata slots used by appimagetool are compared separately from executable bytes. The final source manifest binds the exact complete AppImage hash/size, its runtime prefix, executable and source revision.
+
+The separately-covered JSON maps exact hashes only for notdot, its separately inventoried helper/native payload, and independently licensed AppImage launcher inputs to objects containing `notice` and `source` file paths. Both actual files are copied into the source companion; a link or description alone is rejected. An unknown platform library must not be added there to silence a failure. Preserve the JSON with the release record. Publish the resulting `.tar.gz`, checksum and manifest with the AppImage; do not publish a partial output directory from a failed collection. Enable source repositories/install build tools with administrator access first; run the collector as the ordinary build user. The collector needs `dpkg-dev`, `apt`, `git`, Python 3, Cargo and the same installed packages used by linuxdeploy. A post-build source archive is supplemental to the existing notices, not a replacement.
 
 ### Replacing shared libraries
 
