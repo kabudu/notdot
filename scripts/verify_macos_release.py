@@ -5,15 +5,34 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import subprocess
 import tarfile
 import tempfile
+import time
 
 
 def verify_signer(path, team):
     details = subprocess.run(['codesign', '--display', '--verbose=4', str(path)], check=True, capture_output=True, text=True).stderr
     if f'TeamIdentifier={team}' not in details.splitlines() or not any(line.startswith('Authority=Developer ID Application:') for line in details.splitlines()):
         raise ValueError('Release container must use the configured Developer ID team, not ad-hoc signing')
+
+
+def verify_ticket(path):
+    for attempt in range(3):
+        result = subprocess.run(['xcrun', 'stapler', 'validate', str(path)],
+                                capture_output=True, text=True, timeout=120)
+        if result.returncode == 0:
+            return
+        output = (result.stdout or '') + (result.stderr or '')
+        # Validation queries Apple's CloudKit service even for a stapled app.
+        # Retry only the observed transport error; missing/invalid tickets fail.
+        transient = (result.returncode == 68 and 'NSURLErrorDomain' in output
+                     and re.search(r'Code\s*=\s*-1005\b', output))
+        if not transient or attempt == 2:
+            raise RuntimeError(f'Apple ticket validation failed (exit {result.returncode})')
+        print('Temporary Apple ticket-service connection failure; retrying validation.')
+        time.sleep(10)
 
 
 def verify_bundle(app, team, version):
@@ -26,7 +45,7 @@ def verify_bundle(app, team, version):
         raise ValueError('Release app must be universal: arm64 and x86_64')
     subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
     verify_signer(app, team)
-    subprocess.run(['xcrun', 'stapler', 'validate', str(app)], check=True)
+    verify_ticket(app)
     subprocess.run(['spctl', '--assess', '--type', 'execute', str(app)], check=True)
 
 

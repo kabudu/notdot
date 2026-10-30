@@ -4,7 +4,7 @@ import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
-from verify_macos_release import verify_archive
+from verify_macos_release import verify_archive, verify_ticket
 
 
 class MacReleaseArchiveTests(unittest.TestCase):
@@ -65,3 +65,39 @@ class NativeMacArchiveCompatibilityTests(unittest.TestCase):
                 self.assertEqual((unpacked / 'Contents/CodeResources').read_bytes(), ticket.read_bytes())
             with patch('verify_macos_release.verify_bundle', side_effect=verify):
                 verify_archive(archive, 'TEAM', '0.1.0')
+
+
+class TicketValidationTransportTests(unittest.TestCase):
+    def response(self, code, detail=''):
+        import subprocess
+        return subprocess.CompletedProcess([], code, detail, '')
+
+    def test_success_does_not_retry(self):
+        with patch('verify_macos_release.subprocess.run', return_value=self.response(0)) as command, patch('verify_macos_release.time.sleep') as sleep:
+            verify_ticket(Path('/fixture/notdot.app'))
+        self.assertEqual(command.call_count, 1)
+        self.assertEqual(command.call_args.args[0], ['xcrun', 'stapler', 'validate', '/fixture/notdot.app'])
+        sleep.assert_not_called()
+
+    def test_observed_cloudkit_connection_loss_retries_the_same_validation(self):
+        error = 'Error Domain=NSURLErrorDomain Code=-1005 "The network connection was lost."'
+        with patch('verify_macos_release.subprocess.run', side_effect=[self.response(68, error), self.response(0)]) as command, patch('verify_macos_release.time.sleep') as sleep:
+            verify_ticket(Path('/fixture/mounted/notdot.app'))
+        self.assertEqual(command.call_args_list[0], command.call_args_list[1])
+        sleep.assert_called_once_with(10)
+
+    def test_persistent_transport_error_still_fails_after_a_bounded_retry(self):
+        error = 'Error Domain=NSURLErrorDomain Code=-1005 "The network connection was lost."'
+        with patch('verify_macos_release.subprocess.run', return_value=self.response(68, error)) as command, patch('verify_macos_release.time.sleep') as sleep:
+            with self.assertRaisesRegex(RuntimeError, 'exit 68'):
+                verify_ticket(Path('/fixture/notdot.app'))
+        self.assertEqual(command.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_missing_invalid_or_unclassified_ticket_errors_fail_without_retry(self):
+        for code, error in [(65, 'App does not have a ticket stapled'), (68, 'Ticket response is invalid'), (65, 'NSURLErrorDomain Code=-1005')]:
+            with self.subTest(code=code, error=error), patch('verify_macos_release.subprocess.run', return_value=self.response(code, error)) as command, patch('verify_macos_release.time.sleep') as sleep:
+                with self.assertRaisesRegex(RuntimeError, f'exit {code}'):
+                    verify_ticket(Path('/fixture/notdot.app'))
+                self.assertEqual(command.call_count, 1)
+                sleep.assert_not_called()
