@@ -60,6 +60,26 @@ jobs:
           else:
               subprocess.run(['git', 'diff', '--check'], check=True)
           PY
+  release-tools:
+    needs: changes
+    if: github.event.repository.private == false && needs.changes.outputs.full == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2022, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Execute verified official prebuilt tools on this native host
+        run: python scripts/install_release_tools.py
+      - name: Verify real release command discovery
+        run: python scripts/install_release_tools.py --verify-path
   windows-native:
     needs: changes
     if: github.event.repository.private == false && needs.changes.outputs.full == 'true'
@@ -205,7 +225,7 @@ jobs:
   validation:
     name: validation
     if: always()
-    needs: [changes, content, windows-native, windows-metadata, macos, linux-native]
+    needs: [changes, content, release-tools, windows-native, windows-metadata, macos, linux-native]
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:

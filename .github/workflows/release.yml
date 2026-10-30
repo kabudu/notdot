@@ -113,8 +113,10 @@ jobs:
       - run: cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --locked
       - run: cargo clippy -p notdot -p notdot-wake-runtime --all-targets --locked -- -D warnings
       - run: cargo clippy -p notdot-orb --target wasm32-unknown-unknown --locked -- -D warnings
-      - run: cargo install trunk --version 0.22.1 --locked
-      - run: cargo install tauri-cli --version 2.12.4 --locked
+      - name: Install verified prebuilt release tools
+        run: python scripts/install_release_tools.py
+      - name: Verify release commands select the pinned tools
+        run: python scripts/install_release_tools.py --verify-path
       - name: Require updater signing configuration
         shell: bash
         env:

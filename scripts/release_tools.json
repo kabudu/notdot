@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "provenance": [
+    "https://api.github.com/repos/trunk-rs/trunk/releases/tags/v0.22.1",
+    "https://api.github.com/repos/tauri-apps/tauri/releases/tags/tauri-cli-v2.12.4"
+  ],
+  "platforms": {
+    "Windows-x86_64": {
+      "trunk": {
+        "version": "0.22.1",
+        "url": "https://github.com/trunk-rs/trunk/releases/download/v0.22.1/trunk-x86_64-pc-windows-msvc.zip",
+        "sha256": "1cc65012a9df60b02db948f5a3f0601e594ce952efb1cfd23147c9021c9f7d75",
+        "archive_bytes": 8724925,
+        "executable": "trunk.exe",
+        "version_output": "trunk 0.22.1"
+      },
+      "cargo-tauri": {
+        "version": "2.12.4",
+        "url": "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.4/cargo-tauri-x86_64-pc-windows-msvc.zip",
+        "sha256": "3e8687fb184bd7f10ebd8642f7715f79f4a605c0694c142a21507e8a24dc0f8b",
+        "archive_bytes": 7763590,
+        "executable": "cargo-tauri.exe",
+        "version_output": "tauri-cli 2.12.4"
+      }
+    },
+    "Darwin-arm64": {
+      "trunk": {
+        "version": "0.22.1",
+        "url": "https://github.com/trunk-rs/trunk/releases/download/v0.22.1/trunk-aarch64-apple-darwin.tar.gz",
+        "sha256": "18e381936c848700fefb9ee3f64f362419fab700200eefee323ebc0d00a8e9db",
+        "archive_bytes": 8146622,
+        "executable": "trunk",
+        "version_output": "trunk 0.22.1"
+      },
+      "cargo-tauri": {
+        "version": "2.12.4",
+        "url": "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.4/cargo-tauri-aarch64-apple-darwin.zip",
+        "sha256": "f71a34ada728ca2d1a51c28d6d21639e1e080898ec69ec8d49c5da3b7e8bc1be",
+        "archive_bytes": 7795035,
+        "executable": "cargo-tauri",
+        "version_output": "tauri-cli 2.12.4"
+      }
+    },
+    "Linux-x86_64": {
+      "trunk": {
+        "version": "0.22.1",
+        "url": "https://github.com/trunk-rs/trunk/releases/download/v0.22.1/trunk-x86_64-unknown-linux-gnu.tar.gz",
+        "sha256": "2ab8d548fd5ed9cda50906f61fd8654204e7893bd52ebbfd90533862b7d71ee1",
+        "archive_bytes": 9587760,
+        "executable": "trunk",
+        "version_output": "trunk 0.22.1"
+      },
+      "cargo-tauri": {
+        "version": "2.12.4",
+        "url": "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.4/cargo-tauri-x86_64-unknown-linux-gnu.tgz",
+        "sha256": "820ae3c7580ca637cad15f65638960ee2a96e5a491e224691c86d6f25e6c9e8a",
+        "archive_bytes": 9038200,
+        "executable": "cargo-tauri",
+        "version_output": "tauri-cli 2.12.4"
+      }
+    }
+  }
+}
