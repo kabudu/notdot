@@ -571,12 +571,20 @@ impl Microphone {
         let (sender, receiver) = mpsc::sync_channel(MIC_QUEUE_PACKETS);
         let failed = Arc::new(AtomicU8::new(0));
         let (error_sender, errors) = mpsc::sync_channel(1);
-        let stream = match format {
-            cpal::SampleFormat::F32 => input::<f32>(&device, &cfg, sender, failed.clone(), error_sender),
-            cpal::SampleFormat::I16 => input::<i16>(&device, &cfg, sender, failed.clone(), error_sender),
-            cpal::SampleFormat::U16 => input::<u16>(&device, &cfg, sender, failed.clone(), error_sender),
-            _ => return Err("Unsupported microphone sample format".into()),
-        }.map_err(|_| "Microphone could not start. Check OS microphone permission and the selected input device.")?;
+        if !matches!(
+            format,
+            cpal::SampleFormat::F32 | cpal::SampleFormat::I16 | cpal::SampleFormat::U16
+        ) {
+            return Err("Unsupported microphone sample format".into());
+        }
+        let stream = build_capture_stream(&cfg, cfg!(target_os = "windows"), |candidate| {
+            match format {
+                cpal::SampleFormat::F32 => input::<f32>(&device, candidate, sender.clone(), failed.clone(), error_sender.clone()),
+                cpal::SampleFormat::I16 => input::<i16>(&device, candidate, sender.clone(), failed.clone(), error_sender.clone()),
+                cpal::SampleFormat::U16 => input::<u16>(&device, candidate, sender.clone(), failed.clone(), error_sender.clone()),
+                _ => unreachable!("sample format validated above"),
+            }
+        }).map_err(|_| "Microphone could not start. Check OS microphone permission and the selected input device.")?;
         stream.play().map_err(|_| "Microphone could not start")?;
         Ok(Self {
             _stream: stream,
@@ -585,6 +593,24 @@ impl Microphone {
             failed,
             rate: cfg.sample_rate,
         })
+    }
+}
+fn build_capture_stream<T>(
+    config: &cpal::StreamConfig,
+    windows: bool,
+    mut build: impl FnMut(&cpal::StreamConfig) -> Result<T, cpal::Error>,
+) -> Result<T, cpal::Error> {
+    if !windows {
+        return build(config);
+    }
+    // WASAPI's reported software buffer range is its callback period, not the
+    // ring capacity. Keep that period and the default format; request 100 ms of
+    // ring headroom so remote-input scheduling jitter does not discard speech.
+    let mut preferred = *config;
+    preferred.buffer_size = cpal::BufferSize::Fixed(config.sample_rate.div_ceil(10));
+    match build(&preferred) {
+        Err(error) if error.kind() == cpal::ErrorKind::UnsupportedConfig => build(config),
+        result => result,
     }
 }
 fn input<T>(
@@ -1366,6 +1392,109 @@ mod tests {
     }
 
     #[test]
+    fn windows_capture_headroom_preserves_format_and_rounds_up_to_one_tenth_second() {
+        for rate in [8000_u32, 11025, 44100, 48000, 192000] {
+            let config = cpal::StreamConfig {
+                channels: 2,
+                sample_rate: rate,
+                buffer_size: cpal::BufferSize::Default,
+            };
+            let mut calls = 0;
+            build_capture_stream(&config, true, |requested| {
+                calls += 1;
+                assert_eq!(requested.channels, config.channels);
+                assert_eq!(requested.sample_rate, config.sample_rate);
+                let cpal::BufferSize::Fixed(frames) = requested.buffer_size else {
+                    panic!("headroom must be requested");
+                };
+                assert!(frames * 10 >= rate);
+                assert!((frames - 1) * 10 < rate);
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(calls, 1);
+            assert_eq!(config.buffer_size, cpal::BufferSize::Default);
+        }
+    }
+    #[test]
+    fn capture_headroom_falls_back_once_only_for_a_rejected_configuration() {
+        let config = cpal::StreamConfig {
+            channels: 2,
+            sample_rate: 44100,
+            buffer_size: cpal::BufferSize::Default,
+        };
+        let mut attempts = Vec::new();
+        let result: Result<(), _> = build_capture_stream(&config, true, |requested| {
+            attempts.push(*requested);
+            Err(cpal::Error::with_message(
+                if attempts.len() == 1 {
+                    cpal::ErrorKind::UnsupportedConfig
+                } else {
+                    cpal::ErrorKind::PermissionDenied
+                },
+                "synthetic build rejection",
+            ))
+        });
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].buffer_size, cpal::BufferSize::Fixed(4410));
+        assert_eq!(attempts[1], config);
+        assert_eq!(
+            result.unwrap_err().kind(),
+            cpal::ErrorKind::PermissionDenied
+        );
+        let mut calls = 0;
+        let stream = build_capture_stream(&config, true, |requested| {
+            calls += 1;
+            if calls == 1 {
+                Err(cpal::Error::with_message(
+                    cpal::ErrorKind::UnsupportedConfig,
+                    "synthetic buffer rejection",
+                ))
+            } else {
+                assert_eq!(*requested, config);
+                Ok("default stream")
+            }
+        })
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(stream, "default stream");
+        for kind in [
+            cpal::ErrorKind::PermissionDenied,
+            cpal::ErrorKind::DeviceBusy,
+            cpal::ErrorKind::HostUnavailable,
+            cpal::ErrorKind::BackendError,
+        ] {
+            let mut calls = 0;
+            let result: Result<(), _> = build_capture_stream(&config, true, |_| {
+                calls += 1;
+                Err(cpal::Error::with_message(kind, "synthetic device failure"))
+            });
+            assert_eq!(calls, 1);
+            assert_eq!(result.unwrap_err().kind(), kind);
+        }
+    }
+    #[test]
+    fn other_platforms_keep_the_original_buffer_and_do_not_retry() {
+        for buffer_size in [cpal::BufferSize::Default, cpal::BufferSize::Fixed(512)] {
+            let config = cpal::StreamConfig {
+                channels: 1,
+                sample_rate: 48000,
+                buffer_size,
+            };
+            let mut calls = 0;
+            let result: Result<(), _> = build_capture_stream(&config, false, |requested| {
+                calls += 1;
+                assert_eq!(*requested, config);
+                Err(cpal::Error::with_message(
+                    cpal::ErrorKind::UnsupportedConfig,
+                    "synthetic unsupported input",
+                ))
+            });
+            assert!(result.is_err());
+            assert_eq!(calls, 1);
+        }
+    }
+    #[test]
     fn recoverable_audio_notifications_do_not_disconnect_the_microphone() {
         use cpal::ErrorKind;
         for advisory in [
@@ -1449,6 +1578,93 @@ mod tests {
         }
         detected
     }
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "explicit local microphone lease; aggregate diagnostics only, no audio retention or providers"]
+    fn linux_microphone_to_detector_metadata_diagnostic() {
+        assert_eq!(
+            std::env::var("NOTDOT_LINUX_WAKE_MIC_DIAGNOSTIC").as_deref(),
+            Ok("1")
+        );
+        let _models = model_fixture_guard();
+        let phrase =
+            std::env::var("NOTDOT_WAKE_DIAGNOSTIC_PHRASE").unwrap_or_else(|_| "Hey ava".into());
+        let mut detector = Detector::new(&models(), &phrase).unwrap();
+        let microphone = Microphone::open().unwrap();
+        let started = Instant::now();
+        let utc_ms = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        };
+        let mut frames = 0u64;
+        let mut total_samples = 0usize;
+        let mut sum_squares = 0f64;
+        let mut peak_rms = 0f32;
+        let mut matches = 0u64;
+        let mut last_frame = None;
+        let mut max_gap_ms = 0u128;
+        let mut last_report = Instant::now();
+        eprintln!(
+            "wake_mic_ready utc_ms={} rate={} duration_ms=10000",
+            utc_ms(),
+            microphone.rate
+        );
+        while started.elapsed() < Duration::from_secs(10) {
+            if let Ok(samples) = microphone.receiver.recv_timeout(Duration::from_millis(50)) {
+                let now = Instant::now();
+                if let Some(last) = last_frame {
+                    max_gap_ms = max_gap_ms.max(now.duration_since(last).as_millis());
+                }
+                last_frame = Some(now);
+                frames += 1;
+                total_samples += samples.len();
+                sum_squares += samples.iter().map(|s| f64::from(*s).powi(2)).sum::<f64>();
+                peak_rms = peak_rms.max(energy(&samples));
+                if detector.accept(microphone.rate, &samples) {
+                    matches += 1;
+                }
+            }
+            if last_report.elapsed() >= Duration::from_millis(500) {
+                eprintln!(
+                    "wake_mic_metrics utc_ms={} frames={} rms={} peak_frame_rms={} max_gap_ms={} candidates={} rejected_energy={} rejected_prefix={} fallback_busy={} fallback_backend={} fallback_error={} mic_failed={} matches={}",
+                    utc_ms(),
+                    frames,
+                    (sum_squares / total_samples.max(1) as f64).sqrt(),
+                    peak_rms,
+                    max_gap_ms,
+                    detector.candidates,
+                    detector.rejected_energy,
+                    detector.rejected_prefix,
+                    detector.fallback.is_busy(),
+                    detector.fallback.backend(),
+                    detector.fallback.error.is_some(),
+                    microphone.failed.load(Ordering::Relaxed),
+                    matches
+                );
+                last_report = Instant::now();
+            }
+        }
+        assert_eq!(
+            microphone.failed.load(Ordering::Relaxed),
+            0,
+            "native microphone failed"
+        );
+        assert!(frames > 0, "native microphone supplied no frames");
+        eprintln!(
+            "wake_mic_finished utc_ms={} frames={} matches={} candidates={} rejected_energy={} rejected_prefix={} fallback_busy={} fallback_error={}",
+            utc_ms(),
+            frames,
+            matches,
+            detector.candidates,
+            detector.rejected_energy,
+            detector.rejected_prefix,
+            detector.fallback.is_busy(),
+            detector.fallback.error.is_some()
+        );
+    }
+
     #[test]
     #[ignore = "private local human fixture; audio must not be committed"]
     fn local_human_wake_fixture() {
