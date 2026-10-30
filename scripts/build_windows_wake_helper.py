@@ -21,6 +21,24 @@ FLAGS = {"GGML_NATIVE": "OFF", "GGML_SSE42": "ON", "GGML_AVX": "ON",
          "GGML_BMI2": "ON", "GGML_AVX512": "OFF", "GGML_AVX_VNNI": "OFF"}
 GUARD = "/clang:-mno-fsgsbase /clang:-mno-invpcid /clang:-mno-sahf"
 
+
+def optimized_build(cache):
+    values = {}
+    for line in cache.splitlines():
+        if '=' in line and not line.startswith(('#', '//')):
+            key, value = line.split('=', 1)
+            values[key.split(':', 1)[0]] = value
+    if values.get('CMAKE_GENERATOR') != 'Ninja':
+        raise ValueError('The guarded helper must use the explicit Ninja compiler path')
+    profile = values.get('CMAKE_BUILD_TYPE', '')
+    if profile not in ('Release', 'RelWithDebInfo'):
+        raise ValueError('The guarded helper must use an optimized build profile')
+    flags = values.get('CMAKE_CXX_FLAGS', '') + ' ' + values.get('CMAKE_CXX_FLAGS_' + profile.upper(), '')
+    if not re.search(r'(?:^|\s)(?:/O2|/Ox|-O[23])(?:\s|$)', flags) or re.search(r'(?:^|\s)(?:/Od|-O0)(?:\s|$)', flags):
+        raise ValueError('The guarded helper is missing effective C++ optimization')
+    return {'generator': values['CMAKE_GENERATOR'], 'build_type': profile,
+            'cxx_flags': flags.strip(), 'cxx_compiler': values.get('CMAKE_CXX_COMPILER', '')}
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target-dir", type=Path, default=ROOT / ".local/windows-wake-helper-target")
@@ -53,7 +71,13 @@ def main():
     else:
         if not shutil.which("clang-cl"):
             raise SystemExit("clang-cl is required for the guarded helper build")
-        env.update(CC="clang-cl", CXX="clang-cl", CMAKE_C_COMPILER="clang-cl", CMAKE_CXX_COMPILER="clang-cl")
+        if not shutil.which("ninja"):
+            raise SystemExit("Ninja is required for the guarded helper build")
+        # The cmake crate's implicit Visual Studio path replaces release flags
+        # with non-optimizing flags and can select a different compiler. Use the
+        # same explicit compiler/generator path as the validated cross-build.
+        env.update(CC="clang-cl", CXX="clang-cl", CMAKE_C_COMPILER="clang-cl",
+                   CMAKE_CXX_COMPILER="clang-cl", CMAKE_GENERATOR="Ninja")
         cmd = ["cargo", *base, "--target-dir", str(target)]
     # Fresh dedicated caches are safest. When reusing an earlier helper cache,
     # discard only its native decoder outputs so changed flags cannot be hidden.
@@ -68,6 +92,7 @@ def main():
     if not caches:
         raise SystemExit("Missing native helper build evidence")
     cache = max(caches, key=lambda path: path.stat().st_mtime).read_text()
+    native_build = optimized_build(cache)
     for key, value in FLAGS.items():
         if not re.search(rf"^{key}:[^=]+={value}$", cache, re.M):
             raise SystemExit(f"Unexpected helper build flag: {key}")
@@ -88,7 +113,8 @@ def main():
     pending.write_bytes(data)
     pending.replace(destination / "notdot-wake-helper.exe")
     metadata = {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data), "protocol": 1,
-                "ggml_flags": FLAGS, "compiler_exclusions": GUARD.split()}
+                "ggml_flags": FLAGS, "compiler_exclusions": GUARD.split(),
+                "native_build": native_build}
     (destination / "BUILD.json").write_text(json.dumps(metadata, indent=2) + "\n")
     print(json.dumps(metadata))
 
