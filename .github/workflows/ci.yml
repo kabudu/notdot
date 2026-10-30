@@ -67,7 +67,9 @@ jobs:
           key: release-x86_64-unknown-linux-gnu-generic-v1
           env-vars: GGML_ MACOSX_DEPLOYMENT_TARGET
           cache-on-failure: true
-      - name: Build unchanged Linux test executable
+      - name: Rebuild the cached native library with the corrected ABI
+        run: cargo clean -p whisper-rs-sys
+      - name: Build Linux test executable
         run: |
           mkdir -p .local/linux-diagnostic
           cargo test -p notdot --bin notdot --locked --no-run --message-format=json > .local/linux-diagnostic/build.jsonl

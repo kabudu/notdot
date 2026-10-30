@@ -8,3 +8,10 @@ rustflags = ["-C", "target-feature=+crt-static"]
 [env]
 CMAKE_POLICY_DEFAULT_CMP0091 = "NEW"
 CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreaded"
+
+# The pinned sherpa-onnx Linux x64 archive uses libstdc++'s original string ABI.
+# Its regex internals export weak symbols that also occur in whisper.cpp; mixing
+# string layouts can corrupt memory during model setup even with a C-only API.
+# Apply this only to GNU/Linux x64 C++ compilation. The ARM archive already
+# uses the modern ABI; leave ARM, Apple and MSVC unchanged.
+CXXFLAGS_x86_64_unknown_linux_gnu = "-D_GLIBCXX_USE_CXX11_ABI=0"
