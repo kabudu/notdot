@@ -49,3 +49,32 @@ jobs:
         run: sh scripts/ci-local.sh
       - name: Exercise the bundled wake model on this native Mac architecture
         run: cargo test -p notdot-wake-runtime --release --test lifecycle worker_reuses_one_model_process_and_matches_the_shared_engine --locked -- --ignored --exact --test-threads=1
+  linux-native:
+    if: github.event.repository.private == false
+    runs-on: ubuntu-22.04
+    env:
+      GGML_NATIVE: "OFF"
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.97.0
+          components: clippy
+      - name: Linux prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libssl-dev libdbus-1-dev libasound2-dev
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          key: validation-linux-x64-cpp-abi0-v1
+          env-vars: GGML_ MACOSX_DEPLOYMENT_TARGET
+          cache-on-failure: true
+      # The pinned whisper-rs-sys build script does not track CXXFLAGS changes.
+      # Rebuild this small native package so restored caches cannot mix string ABIs.
+      - name: Rebuild the native C++ boundary
+        run: cargo clean -p whisper-rs-sys
+      - name: Test Linux code and the bundled wake models
+        run: cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --locked
+      - name: Check Linux-specific Rust code
+        run: cargo clippy -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --all-targets --locked -- -D warnings
