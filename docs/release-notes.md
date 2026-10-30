@@ -1,4 +1,4 @@
-Talk to notdot through a desktop orb that listens, replies aloud and keeps your conversation going with ChatGPT Codex.
+Talk to notdot through a desktop orb that listens and replies aloud using ChatGPT Codex.
 
 - **Speak hands-free.** Use your chosen wake phrase, or click once and pause when you finish.
 - **Choose a voice.** Search and preview voices, with separate choices for speech recognition and replies.

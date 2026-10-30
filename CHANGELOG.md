@@ -1,15 +1,15 @@
 # Changelog
 
-## Unreleased
+## [0.1.0] - 2026-10-30
 
-- Meet notdot: a voice-only desktop companion with a personalisable orb and a continuing Codex conversation.
-- Speak after one click or use a local wake phrase. Requests send automatically after a short pause.
-- Choose Deepgram or ElevenLabs speech recognition, and hear replies before the full answer is finished.
-- Keep useful memories, confirm new spoken notes, and manage reminders and quiet hours.
-- Choose your voice, model and thinking level in clearer, collapsible Settings.
-- Enjoy smoother orb motion and improved keyboard access, including Command–Q on macOS.
-- Improve cancellation, microphone recovery and saved-key handling, with clearer error messages.
-- Check for updates from the app menu, with automatic checks and permission before installation.
-- Add a website and getting-started guides.
+Talk to notdot through a desktop orb that listens and replies aloud using ChatGPT Codex.
 
-Development preview. Platform testing and public distribution are still in progress; see [release readiness](docs/release-readiness.md).
+- **Speak hands-free.** Use your chosen wake phrase, or click once and pause when you finish.
+- **Choose a voice.** Search and preview voices, with separate choices for speech recognition and replies.
+- **Control memory.** Review, edit, forget or reset saved notes, and choose whether notdot learns useful context.
+- **Make it yours.** Set the name, orb colour, reminders and startup preferences.
+- **Stay up to date.** Get update notices and choose when to install, with progress and automatic restart.
+
+Download the universal Mac disk image for Apple Silicon or Intel, the Windows installer, or the Linux AppImage or Debian package. Windows installers do not have publisher signing. Linux corresponding sources and third-party terms accompany the downloads.
+
+You need Codex signed into your account and your own speech-service keys. See the [setup guide](https://github.com/kabudu/notdot/blob/master/docs/guide.md) and [Settings guide](https://github.com/kabudu/notdot/blob/master/docs/settings.md).

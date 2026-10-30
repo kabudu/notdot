@@ -184,4 +184,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ inputs.version }}
-        run: gh release create "v$RELEASE_VERSION" staged/* --draft --verify-tag --title "notdot $RELEASE_VERSION" --notes-file docs/release-notes.md
+        run: |
+          python3 scripts/release_notes.py "$RELEASE_VERSION" --output .local/release-notes.md
+          gh release create "v$RELEASE_VERSION" staged/* --draft --verify-tag --title "notdot $RELEASE_VERSION" --notes-file .local/release-notes.md
