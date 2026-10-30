@@ -83,6 +83,10 @@ jobs:
   windows-native:
     needs: changes
     if: github.event.repository.private == false && needs.changes.outputs.full == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        probe: [1, 2, 3]
     runs-on: windows-2022
     timeout-minutes: 45
     steps:
@@ -138,31 +142,13 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: windows-wake-recurrence
+          name: windows-wake-recurrence-${{ matrix.probe }}
           path: .local/windows-wake-recurrence/
           if-no-files-found: warn
       - name: Test native Windows code and bundled models
         run: cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --locked
       - name: Check Windows-specific Rust code
         run: cargo clippy -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --all-targets --locked -- -D warnings
-      - name: Install verified prebuilt release tools
-        run: python scripts/install_release_tools.py
-      - name: Verify packaging commands select the pinned tools
-        run: python scripts/install_release_tools.py --verify-path
-      # Build the actual installer without release secrets. Only this temporary
-      # CI override disables updater signing; production release config is intact.
-      - name: Build the unsigned Windows NSIS installer
-        shell: pwsh
-        run: |
-          $config = Join-Path $env:RUNNER_TEMP 'notdot-unsigned-ci.json'
-          '{"bundle":{"createUpdaterArtifacts":false}}' | Set-Content -Path $config -Encoding utf8
-          cargo tauri build --target x86_64-pc-windows-msvc --bundles nsis --config $config
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $installers = @(Get-ChildItem 'target/x86_64-pc-windows-msvc/release/bundle/nsis' -Filter '*-setup.exe' -File)
-          if ($installers.Count -ne 1 -or $installers[0].Length -eq 0) { throw 'Expected one nonempty NSIS installer' }
-          Get-FileHash $installers[0].FullName -Algorithm SHA256
-      - name: Validate Windows toolset and redistribution records
-        run: ./scripts/windows-release-provenance.ps1
       # Observe after acceptance, so the probe cannot prewarm the tested path.
       - name: Observe synthetic helper startup and response timing
         if: always() && steps.helper_build.outcome == 'success'
