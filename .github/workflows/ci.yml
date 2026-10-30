@@ -28,6 +28,11 @@ jobs:
           toolchain: 1.97.0
           targets: wasm32-unknown-unknown
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: validation-${{ matrix.os }}-generic-v1
+          env-vars: GGML_ MACOSX_DEPLOYMENT_TARGET
+          cache-on-failure: true
       - name: Run complete local validation
         run: sh scripts/ci-local.sh
       - name: Exercise the bundled wake model on this native Mac architecture

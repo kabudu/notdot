@@ -81,6 +81,11 @@ jobs:
         shell: pwsh
         run: |
           @('GGML_NATIVE', 'GGML_SSE42', 'GGML_AVX', 'GGML_AVX2', 'GGML_FMA', 'GGML_F16C', 'GGML_BMI2', 'GGML_AVX_VNNI', 'GGML_AVX512', 'GGML_AVX512_VBMI', 'GGML_AVX512_VNNI', 'GGML_AVX512_BF16', 'GGML_AMX_TILE', 'GGML_AMX_INT8', 'GGML_AMX_BF16') | ForEach-Object { Add-Content -Path $env:GITHUB_ENV -Value "$_=OFF" }
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: release-${{ matrix.target }}-generic-v1
+          env-vars: GGML_ MACOSX_DEPLOYMENT_TARGET
+          cache-on-failure: true
       - name: Prepare optional guarded Windows wake helper
         if: runner.os == 'Windows'
         run: python scripts/build_windows_wake_helper.py

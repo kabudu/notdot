@@ -1848,7 +1848,11 @@ mod tests {
         let mut input = vec![0.; 8000];
         input.extend(audio("hey-ava.wav"));
         input.extend(vec![0.; 16000]);
+        // Model setup can outlast an idle lease on a cold runner. Drive the
+        // frontend readiness boundary while feeding audio, as the live UI does.
+        wake.inner.lock().unwrap().lease = Some(Instant::now() - Duration::from_secs(4));
         for frame in input.chunks(320) {
+            wake.ready(true);
             worker.frame(&wake.inner, frame, 16000, 1, 0);
             if worker.capture.is_some() {
                 break;
@@ -1870,17 +1874,23 @@ mod tests {
         );
         let request = audio("negative.wav");
         for frame in request.chunks(320) {
+            wake.ready(true);
             assert!(!worker.frame(&wake.inner, frame, 16000, 1, 0));
         }
         let mut submitted = false;
         for _ in 0..100 {
+            wake.ready(true);
             if worker.frame(&wake.inner, &[0.; 320], 16000, 1, 0) {
                 submitted = true;
                 break;
             }
         }
         assert!(submitted);
-        let id = wake.status().request_id.unwrap();
+        wake.ready(true);
+        let id = wake
+            .status()
+            .request_id
+            .expect("completed request with a live lease");
         let bytes = wake.take(id).unwrap();
         let reader = hound::WavReader::new(Cursor::new(bytes)).unwrap();
         let samples: Vec<i16> = reader.into_samples().map(Result::unwrap).collect();
