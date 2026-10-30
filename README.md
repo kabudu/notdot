@@ -6,7 +6,7 @@
 
 Talk to an animated orb that listens and replies aloud. notdot works with the ChatGPT Codex app and can remember useful details with your permission.
 
-[Download](https://github.com/kabudu/notdot/releases/latest) · [Getting started](#getting-started) · [Privacy](#privacy-and-memory) · [Contributing](CONTRIBUTING.md) · [Apache 2.0](LICENSE)
+[Download](https://github.com/kabudu/notdot/releases/latest) · [Getting started](#getting-started) · [Privacy](#privacy-and-memory) · [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md) · [Apache 2.0](LICENSE)
 
 ## What you can do
 
