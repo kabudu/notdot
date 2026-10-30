@@ -1160,6 +1160,7 @@ fn main() {
             }
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
+                let _ = w.unminimize();
                 let _ = w.set_focus();
             }
         }))
@@ -1398,6 +1399,7 @@ fn main() {
                 "check-updates" => {
                     if let Some(w) = app.get_webview_window("main") {
                         let _ = w.show();
+                        let _ = w.unminimize();
                         let _ = w.set_focus();
                         let _ = w.eval("window.dispatchEvent(new Event('notdot-updates'))");
                     }
@@ -1425,6 +1427,7 @@ fn main() {
                 "about" => {
                     if let Some(w) = app.get_webview_window("main") {
                         let _ = w.show();
+                        let _ = w.unminimize();
                         let _ = w.set_focus();
                         let _ = w.eval("window.dispatchEvent(new Event('notdot-about'))");
                     }
@@ -1432,6 +1435,7 @@ fn main() {
                 "settings" => {
                     if let Some(w) = app.get_webview_window("main") {
                         let _ = w.show();
+                        let _ = w.unminimize();
                         let _ = w.set_focus();
                         let _ = w.eval("window.dispatchEvent(new Event('notdot-settings'))");
                     }
