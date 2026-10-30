@@ -112,6 +112,36 @@ def prepare_component(root, repo, asset_name, actual, runtime=False):
     return {'notice': str((component / 'NOTICE').resolve()), 'source': str(archive_path.resolve())}
 
 
+def validate_binary_notices(project, appdir, inputs):
+    manifest = json.loads((project / 'third_party/appimage-runtime.json').read_text())
+    for name, record in manifest['files'].items():
+        expected = record['sha256']
+        for path in (project / 'third_party/appimage-runtime' / name,
+                     appdir / 'usr/share/doc/notdot/appimage-runtime' / name):
+            if sha(path) != expected:
+                raise ValueError('shipped runtime notice differs from retained original: ' + name)
+        origin = record['origin']
+        if origin.get('notdot_authored'):
+            continue
+        component = (origin.get('component_file') or origin['component_archive']).split('/')[0]
+        if 'revision' in origin:
+            release = json.loads((inputs / component / 'release.json').read_text())
+            if release['target_commitish'] != origin['revision']:
+                raise ValueError('runtime notice source revision mismatch: ' + name)
+        if 'component_file' in origin:
+            payload = (inputs / origin['component_file']).read_bytes()
+        else:
+            with tarfile.open(inputs / origin['component_archive']) as archive:
+                members = [m for m in archive if m.isfile() and m.name.endswith('/' + origin['member_suffix'])]
+                if len(members) != 1:
+                    raise ValueError('ambiguous original notice source: ' + name)
+                payload = archive.extractfile(members[0]).read()
+        if origin.get('first_comment'):
+            payload = payload[:payload.index(b'*/') + 2] + b'\n'
+        if hashlib.sha256(payload).hexdigest() != expected:
+            raise ValueError('retained notice differs from matching upstream source: ' + name)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--appdir', type=Path, required=True)
@@ -136,6 +166,7 @@ def main():
         runtime = stream.read(args.squashfs_offset)
     covered[hashlib.sha256(runtime).hexdigest()] = prepare_component(
         args.output, 'AppImage/type2-runtime', 'runtime-x86_64', runtime, runtime=True)
+    validate_binary_notices(args.project, args.appdir, args.output)
     (args.output / 'independently-covered.json').write_text(json.dumps(covered, indent=2) + '\n')
     print(args.output / 'independently-covered.json')
 
