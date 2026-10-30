@@ -23,15 +23,17 @@ fn generic_context(path: &Path) -> Result<WhisperContext, String> {
     WhisperContext::new_with_params(path, params)
         .map_err(|_| "Could not load the bundled local wake recognizer".into())
 }
+#[cfg(windows)]
+struct AcceleratedDecoder {
+    runtime: tokio::runtime::Runtime,
+    client: Option<notdot_wake_runtime::client::Client>,
+    resource_root: std::path::PathBuf,
+    model: std::path::PathBuf,
+}
 enum Decoder {
     Generic(WhisperContext),
     #[cfg(windows)]
-    Accelerated {
-        runtime: tokio::runtime::Runtime,
-        client: Option<notdot_wake_runtime::client::Client>,
-        resource_root: std::path::PathBuf,
-        model: std::path::PathBuf,
-    },
+    Accelerated(Box<AcceleratedDecoder>),
     #[cfg(windows)]
     GenericPending(std::path::PathBuf),
 }
@@ -44,22 +46,19 @@ impl Decoder {
                 root,
                 digest,
                 notdot_wake_runtime::package::capable_cpu(),
-            ) {
-                if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
-                    if let Ok(client) = runtime.block_on(
-                        notdot_wake_runtime::client::Client::start(&helper, model, phrase),
-                    ) {
-                        return Ok(Self::Accelerated {
-                            runtime,
-                            client: Some(client),
-                            resource_root: root.to_owned(),
-                            model: model.to_owned(),
-                        });
-                    }
-                }
+            ) && let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                && let Ok(client) = runtime.block_on(notdot_wake_runtime::client::Client::start(
+                    &helper, model, phrase,
+                ))
+            {
+                return Ok(Self::Accelerated(Box::new(AcceleratedDecoder {
+                    runtime,
+                    client: Some(client),
+                    resource_root: root.to_owned(),
+                    model: model.to_owned(),
+                })));
             }
         }
         #[cfg(not(windows))]
@@ -70,7 +69,7 @@ impl Decoder {
         match self {
             Self::Generic(_) => "generic",
             #[cfg(windows)]
-            Self::Accelerated { .. } => "accelerated",
+            Self::Accelerated(_) => "accelerated",
             #[cfg(windows)]
             Self::GenericPending(_) => "generic",
         }
@@ -94,12 +93,13 @@ impl Decoder {
         match self {
             Self::Generic(context) => recognize(context, phrase, samples, rate, epoch, expected),
             #[cfg(windows)]
-            Self::Accelerated {
-                runtime,
-                client,
-                resource_root,
-                model,
-            } => {
+            Self::Accelerated(accelerated) => {
+                let AcceleratedDecoder {
+                    runtime,
+                    client,
+                    resource_root,
+                    model,
+                } = accelerated.as_mut();
                 let audio = notdot_wake_runtime::engine::normalize(samples, rate)?;
                 let start = Instant::now();
                 let result = runtime.block_on(async {
@@ -154,12 +154,10 @@ impl Decoder {
 impl Decoder {
     fn shutdown(&mut self) -> bool {
         #[cfg(windows)]
-        if let Self::Accelerated {
-            runtime, client, ..
-        } = self
-            && let Some(mut client) = client.take()
+        if let Self::Accelerated(accelerated) = self
+            && let Some(mut client) = accelerated.client.take()
         {
-            return runtime.block_on(client.shutdown());
+            return accelerated.runtime.block_on(client.shutdown());
         }
         true
     }
