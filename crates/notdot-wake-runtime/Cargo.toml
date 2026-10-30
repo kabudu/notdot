@@ -6,6 +6,8 @@ license.workspace = true
 publish = false
 [features]
 accelerated = []
+# Temporary CI synthetic fixtures only; never enable in distributed binaries.
+synthetic-diagnostics = []
 [dependencies]
 whisper-rs = { version = "=0.16.0", default-features = false }
 rubato = { version = "=0.16.2", default-features = false }

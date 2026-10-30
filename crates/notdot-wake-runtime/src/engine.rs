@@ -10,6 +10,11 @@ use std::{
     time::{Duration, Instant},
 };
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext};
+#[cfg(feature = "synthetic-diagnostics")]
+pub(crate) fn synthetic_diagnostics_enabled() -> bool {
+    std::env::var("NOTDOT_SYNTHETIC_WAKE_DIAGNOSTICS").as_deref() == Ok("synthetic-ci")
+}
+
 #[derive(Clone, Copy)]
 pub struct DecodeLimits {
     pub budget: Duration,
@@ -37,6 +42,20 @@ pub fn recognize(
         return Ok(false);
     }
     let audio = normalize(samples, rate)?;
+    #[cfg(feature = "synthetic-diagnostics")]
+    if synthetic_diagnostics_enabled() {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        for sample in &audio {
+            hash.update(sample.to_le_bytes());
+        }
+        eprintln!(
+            "synthetic_wake_input pid={} rate={rate} normalized_count={} sha256={:x}",
+            std::process::id(),
+            audio.len(),
+            hash.finalize()
+        );
+    }
     let mut state = context.create_state().map_err(|e| e.to_string())?;
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     params.set_n_threads(limits.threads);
@@ -79,10 +98,34 @@ pub fn recognize(
     }
     let mut text = String::new();
     for segment in state.as_iter() {
+        #[cfg(feature = "synthetic-diagnostics")]
+        if synthetic_diagnostics_enabled() {
+            let bounded = segment
+                .to_str()
+                .unwrap_or("<invalid UTF-8>")
+                .chars()
+                .take(256)
+                .collect::<String>();
+            eprintln!(
+                "synthetic_wake_segment pid={} no_speech={} text={bounded:?} addressed={} rejected_no_speech={}",
+                std::process::id(),
+                segment.no_speech_probability(),
+                addressed(&bounded, phrase),
+                segment.no_speech_probability() > 0.6
+            );
+        }
         if segment.no_speech_probability() > 0.6 {
             return Ok(false);
         }
         text.push_str(segment.to_str().map_err(|e| e.to_string())?);
+    }
+    #[cfg(feature = "synthetic-diagnostics")]
+    if synthetic_diagnostics_enabled() {
+        eprintln!(
+            "synthetic_wake_result pid={} addressed={}",
+            std::process::id(),
+            addressed(&text, phrase)
+        );
     }
     Ok(addressed(&text, phrase))
 }

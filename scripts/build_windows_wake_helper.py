@@ -43,6 +43,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target-dir", type=Path, default=ROOT / ".local/windows-wake-helper-target")
     parser.add_argument("--container-image", help="Optional existing cargo-xwin/LLVM20 image for a non-Windows host")
+    parser.add_argument("--synthetic-diagnostics", action="store_true", help="Temporary CI synthetic-fixture instrumentation; never distribute")
     args = parser.parse_args()
     target = args.target_dir.resolve()
     forbidden = {ROOT / "target", ROOT / ".local/windows-e2e/target"}
@@ -58,7 +59,7 @@ def main():
     env.update(CMAKE_C_FLAGS=GUARD, CMAKE_CXX_FLAGS=GUARD + " /EHsc", CARGO_BUILD_JOBS="2")
     target.mkdir(parents=True, exist_ok=True)
     base = ["build", "-p", "notdot-wake-runtime", "--bin", "notdot-wake-helper",
-            "--features", "accelerated", "--release", "--target", "x86_64-pc-windows-msvc", "--locked", "-j", "2"]
+            "--features", "accelerated,synthetic-diagnostics" if args.synthetic_diagnostics else "accelerated", "--release", "--target", "x86_64-pc-windows-msvc", "--locked", "-j", "2"]
     if args.container_image:
         cmd = ["docker", "run", "--rm", "--cpus", "2", "--memory", "4g", "--memory-swap", "4g",
                "-v", f"{ROOT}:/work", "-v", f"{target}:/work/.local/windows-e2e/target",

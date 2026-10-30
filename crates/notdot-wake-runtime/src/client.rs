@@ -88,6 +88,12 @@ impl Client {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
+        #[cfg(feature = "synthetic-diagnostics")]
+        if crate::engine::synthetic_diagnostics_enabled() {
+            command
+                .env("NOTDOT_SYNTHETIC_WAKE_DIAGNOSTICS", "synthetic-ci")
+                .stderr(std::process::Stdio::inherit());
+        }
         #[cfg(windows)]
         {
             command.creation_flags(0x08000000);
