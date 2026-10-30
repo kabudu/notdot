@@ -2,7 +2,7 @@
 
 This page tracks the work needed before publishing a release. Items left open are still required. It is a developer checklist, not a list of promises that every feature is already verified.
 
-The owner authorised the initial 0.1.0 public release on 30 October 2026. GitHub Actions is enabled. The repository is still private because GitHub retains retired audio in read-only references for closed pull requests 1–4 after every normal branch was cleaned. Publication is waiting on that repository-history issue; no hosted release build or public binary has been published. The repository identity, all eight signing secret names and the current demo attachment are preserved. Local validation passes, but it is not a hosted-CI result.
+The owner authorised the initial 0.1.0 public release on 30 October 2026. The repository is public and GitHub Actions is enabled. All normal branches were cleaned of the five retired wake-test recordings; the owner explicitly accepted leaving historical pull-request references unchanged. The repository identity, signing secrets and demo attachment are preserved. Hosted signing, platform builds and publication must pass the release workflow before the initial binaries are published.
 
 The release workflow extracts the dated version entry from CHANGELOG.md and creates a draft GitHub release with the selected installers, updater files, checksums and required source/provenance assets. Publishing the validated draft makes the initial release and update feed public. The committed release-notes copy must match the changelog entry.
 
