@@ -1903,8 +1903,7 @@ mod tests {
         wake.inner.lock().unwrap().lease = Some(Instant::now() - Duration::from_secs(4));
         for frame in input.chunks(320) {
             wake.ready(true);
-            worker.frame(&wake.inner, frame, 16000, 1, 0);
-            if worker.capture.is_some() {
+            if worker.frame(&wake.inner, frame, 16000, 1, 0) || worker.capture.is_some() {
                 break;
             }
         }
@@ -1913,20 +1912,27 @@ mod tests {
         // real transition instead of assuming a synchronous keyword match.
         let waiting = Instant::now();
         for _ in 0..350 {
-            if worker.capture.is_some() {
+            if worker.capture.is_some() || worker.failed {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
             wake.ready(true);
-            worker.frame(&wake.inner, &[0.; 320], 16000, 1, 0);
+            if worker.frame(&wake.inner, &[0.; 320], 16000, 1, 0) {
+                break;
+            }
         }
+        let status = wake.status();
         assert_eq!(
-            wake.status().phase,
+            status.phase,
             "capturing",
-            "wake transition did not finish: elapsed={:?} fallback_busy={} fallback_error={:?}",
+            "wake transition did not finish: elapsed={:?} message={} fallback_busy={:?} fallback_error={:?}",
             waiting.elapsed(),
-            worker.detector.as_ref().unwrap().fallback.is_busy(),
-            worker.detector.as_ref().unwrap().fallback.error
+            status.message,
+            worker.detector.as_ref().map(|d| d.fallback.is_busy()),
+            worker
+                .detector
+                .as_ref()
+                .and_then(|d| d.fallback.error.as_deref())
         );
         assert!(matches!(
             stream_events.try_recv().unwrap(),
