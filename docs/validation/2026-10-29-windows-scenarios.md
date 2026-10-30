@@ -49,3 +49,21 @@ A bounded, recognition-only Windows diagnostic confirmed that the wake encoder e
 The recognizer now distinguishes its own timeout from a generic Whisper error, with a zero-budget regression that fails under the old error policy and passes under the correction. Local CI passes 110 Rust tests, 10 Python checks, formatting and native/production/debug WASM Clippy. A developer-only ignored diagnostic compares full-context attention and thread settings; its output must be checked for correct decisions, not treated as acceptance merely because the diagnostic finishes. Windows wake reliability and the acoustic timeout remain unresolved.
 
 Repeat the failed acoustic request with the corrected diagnostic, then cover repeated turns, silence, pauses, wake activation, microphone changes and the user's natural speech. The user is unavailable for a live voice session at this point. Desktop tests were interrupted by a Mac lock and then loss of the desktop-control integration after the app refreshed its tools. Neither condition is a product test failure or a reason to mark unperformed checks as passed. No demo is being recorded.
+
+## Native wake regression acceptance — 30 October
+
+The self-contained `dede90f` candidate was copied to the laptop's local application-data directory. Its generic parent passed all 18 CPU/OS capability checks before testing the separately guarded accelerated helper. The helper executable SHA-256 is `63d8f978316bcc11c5341b6b08e50ae0448f7cfb85863cc75b9d33c1e859d402`; the app executable is `7940e343f7de2e51df912f2ad24a0c7ff52de48558c386b7d411e1a802200756`.
+
+Native execution on the laptop passed:
+
+- Three helper lifecycle tests, including cancellation, timeout and confirmed cleanup before installation: 18.28 seconds.
+- The separately enabled five-fixture model comparison through one persistent helper: 8.04 seconds.
+- The full app test executable, run serially: **50 passed, zero failed, seven explicitly ignored**, 69.75 seconds. The two previously failing wake tests now pass.
+
+These are real Windows model/lifecycle tests using synthetic fixtures, without microphone or provider calls. They close the earlier offline wake failures; live microphone, wake activation and installed-update acceptance remain separate checks. The console pipeline was required to capture the GUI-subsystem test executable's output; the initial direct invocation produced no usable result evidence.
+
+## Forwarded microphone investigation — 30 October
+
+A fresh acoustic subtraction attempt still failed on `9cb7609`: Deepgram reported no speech updates before finalisation timed out. A metadata-only microphone diagnostic reproduced roughly 46–48% audio coverage both in quiet and during the generated phrase. Explicitly foregrounding Windows App did not correct it. The channels were identical, so stereo cancellation was not the cause.
+
+A direct WASAPI comparison then measured actual device-position gaps, without reading or saving waveform payloads. With the default 970-frame ring, it delivered 2,559 ms of audio in 5,021 ms and reported 105,068 missing frames and 213 discontinuities. With a 100 ms/4,410-frame ring, it delivered 4,960 ms in 5,022 ms, with no missing frames or discontinuities. The endpoint remained 44.1 kHz stereo float throughout. This establishes lost packets in the small-buffer capture path, rather than proving a sample-rate mismatch. Verification through CPAL and an app-level fix/rerun are still pending at this checkpoint.
