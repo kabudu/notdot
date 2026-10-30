@@ -8,6 +8,14 @@ Talk to an animated orb that listens and replies aloud. notdot works with the Ch
 
 [Download](https://github.com/kabudu/notdot/releases/latest) · [Getting started](#getting-started) · [Privacy](#privacy-and-memory) · [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md) · [Apache 2.0](LICENSE)
 
+## See it in action
+
+A real hands-free exchange, with sound and captions. Turn on sound to hear both voices.
+
+https://github.com/user-attachments/assets/cfe03c04-8018-4108-9853-e17f03e82d69
+
+[Read the transcript](docs/demo.md#transcript) · [Download the captioned video](docs/site-assets/demo/notdot-demo-captioned.mp4)
+
 ## What you can do
 
 - **Talk naturally.** Say your wake phrase or click once, speak, then pause to send. Press Escape to cancel.
