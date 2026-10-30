@@ -5,3 +5,5 @@
 /* Transparent artwork uses the app renderer's gradients, proportions and star field. */
 .orb-stage{background:none}
 .app-orb{display:block;width:100%;max-width:490px;height:auto;aspect-ratio:1;pointer-events:none}
+
+.demo .video-player{margin-block:24px 12px}.demo .fine{margin-top:12px}video::cue{background:#0a1018;color:#edf4fa}

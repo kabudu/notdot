@@ -1,13 +1,21 @@
-# Voice demo recording plan
+# Voice demo
 
-The first real voice take worked, but background noise made it unsuitable for the README and website. It is not embedded or included in the repository. We are waiting for a quiet environment before recording again.
+Recorded on 30 October 2026 using the running Mac app, the owner’s microphone and the app’s spoken reply. Only the orb window was captured.
 
-For the new take:
+- Wake phrase: “Hey Ava”.
+- Request: “Give me one simple idea for a five-minute break.”
+- Reply: “Stretch your legs and take a short walk.”
+- The 16-second cut keeps the exchange at its original speed, including the wait for the reply. Only the unused lead-in and ending were trimmed.
+- The background was quiet. The reply was about 16 dB louder than the request, so the two speakers were balanced. A mild 70 Hz high-pass filter removes low rumble; no heavy noise reduction was applied. The measured encoded output is about −17.5 LUFS, with a −1.5 dB true peak.
+- The website has a native player, switchable English captions and a [transcript](demo-transcript.html). The README uses a GitHub-hosted copy with captions built into the picture. Neither player autoplays.
+- No programming stack, model name or reasoning setting appears in the video.
 
-1. Record a short, real spoken request and notdot’s reply using the current app. Keep the video focused on the experience: no programming stack, model names or thinking levels.
-2. Keep the exchange at its original speed. Trim only the waiting time around it.
-3. Apply light noise reduction and balance the volume. Check that every word still sounds natural.
-4. Add speaker captions and a transcript, and check the exported audio by listening.
-5. Add the approved video to the README and website with playback controls and captions, without autoplay.
+Original recordings and processing files remain outside Git. The recorder’s temporary microphone and screen/audio permissions were revoked after this take. Repository visibility, Actions and Pages deployment were not changed.
 
-Keep original recordings and rejected takes out of Git. Temporary recorder permissions must be removed after recording. Website publication remains a separate decision.
+## Transcript
+
+**You:** Hey Ava.
+
+**You:** Give me one simple idea for a five-minute break.
+
+**Ava:** Stretch your legs and take a short walk.

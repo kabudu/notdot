@@ -19,7 +19,7 @@ A new backend needs streaming where supported, reliable cancellation, clear erro
 ## More natural conversations
 
 - **Interrupt by speaking.** Stop a reply with your voice, without the assistant reacting to its own speaker output.
-- **Quick follow-up questions.** Offer an optional short listening window after a reply so every follow-up does not need another wake phrase.
+- **Conversation continuity.** After you wake notdot and it asks a question, let you answer without another click or wake phrase. Offer an optional, bounded listening window for follow-up turns, with clear orb feedback, a timeout and an easy way to stop. Pause microphone capture while notdot speaks so it does not answer its own voice.
 - **More languages.** Expand recognition, wake phrases and spoken replies together, with clear choices for the languages each service supports.
 - **Clearer names and numbers.** Improve recognition of names, dates and similar-sounding words, with tests in different rooms and on different microphones.
 
