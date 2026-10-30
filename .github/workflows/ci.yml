@@ -121,6 +121,26 @@ jobs:
         run: python scripts/build_windows_wake_helper.py
       - name: Rebuild generic native decoder with the selected generator
         run: cargo clean -p whisper-rs-sys
+      # Temporary diagnostic: do not merge the repeated-suite workflow.
+      - name: Diagnose complete Windows app suite in five fresh processes
+        shell: pwsh
+        run: |
+          $logs = '.local/windows-wake-recurrence'
+          New-Item -ItemType Directory -Force -Path $logs | Out-Null
+          Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors | ConvertTo-Json | Tee-Object -FilePath "$logs/cpu.json"
+          foreach ($iteration in 1..5) {
+            Write-Output "Complete Windows app suite process $iteration of 5"
+            cargo test -p notdot --bin notdot --locked -- --nocapture 2>&1 | Tee-Object -FilePath "$logs/suite-$iteration.log"
+            $code = $LASTEXITCODE
+            if ($code -ne 0) { exit $code }
+          }
+      - name: Retain bounded Windows suite diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-wake-recurrence
+          path: .local/windows-wake-recurrence/
+          if-no-files-found: warn
       - name: Test native Windows code and bundled models
         run: cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --locked
       - name: Check Windows-specific Rust code

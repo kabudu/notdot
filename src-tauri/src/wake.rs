@@ -1561,6 +1561,7 @@ mod tests {
     }
     fn detects_rate(detector: &mut Detector, samples: &[f32], rate: u32) -> bool {
         let fixture_started = Instant::now();
+        let initial_backend = detector.fallback.backend();
         detector.reset();
         // A prior KWS match can leave the independent fallback cancelling.
         // Settle that job before replaying the next fixture faster than realtime.
@@ -1590,7 +1591,7 @@ mod tests {
         );
         if !detected {
             eprintln!(
-                "fixture rejected: rate={rate} elapsed_ms={} candidates={} rejected_energy={} rejected_prefix={} fallback_busy={} fallback_backend={} fallback_error={:?}",
+                "fixture rejected: rate={rate} elapsed_ms={} candidates={} rejected_energy={} rejected_prefix={} fallback_busy={} initial_backend={initial_backend} final_backend={} fallback_error={:?}",
                 fixture_started.elapsed().as_millis(),
                 detector.candidates,
                 detector.rejected_energy,
