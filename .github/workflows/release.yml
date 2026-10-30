@@ -85,6 +85,13 @@ jobs:
           key: release-${{ matrix.target }}-generic-v1
           env-vars: GGML_ MACOSX_DEPLOYMENT_TARGET
           cache-on-failure: true
+      # whisper-rs-sys does not track changed CXXFLAGS. Clear both Cargo target
+      # layouts before tests so the release cannot restore a mixed-ABI library.
+      - name: Rebuild the Linux native C++ boundary
+        if: runner.os == 'Linux'
+        run: |
+          cargo clean -p whisper-rs-sys
+          cargo clean -p whisper-rs-sys --target "${{ matrix.target }}"
       - name: Prepare optional guarded Windows wake helper
         if: runner.os == 'Windows'
         run: python scripts/build_windows_wake_helper.py
