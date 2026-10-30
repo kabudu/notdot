@@ -9,7 +9,8 @@
       }
     },
     "resources": {
-      "resources/wake-accelerated/": "wake-accelerated/"
+      "resources/wake-accelerated/": "wake-accelerated/",
+      "resources/windows-notices/": "windows-notices/"
     }
   }
 }

@@ -127,6 +127,14 @@ def collect(appdir, output, covered, project, appimage, offset, expected_app_sha
         if sha(project / 'third_party/linux-common-licenses' / name) != digest or \
                 sha(appdir / 'usr/share/common-licenses' / name) != digest:
             raise ValueError('AppImage missing or changed full licence text: ' + name)
+    runtime_notices = json.loads((project / 'third_party/appimage-runtime.json').read_text())['files']
+    for name, entry in runtime_notices.items():
+        if '/' in name or name in ('.', '..'):
+            raise ValueError('unsafe runtime notice name')
+        for path in (project / 'third_party/appimage-runtime' / name,
+                     appdir / 'usr/share/doc/notdot/appimage-runtime' / name):
+            if sha(path) != entry['sha256']:
+                raise ValueError('runtime notice missing or changed: ' + name)
     if sha(appdir / 'usr/bin/notdot') != expected_app_sha256:
         raise ValueError('notdot executable does not match build-record hash')
     if not appimage.is_file() or offset <= 0 or appimage.stat().st_size <= offset:
@@ -209,6 +217,12 @@ def collect(appdir, output, covered, project, appimage, offset, expected_app_sha
     if unknown:
         (output / 'unmatched.json').write_text(json.dumps(unknown, indent=2) + '\n')
         raise ValueError('unmatched ELF files: see unmatched.json; do not publish this partial output')
+    for package in sorted(selected):
+        name = package.split(':')[0]
+        original = Path('/usr/share/doc') / name / 'copyright'
+        shipped = appdir / 'usr/share/doc/notdot/platform-copyright' / name / 'copyright'
+        if not original.is_file() or not shipped.is_file() or sha(original) != sha(shipped):
+            raise ValueError('original distro notice missing or changed in AppImage: ' + name)
     copy_independent(covered[runtime_sha], output, runtime_sha)
     # Exact application source plus its build recipes; not a promise to supply later.
     if run('git', '-c', 'safe.directory=' + str(project), '-C', str(project), 'status', '--porcelain', '--untracked-files=no'):

@@ -1,0 +1,22 @@
+{
+  "nsis": {
+    "version": "3.13",
+    "archive_url": "https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.13/nsis-3.13.zip",
+    "archive_sha256": "ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8",
+    "notice_archive_path": "nsis-3.13/COPYING",
+    "source": "https://nsis.sourceforge.io/Download"
+  },
+  "nsis_tauri_utils": {
+    "version": "0.5.3",
+    "binary_url": "https://github.com/tauri-apps/nsis-tauri-utils/releases/download/nsis_tauri_utils-v0.5.3/nsis_tauri_utils.dll",
+    "binary_sha256": "5ba143b5db4a87d32d6e7802e033330aae56cbceabe0d1e3ba41948385ad4709",
+    "notice_url": "https://raw.githubusercontent.com/tauri-apps/nsis-tauri-utils/nsis_tauri_utils-v0.5.3/LICENSE_MIT",
+    "source": "https://github.com/tauri-apps/nsis-tauri-utils/tree/nsis_tauri_utils-v0.5.3"
+  },
+  "webview2": "Standard downloadBootstrapper mode downloads Microsoft runtime installer during installation; no WebView2 bootstrapper is embedded in the notdot installer.",
+  "files": {
+    "nsis-tauri-utils-0.5.3-LICENSE-MIT.txt": "1c1020fa10a6bf318717e82c911bcc54ebdfb9bb280460ae332bcb2f82f57fbe",
+    "NSIS-3.13-COPYING.txt": "388357c1215ff403c5ebde3a5ecd273e68f8b79a579996775245d1ee65442aba"
+  },
+  "app_rust_notice_overlap": "The plugin\u2019s semver and windows-sys dependency families have original notices in the separately bundled app Rust dependency notices. The plugin\u2019s own Tauri notice is included here."
+}

@@ -6,11 +6,11 @@
 
 Talk to an animated orb that listens and replies aloud. notdot works with the ChatGPT Codex app and can remember useful details with your permission.
 
-[Getting started](#getting-started) · [Privacy](#privacy-and-memory) · [Contributing](CONTRIBUTING.md) · [Apache 2.0](LICENSE)
+[Download](https://github.com/kabudu/notdot/releases/latest) · [Getting started](#getting-started) · [Privacy](#privacy-and-memory) · [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md) · [Apache 2.0](LICENSE)
 
 ## What you can do
 
-- **Talk naturally.** Click once, speak, then pause to send. Press Escape to cancel. Experimental wake phrases let you start hands-free.
+- **Talk naturally.** Say your wake phrase or click once, speak, then pause to send. Press Escape to cancel.
 - **Keep a conversation going.** Continue the same chat after restarting notdot. You can view its history in Codex.
 - **Choose what it remembers.** Turn learning on or off, review and edit saved memories, forget individual notes or reset them all.
 - **Make it yours.** Choose its name, orb colour, voice and how much it can interrupt you.
@@ -19,7 +19,13 @@ The orb shows when notdot is listening, thinking and speaking. Settings opens wh
 
 ## Getting started
 
-notdot is in development. Public installers are not available yet; macOS, Windows and Linux testing is in progress.
+[Download the latest release](https://github.com/kabudu/notdot/releases/latest) for your computer.
+
+| Platform | Choose this download |
+| --- | --- |
+| macOS 14 or later | Universal `.dmg` for Apple Silicon and Intel |
+| Windows | 64-bit `.exe` installer (unsigned) |
+| Linux | AppImage or `.deb` for Intel/AMD 64-bit computers |
 
 To use it, you need:
 
@@ -27,7 +33,9 @@ To use it, you need:
 2. A supported speech service and your own API key. Deepgram can transcribe your speech; ElevenLabs can provide the spoken replies. Service charges may apply.
 3. A microphone and speakers or headphones.
 
-For now, [build from source](docs/guide.md). In notdot’s Settings, add your speech-service keys and choose a voice. The [Settings guide](docs/settings.md) explains the available options.
+Install and open notdot, then right-click the orb to open Settings. Add your speech-service keys, choose a voice and give your companion a name. Click the orb to speak, or enable hands-free listening and use its wake phrase.
+
+The [Settings guide](docs/settings.md) explains the options. To build notdot yourself, follow the [developer guide](docs/guide.md).
 
 Use notdot to send messages in its chat. Keep the Codex app for viewing that chat’s history; sending from both apps at once is not supported. The Codex window does not need to stay in the foreground.
 
@@ -48,8 +56,7 @@ Bug reports, documentation improvements and focused pull requests are welcome. S
 | Everyday settings | [Settings guide](docs/settings.md) |
 | Build and development instructions | [Developer guide](docs/guide.md) |
 | Changes between versions | [Changelog](CHANGELOG.md) |
-| Current testing and release status | [Release readiness](docs/release-readiness.md) |
-| Website | [Website source](docs/index.html) |
+| Website | [notdot website](https://kabudu.github.io/notdot/) |
 
 ## Licence
 

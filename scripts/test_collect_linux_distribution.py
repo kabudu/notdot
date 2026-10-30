@@ -7,6 +7,7 @@ import tarfile
 import io
 from unittest.mock import patch
 import prepare_appimage_source_inputs as producer
+import prepare_linux_binary_notices as notice_preparer
 import unittest
 
 spec = importlib.util.spec_from_file_location('collector', Path(__file__).with_name('collect_linux_distribution.py'))
@@ -136,7 +137,7 @@ class VerifiedCache(unittest.TestCase):
         (path / 'example.dsc').write_text('source-control')
         (path / 'example.tar.gz').write_bytes(b'archive fixture bytes')
         return {'root': root, 'manifest': {'sources': [{'package': 'example', 'version': '1.0'}],
-                'files': {str(p.relative_to(root)): module.sha(p) for p in path.iterdir()}}}
+                'files': {p.relative_to(root).as_posix(): module.sha(p) for p in path.iterdir()}}}
 
     def test_exact_version_cache_copies_verified_archives(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -159,6 +160,70 @@ class VerifiedCache(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'digest mismatch'):
                 module.copy_cached_source(cache, output, 'example', '1.0')
             self.assertEqual(list(output.iterdir()), [])
+
+
+class BinaryNoticePreparation(unittest.TestCase):
+    def test_original_notice_copy_is_idempotent_and_hash_indexed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            docs = root / 'docs'
+            (docs / 'library').mkdir(parents=True)
+            (docs / 'library/copyright').write_bytes(b'Original copyright and licence')
+            output = root / 'out'
+            self.assertEqual(notice_preparer.prepare(output, docs), 1)
+            self.assertEqual((output / 'library/copyright').read_bytes(), b'Original copyright and licence')
+            self.assertEqual(notice_preparer.prepare(output, docs), 1)
+
+    def test_unmarked_or_symlink_output_is_not_replaced(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / 'out'
+            output.mkdir()
+            sentinel = output / 'user-data'
+            sentinel.write_text('keep')
+            with self.assertRaisesRegex(ValueError, 'unmarked'):
+                notice_preparer.prepare(output, root)
+            self.assertEqual(sentinel.read_text(), 'keep')
+            link = root / 'linked'
+            link.symlink_to(output, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, 'symlinked'):
+                notice_preparer.prepare(link, root)
+
+
+class RuntimeNoticeGate(unittest.TestCase):
+    def fixture(self, root):
+        project, app, inputs = root / 'project', root / 'app', root / 'inputs'
+        for p in (project / 'third_party/appimage-runtime', app / 'usr/share/doc/notdot/appimage-runtime', inputs / 'runtime-x86_64'):
+            p.mkdir(parents=True)
+        original = b'Original runtime notice'
+        digest = __import__('hashlib').sha256(original).hexdigest()
+        for p in (project / 'third_party/appimage-runtime/NOTICE', app / 'usr/share/doc/notdot/appimage-runtime/NOTICE', inputs / 'runtime-x86_64/NOTICE'):
+            p.write_bytes(original)
+        (inputs / 'runtime-x86_64/release.json').write_text(__import__('json').dumps({'target_commitish': 'a' * 40}))
+        (project / 'third_party/appimage-runtime.json').write_text(__import__('json').dumps({'files': {'NOTICE': {'sha256': digest, 'origin': {'component_file': 'runtime-x86_64/NOTICE', 'revision': 'a' * 40}}}}))
+        return project, app, inputs
+
+    def test_missing_or_tampered_shipped_notice_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project, app, inputs = self.fixture(Path(directory))
+            producer.validate_binary_notices(project, app, inputs)
+            notice = app / 'usr/share/doc/notdot/appimage-runtime/NOTICE'
+            notice.write_bytes(b'changed')
+            with self.assertRaisesRegex(ValueError, 'differs'):
+                producer.validate_binary_notices(project, app, inputs)
+            notice.unlink()
+            with self.assertRaises(FileNotFoundError):
+                producer.validate_binary_notices(project, app, inputs)
+
+    def test_different_original_source_or_revision_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project, app, inputs = self.fixture(Path(directory))
+            (inputs / 'runtime-x86_64/NOTICE').write_bytes(b'changed upstream notice')
+            with self.assertRaisesRegex(ValueError, 'upstream source'):
+                producer.validate_binary_notices(project, app, inputs)
+            (inputs / 'runtime-x86_64/release.json').write_text(__import__('json').dumps({'target_commitish': 'b' * 40}))
+            with self.assertRaisesRegex(ValueError, 'revision mismatch'):
+                producer.validate_binary_notices(project, app, inputs)
 
 
 if __name__ == '__main__':

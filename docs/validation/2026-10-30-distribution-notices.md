@@ -1,6 +1,6 @@
 # Distribution notices: 30 October 2026
 
-The existing notices cover the bundled models and several native libraries. They do not yet form a complete notice bundle for a public app release. This check collected the available evidence without changing packaging or running the app.
+This report preserves the initial inventory and its completed follow-ups. The final paired AppImage/source evidence and original full-term packaging are recorded below; the initial gaps describe the state before those changes.
 
 ## What was checked
 
@@ -93,3 +93,12 @@ The AppImage media framework remains enabled. A new same-builder collector inven
 Focused validation: four synthetic ELF provenance regressions passed (RPATH table change, changed executable code, changed build ID and non-ELF). An actual builder x264 shared library was copied and RPATH-patched with patchelf: the semantic symbol/build-ID/allocated-section comparison passed while byte hashes differed. This caught and corrected patchelf's dynamic-symbol index remapping. Exact signed-repository x264 source `2:0.164.3095+gitbaee400-3` downloaded successfully (upstream archive SHA-256 `8b237e94b08c196a1da22f2f25875f10be4cff3648df4eeff21e00da8f683fc2`, Debian patch archive `4980a5595db7465c8035e872d31e0eedd98dea936c1601f1cc338433eaff96b7`); dpkg-source verified/extracted it and applied the recorded Debian patch. Existing 477-package notice validation still passes.
 
 These checks validate the collector's critical mechanisms, not a complete selected AppImage/source pair. No final public AppImage was rebuilt or uploaded during this follow-up. Final package/source correspondence, extracted AppRun replacement compatibility and official Windows runner records must be checked on the actual publication artifacts; passing private ARM Debian/UI tests does not substitute for them.
+
+
+## Completed AppImage/source-pair proof
+
+Merged source `c5773c3e776436ff10a918eea8a494cc1d524662` now has an actual rebuilt normal AppImage and corresponding-source archive. AppImage SHA-256: `fca5a6c18a636a64ce1f1d826a7fd8525087cc6e2f26544bc3cc47ba28953819` (207,161,848 bytes). Source archive: `728f83826643df030d61339e1ad3285b8d94ada05e2c905f9b063a1c222e776c` (981,650,537 bytes). All 17 original common licence texts are present and hash-verified inside the image. The source archive binds the exact image/runtime/executable/revision and provides 183 exact distro source packages, 422 ELF and 43 data-file provenance records, original notices/full terms, source/build recipes, locked Rust sources and pinned native inputs. Settings XML from data-only packages is included and its compiled form was independently regenerated. The full [Linux validation report](2026-10-29-linux.md) records build, cache and native updater evidence.
+
+Official launcher provenance was recovered rather than guessed: AppRun exactly matches its official asset at AppImageKit revision `5735cc5bed206497cddfbd2a75e1982c2606c35d`; the runtime matches its official asset at type2-runtime revision `fedfad51acc2860b2916a1eef32ba4a500ff31ef`, apart from defined packaging metadata slots. The actual upstream build log identifies musl 1.2.5, mimalloc 2.1.7, zlib 1.3.2 and zstd 1.5.6. Their original, hash-pinned notices are retained alongside the runtime source and pinned FUSE 3.15.0/squashfuse 0.5.2 sources/patch/build recipes. Relinking is supported by supplied source/build materials; no bit-identical compiler reproduction claim or requirement is made.
+
+The private historical dirty-tree AppImage remains a different artifact. Its platform-source recovery helped validate the collector, but it was not relabelled with a guessed application revision. The final merged-source pair above replaces it as the concrete redistribution proof. The public release path uses actual official Windows-runner toolchain/redistributable provenance, keeping the internal xwin QA binaries outside public release inputs. Future selected binary builds must pass their own mandatory pairing/provenance checks; no public release or Actions enablement occurred during this work.
