@@ -136,11 +136,16 @@ async fn report_visual(state: State<'_, Arc<AppState>>, report: Value) -> Result
 fn app_context() -> tauri::Context<tauri::Wry> {
     tauri::generate_context!()
 }
+// QA isolation follows the exact app identity in optimized and debug builds.
+// Diagnostic commands remain independently gated by debug_assertions.
+fn qa_identifier(identifier: &str) -> bool {
+    identifier == "com.kabudu.notdot.qa"
+}
 fn is_qa(app: &tauri::AppHandle) -> bool {
-    cfg!(debug_assertions) && app.config().identifier == "com.kabudu.notdot.qa"
+    qa_identifier(&app.config().identifier)
 }
 fn isolated_stt_vault() -> bool {
-    cfg!(debug_assertions) && app_context().config().identifier == "com.kabudu.notdot.qa"
+    qa_identifier(&app_context().config().identifier)
 }
 fn credential_service(provider: &str, qa: bool) -> &'static str {
     if provider == "deepgram" && qa {
@@ -151,6 +156,37 @@ fn credential_service(provider: &str, qa: bool) -> &'static str {
 }
 #[cfg(test)]
 mod credential_policy_tests {
+    #[test]
+    fn qa_identity_is_exact_and_independent_of_optimization() {
+        assert!(super::qa_identifier("com.kabudu.notdot.qa"));
+        for identifier in [
+            "com.kabudu.notdot",
+            "com.kabudu.notdot.qa.extra",
+            "com.kabudu.notdot.qax",
+            "com.kabudu.notdot.QA",
+            " com.kabudu.notdot.qa",
+            "com.kabudu.notdot.qa ",
+            "",
+        ] {
+            assert!(!super::qa_identifier(identifier), "{identifier:?}");
+            assert_eq!(
+                super::credential_service("deepgram", super::qa_identifier(identifier)),
+                "com.kabudu.notdot"
+            );
+        }
+        assert_eq!(
+            super::credential_service("deepgram", super::qa_identifier("com.kabudu.notdot.qa")),
+            "com.kabudu.notdot.qa"
+        );
+    }
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn optimized_qa_keeps_its_isolated_recognition_vault() {
+        assert_eq!(
+            super::credential_service("deepgram", super::qa_identifier("com.kabudu.notdot.qa")),
+            "com.kabudu.notdot.qa"
+        );
+    }
     #[test]
     fn new_qa_recognition_key_cannot_replace_the_production_recognition_or_voice_key() {
         assert_eq!(
