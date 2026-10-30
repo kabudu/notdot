@@ -88,6 +88,12 @@ jobs:
           shared-key: build
           env-vars: GGML_ MACOSX_DEPLOYMENT_TARGET
           cache-on-failure: true
+      - name: Repair pruned Sherpa native library cache
+        run: python scripts/repair_sherpa_cache.py --target x86_64-pc-windows-msvc
+      # A cached debug rlib already embeds its native libraries. Compile a fresh
+      # explicit-target release rlib too, matching the real packaging boundary.
+      - name: Verify Windows release-mode static library binding
+        run: cargo build -p sherpa-onnx-sys --release --target x86_64-pc-windows-msvc --locked
       - name: Prepare guarded Windows wake helper
         id: helper_build
         run: python scripts/build_windows_wake_helper.py
