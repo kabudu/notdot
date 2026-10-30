@@ -1,0 +1,9 @@
+# Use the same source line endings on every development and CI platform.
+* text=auto eol=lf
+
+# Preserve original licence terms and hash-verified resources byte for byte.
+third_party/** -text
+src-tauri/resources/** -text
+src-tauri/tests/fixtures/** -text
+**/LICENSE* -text
+**/COPYING* -text
