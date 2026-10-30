@@ -30,6 +30,31 @@ def elf(text=b'code', dynamic=b'oldpath', build_id=b'build-id'):
     return bytes(header) + payload + b''.join(sections)
 
 
+class InstalledIndex(unittest.TestCase):
+    def test_unrelated_protected_package_paths_are_not_inspected(self):
+        protected = Path('/var/lib/polkit-1/localauthority')
+        with tempfile.TemporaryDirectory() as directory:
+            library = Path(directory) / 'libexample.so'
+            library.write_bytes(b'installed library')
+            original = Path.is_file
+            inspected = []
+            def inspect(path):
+                inspected.append(path)
+                if path == protected:
+                    raise PermissionError(13, 'Permission denied', str(path))
+                return original(path)
+            with patch.object(module, 'run', return_value=f'{protected}\n{library}'), patch.object(Path, 'is_file', inspect):
+                indexed = module.index_installed_files(['example'], {library.name})
+            self.assertEqual(indexed, {library.name: [('example', library)]})
+            self.assertNotIn(protected, inspected)
+
+    def test_unreadable_relevant_candidate_is_still_blocking(self):
+        protected = Path('/var/lib/protected/libexample.so')
+        with patch.object(module, 'run', return_value=str(protected)), patch.object(Path, 'is_file', side_effect=PermissionError(13, 'Permission denied')):
+            with self.assertRaises(PermissionError):
+                module.index_installed_files(['example'], {protected.name})
+
+
 class Sections(unittest.TestCase):
     def compare(self, a, b):
         with tempfile.TemporaryDirectory() as directory:
