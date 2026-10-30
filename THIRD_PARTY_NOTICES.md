@@ -1,16 +1,11 @@
-# Third-party components
+# Third-party licences and notices
 
-notdot is a development application using open-source Rust dependencies listed with exact versions in Cargo.lock. Mnemara 0.6.0 is used under the MIT license; its notice is retained in third_party/Mnemara-LICENSE.md. Tauri is dual licensed Apache-2.0/MIT. Rust/WASM browser bindings use wasm-bindgen and web-sys. The orb is a Rust reimplementation of the Lumina visual direction; no Electron or Lumina dashboard is shipped.
+notdot’s own source and original artwork are licensed under **Apache-2.0**; see [LICENSE](LICENSE) and [NOTICE](NOTICE). Third-party components keep their own licences.
 
-A public binary release requires a complete dependency-license inventory and retained notices for the selected distribution. No public binary release is being made here.
+The app now packages a [licence index](src-tauri/resources/notices/INDEX.md), original copyright notices and full standard terms under `notices/` in its resources. The [manifest](src-tauri/resources/notices/manifest.json) records the locked Rust packages, source archives, published revisions and text checksums. It retains every declared licence choice, including upstream declarations; standard template placeholders do not invent copyright holders.
 
-Desktop lifecycle additions use the Tauri updater/autostart plugins, sysinfo and macOS Security Framework bindings. Their resolved versions are in Cargo.lock. The app logomark is original vector artwork in assets/logomark.svg. Linux AppImage bundles also contain GTK/GStreamer and their runtime dependencies; a complete distribution notice/license inventory is still a public-release gate.
+This covers the conservative union of the native-app and WASM Rust dependency graphs, the optional Windows helper’s shared runtime, the Rust standard-library notice, and the listed known static native/model components. Mnemara’s original [MIT notice](third_party/Mnemara-LICENSE.md), vendored [GLib licence](vendor/glib/LICENSE) and [wake/model notices](src-tauri/resources/wake/NOTICE.md) remain intact. The orb and logomark are original notdot implementations; no Lumina dashboard is shipped.
 
-## Retained source and model notices
+Maintainers can regenerate the index offline with `python3 scripts/distribution_notices.py --write` and validate it with `python3 scripts/distribution_notices.py`. Local CI checks the retained hashes, declared licence mappings and lockfile identity. A changed dependency lock needs an updated inventory and verified source texts; changing only the recorded lock hash is insufficient.
 
-- First-party source and original logomark: Apache-2.0; see root LICENSE and NOTICE.
-- Vendored GLib: its upstream licence is retained in [vendor/glib/LICENSE](vendor/glib/LICENSE); local changes and provenance are recorded alongside it.
-- Mnemara: [MIT notice](third_party/Mnemara-LICENSE.md).
-- Wake models, Whisper/whisper.cpp/whisper-rs, sherpa-onnx, ONNX Runtime and dictionary: [resource inventory](src-tauri/resources/wake/NOTICE.md), with original licence texts and ONNX third-party notices in that directory.
-
-The root licence does not replace these licences. Cargo.lock is the resolved dependency inventory, not a complete binary attribution bundle. Before distributing binaries, collect the licences of all linked Rust/native dependencies and bundled platform libraries for each target. Provider services and the separately installed Codex runtime are not relicensed or redistributed by this project.
+Separate public-distribution checks remain for Windows static CRT/SDK terms and Linux AppImage platform-library provenance, full terms and source availability. The package-managed Linux dependency boundary differs from AppImage redistribution. This bundle does not claim to settle those checks or establish legal clearance. Provider services and the separately installed Codex runtime are not redistributed or relicensed by notdot.

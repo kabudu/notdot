@@ -54,7 +54,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "resources/wake/": "wake/"
+      "resources/wake/": "wake/",
+      "resources/notices/": "notices/"
     }
   },
   "plugins": {
