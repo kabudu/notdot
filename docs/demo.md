@@ -1,4 +1,4 @@
-# Voice demo
+# Voice demo · [elevenlabs.io](https://elevenlabs.io)
 
 Recorded on 30 October 2026 using the running Mac app, the owner’s microphone and the app’s spoken reply. Only the orb window was captured.
 
@@ -11,6 +11,8 @@ Recorded on 30 October 2026 using the running Mac app, the owner’s microphone 
 - No programming stack, model name or reasoning setting appears in the video.
 
 Original recordings and processing files remain outside Git. The recorder’s temporary microphone and screen/audio permissions were revoked after this take. Repository visibility, Actions and Pages deployment were not changed.
+
+The generated reply audio was made on ElevenLabs’ free plan. It is subject to [ElevenLabs’ non-commercial terms](https://elevenlabs.io/docs/help-center/legal/can-i-publish-the-content-i-generate-on-the-platform) and is not covered by notdot’s Apache licence for its original code and artwork.
 
 ## Transcript
 
