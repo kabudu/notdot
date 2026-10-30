@@ -1,5 +1,5 @@
 use notdot_wake_runtime::{
-    client::{Client, Failure},
+    client::{Client, Failure, all_helpers_reaped},
     engine, protocol,
 };
 use std::{
@@ -19,6 +19,12 @@ fn helper() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_notdot-wake-helper")))
 }
+// Cancellation tests exercise actual Client pipe I/O and child kill/reap without
+// spending its production startup deadline on a cold debug model hash/load.
+// Recognition and invalid-model acceptance still use the real helper below.
+fn protocol_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_notdot-wake-protocol-fixture"))
+}
 fn fixture_root() -> PathBuf {
     std::env::var_os("NOTDOT_TEST_ROOT")
         .map(PathBuf::from)
@@ -33,7 +39,9 @@ fn model() -> PathBuf {
 #[tokio::test]
 async fn cancellation_and_timeout_kill_and_reap_the_helper() {
     let _scenario = HELPER_SCENARIO.lock().await;
-    let mut cancelled = Client::start(&helper(), &model(), "Hey Ava").await.unwrap();
+    let mut cancelled = Client::start(&protocol_fixture(), &model(), "Hey Ava")
+        .await
+        .unwrap();
     assert!(cancelled.pid().is_some());
     assert_eq!(
         cancelled
@@ -47,7 +55,9 @@ async fn cancellation_and_timeout_kill_and_reap_the_helper() {
         Err(Failure::Cancelled)
     );
     assert!(cancelled.pid().is_none());
-    let mut expired = Client::start(&helper(), &model(), "Hey Ava").await.unwrap();
+    let mut expired = Client::start(&protocol_fixture(), &model(), "Hey Ava")
+        .await
+        .unwrap();
     assert_eq!(
         expired
             .recognize(&[0.; 320], Arc::new(AtomicU64::new(0)), 0, Duration::ZERO)
@@ -55,11 +65,14 @@ async fn cancellation_and_timeout_kill_and_reap_the_helper() {
         Err(Failure::Unavailable)
     );
     assert!(expired.pid().is_none());
+    assert!(all_helpers_reaped());
 }
 #[tokio::test]
 async fn cancellation_after_request_begins_reaps_before_the_install_hook() {
     let _scenario = HELPER_SCENARIO.lock().await;
-    let mut client = Client::start(&helper(), &model(), "Hey Ava").await.unwrap();
+    let mut client = Client::start(&protocol_fixture(), &model(), "Hey Ava")
+        .await
+        .unwrap();
     let epoch = Arc::new(AtomicU64::new(0));
     let audio = vec![0.01; protocol::MAX_SAMPLES];
     {
@@ -77,13 +90,17 @@ async fn cancellation_after_request_begins_reaps_before_the_install_hook() {
     // Installer replacement cannot run until the old helper has been reaped.
     let failed_install = || -> Result<(), ()> {
         assert!(client.pid().is_none());
+        assert!(all_helpers_reaped());
         Err(())
     };
     assert!(failed_install().is_err());
-    let mut restarted = Client::start(&helper(), &model(), "Hey Ava").await.unwrap();
+    let mut restarted = Client::start(&protocol_fixture(), &model(), "Hey Ava")
+        .await
+        .unwrap();
     assert!(restarted.pid().is_some());
-    restarted.shutdown().await;
+    assert!(restarted.shutdown().await);
     assert!(restarted.pid().is_none());
+    assert!(all_helpers_reaped());
 }
 #[tokio::test]
 async fn invalid_model_or_phrase_never_starts_a_ready_worker() {
