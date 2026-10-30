@@ -124,7 +124,7 @@ pub fn normalize(samples: &[f32], rate: u32) -> Result<Vec<f32>, String> {
     {
         return Err("Invalid wake audio".into());
     }
-    let audio = if rate == 16000 {
+    let mut audio = if rate == 16000 {
         samples.to_vec()
     } else {
         let params = SincInterpolationParameters {
@@ -142,6 +142,20 @@ pub fn normalize(samples: &[f32], rate: u32) -> Result<Vec<f32>, String> {
             .map_err(|e| e.to_string())?
             .remove(0)
     };
+    // Long digital-silence edges can change short-name transcription. Keep
+    // every nonzero sample and 100 ms of context on each side, without an
+    // energy threshold, gain change or removal of pauses inside the phrase.
+    // Test bits so even subnormal speech samples are never classified as zero.
+    let nonzero = |sample: &f32| sample.to_bits() & 0x7fff_ffff != 0;
+    if let (Some(first), Some(last)) = (
+        audio.iter().position(nonzero),
+        audio.iter().rposition(nonzero),
+    ) {
+        let begin = first.saturating_sub(1600);
+        let end = (last + 1601).min(audio.len());
+        audio.drain(..begin);
+        audio.truncate(end - begin);
+    }
     Ok(audio)
 }
 
@@ -167,5 +181,69 @@ mod prompt_tests {
         assert!(!addressed("Hey Nora", "Hey ava"));
         assert!(!addressed("I was talking about Hey Ava", "Hey ava"));
         assert!(addressed("HEY AVA", "Hey ava"));
+    }
+}
+
+#[cfg(test)]
+mod normalization_tests {
+    use super::normalize;
+
+    fn bits(samples: &[f32]) -> Vec<u32> {
+        samples.iter().map(|sample| sample.to_bits()).collect()
+    }
+
+    #[test]
+    fn exact_zero_edges_keep_all_nonzero_bits_and_one_hundred_ms_context() {
+        let mut samples = vec![0.; 12000];
+        samples[5000] = f32::from_bits(1); // Quietest nonzero prefix is retained.
+        samples[6000] = -0.;
+        samples[7000] = -0.1;
+        let normalized = normalize(&samples, 16000).unwrap();
+        assert_eq!(bits(&normalized), bits(&samples[3400..8601]));
+        // App and optional helper both normalize; a second pass must not crop more.
+        assert_eq!(
+            bits(&normalize(&normalized, 16000).unwrap()),
+            bits(&normalized)
+        );
+    }
+
+    #[test]
+    fn resampling_then_helper_normalization_is_bitwise_idempotent() {
+        let mut samples = vec![0.; 48000];
+        samples[18000..30000].fill(0.01);
+        let first = normalize(&samples, 48000).unwrap();
+        assert!(first.len() < 16000);
+        assert_eq!(bits(&normalize(&first, 16000).unwrap()), bits(&first));
+    }
+
+    #[test]
+    fn nonzero_edges_and_internal_pauses_are_preserved() {
+        let mut samples = vec![0.; 10000];
+        samples[0] = 0.01;
+        samples[9999] = -0.01;
+        assert_eq!(bits(&normalize(&samples, 16000).unwrap()), bits(&samples));
+    }
+
+    #[test]
+    fn zero_only_and_short_inputs_are_not_erased_or_padded() {
+        for samples in [
+            vec![0.; 16000],
+            vec![-0.; 100],
+            vec![0.01],
+            vec![0.01, 0., -0.02],
+        ] {
+            assert_eq!(bits(&normalize(&samples, 16000).unwrap()), bits(&samples));
+        }
+        assert!(normalize(&[], 16000).is_err());
+    }
+
+    #[test]
+    fn nonfinite_and_oversized_input_stays_invalid_before_padding_removal() {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for rate in [16000, 48000] {
+                assert!(normalize(&[0., value, 0.], rate).is_err());
+            }
+        }
+        assert!(normalize(&vec![0.; 16000 * 6 + 513], 16000).is_err());
     }
 }

@@ -521,6 +521,93 @@ mod tests {
         );
     }
     #[test]
+    fn production_framed_fallback_corpus_bypasses_keyword_spotting() {
+        let _models = super::super::model_fixture_guard();
+        let root = super::super::fixture_root();
+        let model = root.join("resources/wake/ggml-tiny.en-q5_1.bin");
+        let mut framed = Vec::new();
+        for (name, expected) in [
+            ("hey-ava.wav", true),
+            ("hey-ava-uk.wav", true),
+            ("hey-ava-us.wav", true),
+            ("ava.wav", false),
+            ("negative.wav", false),
+        ] {
+            for rate in [16000, 48000] {
+                let mut fallback = Fallback::new(&model, "Hey Ava").unwrap();
+                // Intercept the actual production gate's job, without allowing a
+                // primary KWS match to hide a fallback transcription failure.
+                let (sender, jobs) = mpsc::sync_channel(1);
+                fallback.sender = Some(sender);
+                fallback.reset();
+                fallback.accept(rate, &vec![0.; rate as usize / 2]);
+                let mut wav =
+                    hound::WavReader::open(root.join("tests/fixtures").join(name)).unwrap();
+                assert_eq!(wav.spec().sample_rate, 16000);
+                let audio: Vec<_> = wav
+                    .samples::<i16>()
+                    .map(|sample| f32::from(sample.unwrap()) / 32768.)
+                    .flat_map(|sample| vec![sample; rate as usize / 16000])
+                    .collect();
+                for frame in audio.chunks(rate as usize / 50) {
+                    assert!(!fallback.accept(rate, frame));
+                }
+                for _ in 0..40 {
+                    assert!(!fallback.accept(rate, &vec![0.; rate as usize / 50]));
+                }
+                let job = jobs
+                    .try_recv()
+                    .expect("production framing must queue the fixture");
+                if name == "hey-ava.wav" && rate == 48000 {
+                    assert_eq!(job.samples.len(), 81600, "retain the diagnosed framing");
+                }
+                assert!(
+                    fallback.shutdown(),
+                    "framing worker must release its decoder"
+                );
+                framed.push((name, expected, job));
+            }
+        }
+        let mut decoder = Decoder::new(&model, "Hey Ava").unwrap();
+        #[cfg(windows)]
+        if notdot_wake_runtime::package::capable_cpu()
+            && !option_env!("NOTDOT_WAKE_HELPER_SHA256")
+                .unwrap_or("")
+                .is_empty()
+        {
+            assert_eq!(decoder.identity(), "accelerated");
+        }
+        for (name, expected, job) in framed {
+            let backend = decoder.identity();
+            let started = Instant::now();
+            let heard = decoder
+                .recognize(
+                    "Hey Ava",
+                    &job.samples,
+                    job.rate,
+                    Arc::new(AtomicU64::new(job.epoch)),
+                    job.epoch,
+                )
+                .unwrap();
+            eprintln!(
+                "framed_wake fixture={name} rate={} backend={backend} after={} elapsed_ms={} heard={heard} expected={expected}",
+                job.rate,
+                decoder.identity(),
+                started.elapsed().as_millis()
+            );
+            assert_eq!(
+                heard,
+                expected,
+                "{name} at{}Hz: backend={backend}, after={}, elapsed={:?}",
+                job.rate,
+                decoder.identity(),
+                started.elapsed()
+            );
+        }
+        assert!(decoder.shutdown(), "tested decoder must be released");
+    }
+
+    #[test]
     fn reset_discards_an_in_flight_match_and_quiet_audio_does_not_queue_work() {
         let _models = super::super::model_fixture_guard();
         let root = super::super::fixture_root();
