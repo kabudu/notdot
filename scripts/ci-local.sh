@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+python3 scripts/distribution_notices.py
 cargo fmt --all --check
 cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --locked
 cargo clippy -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --all-targets --locked -- -D warnings
