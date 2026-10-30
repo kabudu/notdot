@@ -51,7 +51,8 @@ pub fn recognize(
     params.set_print_progress(false);
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
-    params.set_initial_prompt(phrase.strip_prefix("Hey ").unwrap_or(phrase));
+    let prompt = name_prompt(phrase);
+    params.set_initial_prompt(&prompt);
     let deadline = Instant::now() + limits.budget;
     let timed_out = Arc::new(AtomicBool::new(false));
     let abort_timeout = timed_out.clone();
@@ -85,6 +86,24 @@ pub fn recognize(
     }
     Ok(addressed(&text, phrase))
 }
+// Give the recognizer a proper-name hint even when the configured name begins
+// lowercase. Preserve deliberate internal casing and punctuation; matching below
+// continues to use the original phrase and its existing strict address guard.
+fn name_prompt(phrase: &str) -> String {
+    phrase
+        .strip_prefix("Hey ")
+        .unwrap_or(phrase)
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            chars.next().map_or_else(String::new, |first| {
+                format!("{}{}", first.to_ascii_uppercase(), chars.as_str())
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn addressed(text: &str, phrase: &str) -> bool {
     let words = |s: &str| {
         s.split(|c: char| !c.is_ascii_alphabetic())
@@ -124,4 +143,29 @@ pub fn normalize(samples: &[f32], rate: u32) -> Result<Vec<f32>, String> {
             .remove(0)
     };
     Ok(audio)
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::*;
+    #[test]
+    fn lower_and_title_case_names_use_the_same_proper_name_prompt() {
+        for phrase in ["ava", "Ava", "Hey ava", "Hey Ava"] {
+            assert_eq!(name_prompt(phrase), "Ava");
+        }
+        assert_eq!(name_prompt("Hey ava marie"), name_prompt("Hey Ava Marie"));
+    }
+    #[test]
+    fn prompt_preserves_hyphens_apostrophes_and_deliberate_internal_casing() {
+        assert_eq!(name_prompt("Hey mary-jane o'brien"), "Mary-jane O'brien");
+        assert_eq!(name_prompt("Hey Jean-Luc O'Neill"), "Jean-Luc O'Neill");
+        assert_eq!(name_prompt("Hey McDonald NASA"), "McDonald NASA");
+    }
+    #[test]
+    fn name_prompt_never_relaxes_the_address_guard() {
+        assert!(!addressed("Ava", "Hey ava"));
+        assert!(!addressed("Hey Nora", "Hey ava"));
+        assert!(!addressed("I was talking about Hey Ava", "Hey ava"));
+        assert!(addressed("HEY AVA", "Hey ava"));
+    }
 }
