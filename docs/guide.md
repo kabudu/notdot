@@ -1,0 +1,239 @@
+# Developer and technical guide
+
+For everyday use, start with the [plain-language Settings guide](settings.md). This page keeps exact commands, API names and implementation limits for developers.
+
+A local desktop companion built with Rust, Tauri 2 and a Rust/WASM orb. The normal interface is just the orb. Conversation is voice-only; onboarding, preferences and memory inspection open separately.
+
+## Run the development app
+
+Requires macOS 14+, Xcode command-line tools, CMake, Rust 1.97+, `wasm32-unknown-unknown`, Trunk, Tauri CLI, and a supported installed Codex runtime signed into your ChatGPT account.
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install trunk --locked
+cargo install tauri-cli --locked
+cargo tauri dev
+```
+
+Build a local app bundle:
+
+```sh
+cargo tauri build --bundles app
+```
+
+Output: `target/release/bundle/macos/notdot.app`. This is an optimized, locally ad-hoc-signed development artifact, not a Developer ID signed/notarized release. Use `--debug` to build the larger diagnostic variant under `target/debug/bundle/macos/`. The installed runtime is discovered at the bundled ChatGPT macOS path, then `codex` on PATH. `NOTDOT_CODEX_BIN` can select an explicit runtime executable. The OpenAI runtime is a prerequisite, not redistributed inside notdot.
+
+## Use
+
+- Click the orb or press Enter or Space once, speak, then pause. After 1.4 seconds of silence, notdot sends your request automatically. A second click sends sooner; Escape cancels. If no speech is detected within eight seconds, the recording is discarded. Recordings are limited to 60 seconds.
+- Escape cancels recording, playback and an active agent turn.
+- Drag the orb to move it. Right-click or use the tray's Settings item to customize it.
+- The colour slider previews both the orb and settings theme immediately. Closing without saving restores the saved palette. Startup hides the orb until saved settings arrive, preventing a default-blue flash.
+- Save a voice backend API key in Settings, load available voices, select one and preview it before saving. Search appears when there are more than five voices; longer lists use bounded pagination. The key is saved in the OS keychain and is never returned to the frontend. Audio goes to the selected recognition service only after a click starts recording or the local wake phrase activates; transcripts go to the agent runtime. Background microphone listening is opt-in and local through the wake-phrase layer.
+- Thinking has a clear rotating comet halo. Listening and playback use an audio-reactive radial waveform and body pulses, with a visible fallback when a meter is unavailable. Transcription and speech preparation use the waiting halo. Reduced-motion preference is respected. Rendering caps frame rate at 30 FPS and DPR at 2; drawing pauses when the native window is hidden/minimized. Webview background suspension is disabled so a visible, unfocused orb and its voice callbacks keep running.
+- Enable **Learn useful context** for automatic, source-grounded learning, or explicit requests such as “Remember that I prefer jasmine tea.” Review, confirm, edit or forget notes in Settings. Disabling memory stops saving and recall; it preserves existing notes and conversation history.
+
+## Agent ownership and Desktop
+
+notdot keeps one long-lived `codex app-server --stdio` process, uses `gpt-6.1-terra` with Medium effort, and persists the conversation ID. The default thread is named `notdot · companion`. ChatGPT Desktop can read its stored history. Do not submit messages there: live shared ownership and live Desktop UI refresh have not been established.
+
+Writer conflicts are shown as errors. notdot never removes locks or automatically archives a desktop-owned conversation. Reconnect is available from Settings/tray and explicitly interrupts an active turn before replacing the runtime. The app-server interface is experimental; a compatible installed runtime and account access are required.
+
+The runtime starts with a read-only sandbox and untrusted approval policy. Companion threads disable local shell/REPL, browser/computer control, local image viewing, delegation, hooks and project-instruction loading. Connected app and MCP writes require human review; existing prompt-for-all-call restrictions are retained. This build rejects host approval/elicitation requests it cannot implement; it cannot fulfill every desktop-only tool or permission flow. Connected read-only tools may work with the existing account configuration, but they must not be confused with a full desktop runtime attachment.
+
+See [bridge investigation](bridge-investigation.md) for the original experiments and limitations.
+
+## Memory
+
+Mnemara **0.6.0** is embedded as Rust library code with the sled backend. No separate database service is needed. Settings/thread identity use a small atomically saved JSON file. The voice-provider trait separates voice discovery, previews, STT and TTS from the UI; ElevenLabs handles the combined voice backend; experimental Deepgram Flux can be selected separately for recognition. To add another backend, implement `notdot_voice::VoiceBackend` and register its factory in `crates/notdot-voice`. Credentials are scoped per provider, and audio bytes include their MIME type. There is no arbitrary dynamic-library loading.
+
+Memory data and configuration live under the platform application-data directory; on macOS that is `~/Library/Application Support/com.kabudu.notdot`.
+
+The **Remember useful details** switch controls saving and recall. Completed voice interactions can produce source-grounded memory proposals through the isolated learner. A proposal remains in RAM, not the ledger, until the user hears its read-back and says **yes, remember that** (or **yes, save that**). A bare yes, rejection, silence, Escape, muting, a stale proposal or disabling memory cannot save it. Explicit Remember requests follow the same path; cancelled or failed conversations do not save them automatically.
+
+Read-backs are scoped, single-use and bounded to 512 content bytes, with a 120-second expiry. They start only while idle and visible, and use a short automatic response capture; no second click/wake phrase is required. New interactions supersede older proposals. Confirmed facts preserve their original source conversation, turn and evidence, and can supersede older same-key values and summaries. Existing notes remain available; legacy provisional records still need review. The trusted core ingestion API retains its provisional/corroboration contract, but the app’s voice path cannot invoke it to save unconfirmed proposals.
+
+Voice transcripts are marked unverified in companion context. Declining a memory does not remove that original chat transcript; local ledger confirmation and external chat-history storage are separate boundaries. Models are instructed to use confirmed retrieved notes for personal-memory claims.
+
+Settings offers edit/confirm/forget with confidence, date, evidence and lineage; user-authored corrections take precedence over subsequent automatic inference. Editing and forgetting remain available with learning off.
+
+The learner uses its own runtime process and ephemeral threads with shell, apps, plugins, MCP, browser and other action capabilities disabled for analysis. Structured results are validated before storage. It uses additional account inference, not model-weight training or psychological profiling. Model extraction can misinterpret a statement; notes remain observed data, never trusted instructions.
+
+On each interaction, and during enabled idle maintenance every 30 minutes, the learner can distil existing facts into a shorter digest with explicit source links. A review considers up to 24 relevant/recent facts / 12,000 content bytes; recall remains bounded to six items / a 2,000-token budget. Only one learning job runs at once, with eight queued jobs. Overload skips interactions and reports the skipped count in Settings. Each model pass has a 90-second deadline; errors leave the conversation usable and appear in memory status. These bounds do not guarantee every interaction will become a note.
+
+Turning the switch off prevents new ledger reads/writes by the companion and invalidates queued/in-flight learning results. It does **not** delete existing notes, the persistent chat, or notes already supplied in earlier conversation context. No retroactive processing of off-period chat history occurs when learning is re-enabled. Forgetting excludes a note and dependent summaries from active recall, while conversation history and underlying store history may remain; this is not secure erasure. Ingestion stops at the 2,000-record limit. The review surface shows at most 100 current records.
+
+### Behaviour and follow-ups
+
+**Reactive** is the migration/default setting: respond only when addressed. **Suggestions** surfaces due reminders and inferred follow-ups as a small silent orb dot. **Proactive** announces eligible, individually permitted items through local OS speech while the voice pipeline is idle. Memory permission never grants interruption permission. Inferred follow-ups need **Allow spoken check-in** in Settings; explicit reminder requests grant permission for that reminder, but still require Proactive mode for automatic speech. No scheduler path calls model tools, sends messages, changes project files or grants external-action authority.
+
+Say **“Remind me in ten minutes to take a break”**, using whole-number minutes, hours or days (one minute to thirty days). Unsupported date expressions explain the supported format instead of creating a guessed schedule. Say **“What are my reminders?”** or **“What are my suggestions?”** to hear up to five pending items, even in Reactive mode. Explicit reminders work independently of memory and do not require the Codex runtime to create them. Their local receipt lives in the reminder journal, rather than being appended to the model chat.
+
+A separate journal discovers confirmed, source-linked goals/projects/commitments whose semantic keys contain complete category words `goal`, `project`, `commitment` or `ongoing`, separated by underscores or dots. Discovery runs every 30 seconds while learning and a suggestion mode are enabled. These are conservative offers to revisit recent context, not an unrestricted agent that guesses deadlines or continuously reasons over all history. Each inferred offer expires seven days after its source update and is removed when its source is forgotten/corrected or memory is disabled. Unchanged dismissed items do not reappear. Review allows permission, one-hour snooze and dismissal/completion. This is not a general calendar/date-language parser or automatic task-completion detector.
+
+Quiet hours use the computer’s local time (default 22:00–08:00), with a configurable daily cap (default three, range one–ten) and minimum gap (default one hour, range fifteen minutes–one day). Due items wait until these conditions and voice-idle checks pass. The bounded journal holds at most 256 entries. Delivery is persisted before audio for at-most-once automatic attempts across restart: a crash or unavailable system voice can miss an announcement.
+
+Such items remain reviewable and can be snoozed to retry. Speech errors appear in Settings. Escape cancels a current spoken follow-up; changing to Reactive, dismissing an item or disabling its memory permission cancels the local speech process. This layer never silently enables provider overages or switches providers.
+
+Mnemara gives us memory semantics we would otherwise implement over SQLite; no comparative speed or durability claim is made. [Mnemara](https://github.com/deliberium/mnemara) is MIT licensed and compiled into the app.
+
+[QATQ](https://github.com/kabudu/qatq) is not used: it compresses exported tensors/KV caches, while the Terra bridge exposes conversation events and no KV-cache export. It does not solve semantic note distillation. Revisit it only for a local inference/tensor-archive requirement with representative benchmarks.
+
+## Voice boundary
+
+The native voice path streams activated microphone audio to the selected recognition service (ElevenLabs Scribe v2 Realtime by default) while the user speaks. Only committed transcript segments become model input. A local speech detector ends the request; a temporary streaming failure can retry the bounded recording only if the backend supports batch recognition. Key, permission, credit and rate-limit errors are reported without retrying. Cancellation closes the stream and prevents a retry. Sentence-by-sentence speech uses Eleven Flash v2.5; each sentence is buffered before playback. Full-duplex interruption is not implemented. Providers opt into streaming through the Rust voice interface; batch-only providers retain the browser recording path.
+
+Live provider and microphone validation depends on locally configured credentials and microphone permission. Do not infer end-to-end voice success from compilation or the agent smoke tests.
+
+## Validation
+
+```sh
+cargo fmt --all --check
+cargo test -p notdot-core -p notdot-voice
+cargo clippy -p notdot-core -p notdot-voice -p notdot --all-targets -- -D warnings
+cargo clippy -p notdot-orb --target wasm32-unknown-unknown -- -D warnings
+cargo clippy -p notdot-orb --target wasm32-unknown-unknown --features debug-ui -- -D warnings
+cargo run -p notdot-core --example bridge_smoke
+```
+
+The smoke example uses real account inference and stores a separate test conversation ID in ignored `.local/rust-smoke/`. Native and WASM tests cover settings restart, memory restart/forget/derived-summary retraction, explicit retention intent, interleaved protocol events, writer errors and runtime exit.
+
+A text composer exists only in the explicitly enabled frontend `debug-ui` feature for development. The default frontend and bundled HTML have no composer or conversation transcript. To use it in development, run `trunk serve --features debug-ui` in one terminal, then `cargo tauri dev --config '{"build":{"beforeDevCommand":""}}'` in another. Normal app builds do not enable it. The historical Python scripts remain investigation tools, not application dependencies.
+
+The debug native binary also accepts `--voice-smoke`: it synthesizes a fixed test phrase with the saved voice, transcribes the generated audio, and verifies the returned phrase without using the microphone. This consumes a small amount of voice-provider usage. This diagnostic is compiled out of release builds.
+
+The release profile explicitly disables symbol stripping to avoid Rust/LLVM's macOS 27 Mach-O proc-macro alignment issue ([upstream report](https://github.com/rust-lang/rust/issues/157750)). The optimized local app bundle was built successfully with this configuration.
+
+For animation diagnostics, `visual-status.json` in the app-data directory contains the current visual mode, a bounded recent transition list and peak speaking RMS. It contains no transcript or audio samples. Reports are local only and stop while idle; actual drawing pauses when the native window is hidden/minimized. Background webview suspension is disabled on supported macOS versions so a visible, unfocused orb remains animated.
+
+## Desktop lifecycle and releases
+
+The companion uses its own headless Codex runtime; the desktop window need not be foreground. Work/Chat conversations are not a supported bridge. Startup options, the branded About screen and updater implementation are described in [release readiness](release-readiness.md). Public releases and installed cross-platform update acceptance remain gated. GitHub Actions is disabled while this repository is private; run `scripts/ci-local.sh` locally.
+
+### Voice usage alerts
+
+Settings shows provider-reported usage, reset time, overage status and last check, with a manual refresh. ElevenLabs usage refreshes every 15 minutes, or after voice activity with a one-minute debounce. Cached results older than one hour or past their reset are marked stale. Unsupported accounting or missing API-key permissions shows **usage unavailable**.
+
+At 80%, 90% and 100%, notdot speaks a short system-voice alert between turns and shows an amber orb ring; an actual credit failure shows a red ring. Warning history survives restart and is scoped to the provider account/workspace and billing reset. If usage jumps across thresholds, only the highest reached threshold is announced. Unknown reset dates suppress proactive threshold announcements because no reliable billing cycle can be identified. macOS uses `say`, Windows uses System.Speech, and Linux requires Speech Dispatcher and a speech engine, such as `speech-dispatcher-espeak-ng`; missing local speech retains the visual warning and retries after 15 minutes. The Debian package includes these dependencies. AppImage users must install them through their distribution’s package manager.
+
+The ElevenLabs subscription pool is **not a guaranteed combined STT/TTS balance**. Separate API/PAYG balances, API-key caps and remaining transcription minutes are unavailable from this report. Credit exhaustion, authentication, permission and temporary rate limits are distinguished. notdot never enables extra spending or changes providers automatically. Usage caching stores account/workspace identifiers and warning history locally, without API keys or speech content.
+
+### Hands-free wake phrases (experimental)
+
+In Settings → Hands-free voice, enable **Listen for my wake phrase**, save, then close Settings. The default phrase follows the companion name: **Hey Ava**, for example. Name-only activation is optional and more prone to false triggers. Wake names currently use English letters, spaces, apostrophes and hyphens; the companion can have another name when wake listening is off.
+
+A small green dot on the orb means wake listening is armed. A short local tone and the listening animation signal activation. After that, speak your request; pause briefly after the wake phrase to avoid clipping the first word. Rust records only audio after activation, stops after 1.2 seconds of silence following speech, and uses the existing STT → Terra → TTS flow. Listening resumes after playback and a short cooldown.
+
+Eight seconds without a request discards capture; requests are bounded to 30 seconds and under 8.1 MB of PCM WAV. No background recording is written to disk or sent to a service.
+
+The **Mute microphone** switch and tray **Mute / unmute microphone** action stop wake listening and microphone requests. A grey mark indicates mute. Push-to-talk remains available when unmuted. Listening pauses during Settings/About, voice processing, replies, previews, update/usage announcements and installation, or when the orb window is hidden. A three-second UI heartbeat timeout stops capture if the frontend stalls. Microphone errors latch until you save wake settings to retry.
+
+Sherpa-onnx 2.0.0 is statically linked, with approximately 47 MiB of bundled models/tokenisers/notices; there is no runtime model download, access key or Python dependency. Dictionary-covered phrases use the local English pronunciation model; other English spellings use a BPE fallback. Build-time checksums pin the resources. Linux builds need `libasound2-dev` and runtime access to ALSA/PipeWire/PulseAudio routing.
+
+Detection is experimental: two UK synthetic recordings pass, while the retained US synthetic recording misses. Some names, accents, noise and nearby speech may trigger accidentally or fail to trigger. These fixtures do not establish reliable room-scale detection; live hardware/accent acceptance remains open. See docs/VALIDATION.md and the bundled model NOTICE.
+
+### Start at sign-in
+
+In **Settings → Startup & updates**, enable **Start notdot when I sign in**, leave **Start immediately — desktop app not required** selected, and Save. Disable the switch and Save to remove automatic startup. This uses the OS login mechanism on macOS, Windows and Linux; a graphical companion starts after user sign-in rather than before login. The setting is off by default and preserves existing startup preferences. The optional **Wait until I open Codex / ChatGPT** behavior keeps the existing background watcher. **Open desktop app too** remains a separate macOS option; it is unnecessary for notdot’s runtime.
+
+### Model and effort
+
+**Settings → Intelligence** lists models reported by the installed, authenticated Codex runtime. It uses `model/list` with pagination, excludes hidden/non-text models, and derives effort options/descriptions from each model’s supported list. New/legacy settings default to **GPT-6.1 Terra / Medium**. A one-click default reset is available only if that pair is currently offered. Native selectors support keyboard navigation/type-to-select; selecting a model keeps a compatible effort or chooses the runtime’s suggested default. Saving resumes the existing companion history with the chosen pair; background learning follows the same selection.
+
+The picker loads on opening Settings and refreshes every minute while open, with a manual Refresh button. Settings validates a changed selection against a fresh catalog; Save also rechecks a successfully loaded picker. Each new conversation/resume, turn and memory analysis checks availability before inference. Retired/hidden models and removed efforts are not selectable after refresh. A previously saved unavailable choice requires an explicit replacement; no automatic model substitution occurs. Catalog failures disable the selectors and preserve preferences. Other settings can still be saved while discovery is unavailable.
+
+Availability is what the installed runtime/account reports, not the full ChatGPT web model menu. Runtime/server caching and changes between discovery and submission cannot be eliminated by a picker: a later server rejection is surfaced as an error. Keeping the Codex runtime updated remains necessary. The catalog is not persisted or replaced by a hard-coded fallback. Source: [official app-server model discovery](https://learn.chatgpt.com/docs/app-server#list-models-modellist).
+
+### Keychain access without repeated launch prompts
+
+notdot stores voice keys in the OS credential store and keeps an authorised copy only in native process memory for the session. Startup, normal voice requests, Settings auto-loading and automatic usage checks use silent access: on macOS a scoped login-keychain query skips items requiring authentication UI and temporarily disables legacy keychain UI under a process-wide credential-operation lock; Windows reads the current user credential set; Linux searches only already-unlocked matching Secret Service items without calling Unlock. Missing/locked/denied access is reported instead of opening an unsolicited password dialog. Opening Settings does not automatically load voices until a key is already authorised.
+
+On Linux, key storage also needs a running, unlocked Secret Service, such as GNOME Keyring. This is normally part of the desktop session; `libsecret` alone does not provide the keyring service. Unlock it through your desktop before authorising a saved key.
+
+Use **Settings → Authorize saved key** when access is needed, or enter/save a new key. Only that explicit authorisation and explicit credential writes/removal may show OS authentication UI. On macOS choose **Always Allow** if you want macOS to remember trust for this app; **Allow Once** deliberately grants only temporary access. An unlocked, trusted installation can restore its key silently on later launches. Locked keychains, changed permissions and changed/ad-hoc development binaries can still require reauthorisation.
+
+Stable distribution signing is needed for stable app identity across updates; this patch does not bypass macOS trust or promise prompt-free access for every rebuild. [Apple: keychain access choices](https://support.apple.com/guide/keychain-access/if-youre-asked-for-access-to-your-keychain-kyca1243/mac), [Apple: changed trusted apps](https://support.apple.com/guide/keychain-access/if-a-trusted-app-asks-for-keychain-access-kyca1331/mac).
+
+Successful reads are serialised and cached per provider, so STT, TTS, previews and usage checks reuse the same authorised session. Updating/removing a key updates/clears that cache only after the OS operation succeeds. Cache strings use zeroising storage; provider requests may hold their own in-flight copies. No cache is written to disk, and stored secrets are never returned to the webview. The original keychain service/account identity is preserved for existing keys; no ACL is widened and no keychain password is stored.
+
+### Reset memory and start afresh
+
+In **Settings → Memory → Reset memory…**, review the confirmation and choose **Reset memory and restart**. This deletes the entire local Mnemara ledger directory, including provisional notes, archived/deleted versions and summaries, and clears the local reminder/follow-up journal. The app restarts with no saved companion thread ID, creating a new conversation instead of reusing old model context. Name, palette, voice/API key, model/effort, startup, behaviour, learning permission and other settings are preserved. No real memory is reset just by opening the confirmation.
+
+Previous conversations remain in Codex/Desktop history; notdot detaches from them rather than deleting external chats. Backups, OS snapshots and other copies are not erased, and this is not forensic disk sanitisation. Reset is irreversible within notdot. Stop or finish an active turn/voice operation before confirming. A durable reset intent is written before restart; startup completes deletion before opening the ledger or launching runtimes. If deletion or settings persistence fails, startup stops with the reset pending for retry, so old context cannot silently reload. No automatic processing of old conversations occurs after reset.
+
+### Acceptance validation
+
+Current automated, security, accessibility and performance evidence is recorded in [the acceptance audit](validation/2026-10-27-acceptance.md), with [repeatable memory measurements](validation/2026-10-27-memory-performance.json). Native microphone/speaker, VoiceOver, visual layout, real sign-in startup and installed-update acceptance remain gates; use [the isolated QA plan](validation/NATIVE-VOICE-ACCEPTANCE.md), never the production memory reset. The orb supports Enter/Space and Command/Control+comma for Settings.
+
+## Terms used in this technical guide
+
+| Technical term | Plain meaning |
+| --- | --- |
+| Runtime / app-server | The installed Codex program that sends requests and keeps the chat. |
+| Reasoning effort | How much thinking the model is asked to do. |
+| STT / TTS | Turning a recording into words / turning a reply into speech. |
+| Ledger | The local store of saved memories. |
+| Recall | Finding saved memories to use in a reply. |
+| Provisional | A possible memory that still needs confirmation. |
+| Corroboration | Another chat supports the same detail. |
+| Distillation / digest | Making a shorter summary of saved notes. |
+| Provenance / lineage | Where a note came from and which notes support it. |
+| Inference | An AI request. |
+| Single writer | Only notdot sends messages to its companion chat. |
+
+The speaking animation now uses smooth, layered waves with a softened audio level. The listening indicator and the waiting halo remain distinct. Intelligence is chosen in one expandable card with model choices and thinking-level buttons. Drag the Settings header to move the window without closing it.
+
+## Incremental spoken replies
+
+The runtime streams final-answer items into a separate, turn-tagged speech buffer. Commentary and reasoning are never read aloud. The frontend takes complete sentences from a bounded 64 KB text/cursor buffer, keeps at most one next synthesis request in flight, and plays clips in order. It can start before the whole answer is available; this is sentence-level delivery, not byte-stream audio or word-by-word speech.
+
+Cancellation invalidates the frontend generation and clears queued text/audio. A request identity scopes native interruption to the same submission; bounded, expiring cancellation tombstones cover cancel-before-dispatch races. An already-sent provider request can finish or be billed, but its late audio is discarded. Provider failures stop the stream rather than skipping or repeating sentences. Material rewrites of already queued text fail closed. Playback has an onset gain ramp, and its dynamic listener is removed with the graph. Normal builds contain no debug composer; the optional debug composer now exercises the same spoken-reply path after STT.
+
+### Building local wake recognition
+
+The wake layer combines a small keyword detector with a speech-gated Whisper tiny English fallback. Both run locally. Quantised weights are bundled and checked against SHA-256 manifests; there is no first-run model download. Native builds now need CMake, a C/C++ toolchain and libclang for whisper-rs bindings. On Linux, the development Dockerfile includes these packages. Windows builds need the Visual Studio C++ toolchain, CMake and LLVM/libclang (set `LIBCLANG_PATH` if it is not discovered). Those platform builds still require validation before release.
+
+Windows x64 builds use Rust's static C runtime and the same runtime for whisper.cpp, matching the bundled sherpa-onnx libraries. `.cargo/config.toml` sets this consistently. Tauri's separate partial-runtime shim is disabled because Rust already handles runtime linking. After changing these settings, clean native dependency build caches before rebuilding.
+
+On Windows, notdot also checks the official standalone Codex install at `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe`. This works from a desktop launch even before newly installed terminal PATH settings take effect. The Windows Store app's protected bundled executable cannot be assumed to work as an external runtime; install the official standalone CLI and complete its own sign-in when needed.
+
+The fallback keeps at most six seconds of mono audio, plus half a second of pre-roll. One job runs at a time; microphone handling continues while it runs. It uses two CPU threads and an abort deadline, and discards results after mute, pause or a settings change. It checks for the configured phrase at the start of locally recognised speech. It does not retain transcripts or audio. The local models add about 31 MiB to the bundle; English wake detection remains experimental and needs live acceptance across voices and environments.
+
+Activated hands-free requests use a local Silero speech classifier for automatic stopping. It separates speech from non-speech sound rather than treating every loud frame as continued talking. Background wake audio stays local; activated request audio is streamed to the selected recognition service. The classifier and its streaming resampler run on the microphone worker, with bounded buffers cleared after a request or cancellation. The request still stops after a short pause and keeps the existing recording-duration and empty-request limits.
+
+### Streaming transcription boundaries
+
+The native stream uses 100 ms PCM packets and bounded queues. Packet sequence checks reject missing audio; only the complete local request can be retried. Every 20 seconds, a long request commits a stable segment before continuing. Short utterances are padded with generated silence if the provider needs two seconds of audio, without extending microphone recording. Background wake audio is never included. Network timeouts and cancellation stop abandoned sessions. The API key stays in a sensitive native request header, never the WebView, URL or diagnostics. Provider retention and billing still apply, including any audio already sent before cancellation.
+
+Activation reaches the orb through a native event; periodic status checks remain a recovery path. Local wake recognition waits for 350 ms of quiet before checking the complete phrase, using the same matching rules as before. A failed check keeps later buffered audio while recognition is busy.
+
+### Speech language and memory safety
+
+English is the default speech-language hint for ElevenLabs realtime and batch STT. Automatic detection remains available for other languages. The batch path requests verbatim output without audio-event tags and uses deterministic temperature zero. No remembered facts are fed back as recognition keyterms, so an old belief cannot bias a new correction. No premium vocabulary or transcript-edit features are enabled. Read-back confirmation is the protection against residual recognition mistakes; a language hint is not a calibrated accuracy guarantee.
+
+The native confirmation manager validates source evidence before asking and again checks memory policy/revision before writing. Replays, expired questions and stale workers cannot approve a fact. Confirmation responses bypass normal model/learning submission, so a negative reply cannot become a new memory. The QA-only confirmation evidence file records events and visible-record counts, never raw speech, candidate text or keys.
+
+The debug native binary accepts `--stt-evaluate /absolute/path/corpus.json` to evaluate the selected recognizer (including a live/full-clip comparison for ElevenLabs) without sending anything to the model or memory. The manifest is an array of `{ "path": "/absolute/path/synthetic.wav", "expected": "known phrase" }` entries (1–64 clips, mono PCM16, at most 30 seconds each). This explicit diagnostic requests native saved-key access and consumes provider usage. Its JSON output includes synthetic transcripts; use only non-sensitive test audio and keep results private. It is excluded from release builds.
+
+### Experimental Deepgram recognition
+
+Settings → Voice → Speech recognition selects either the existing voice service or Deepgram Flux. Flux currently requires English and uses `flux-general-en` on `/v2/listen`, mono PCM16, native speech endpointing (`eot_threshold=1.0`) and `ForceEndTurn`. Only final `EndOfTurn` text reaches the model; updates are counted for timing, never submitted. Unlike the ElevenLabs path, Flux stays continuous until the native request ends: forcing an arbitrary 20-second boundary can finalize text before the last word is decoded. No eager model dispatch, premium hints, batch second pass or automatic provider switch is enabled. Provider-driven endpointing could reduce the native silence wait, but is not implemented or claimed by this adapter. Unsupported microphone rates fail explicitly. A failed Flux stream does not send audio to another service or retry batch decoding.
+
+Deepgram authentication uses a sensitive native Authorization header. Its key is stored under account `deepgram`; QA uses service `com.kabudu.notdot.qa`, while the normal app uses `com.kabudu.notdot`. QA may save its isolated Deepgram key but cannot alter the production ElevenLabs key. Neither settings JSON, frontend snapshots nor diagnostics return saved keys. Backend selection defaults to the old voice service for existing profiles. Native capture requires both recognition and playback key readiness.
+
+Real Deepgram wake-and-reply checks have passed on macOS, and a one-click spoken reply was confirmed on Windows. Wider synthetic recognition checks still find misheard words; these results do not establish a general accuracy advantage or full release acceptance. Linux live voice, broader human speech and remaining installed-platform checks are still open. See [Mac checks](validation/2026-10-28-deepgram.md) and [Windows scenarios](validation/2026-10-29-windows-scenarios.md).
+
+### Optional Windows wake acceleration
+
+Windows x64 packages may include a separate accelerated wake helper. The normal app stays at the generic Windows x64 CPU baseline. Before starting the helper, notdot checks the CPU and OS instruction support, the fixed bundled path and a SHA-256 digest embedded when the app was built. There is no release-time environment override for the helper path. A missing, altered or unsupported helper leaves the existing generic recognizer available.
+
+The helper loads the same pinned local model and uses the same full-context matching rules. It keeps one model process warm and uses up to four CPU threads. It receives only bounded, speech-gated local wake-analysis audio and the configured wake phrase through private pipes; it receives no voice key, model-account credential, network endpoint or project directory. It does not save audio or return recognised text. Its working directory is the verified helper directory, and its environment is cleared apart from Windows system-directory variables.
+
+Initial helper setup is bounded to three seconds while wake detection is loading, before the microphone opens. Request decoding has the existing three-second bound. Cancellation during a request or a scoped restart kills and reaps the helper; identities and epochs reject stale results. A failed helper does not run a second decoder on the same utterance or extend that utterance's deadline. A later utterance uses the generic decoder. A cancelled helper can be started again for a later request. The diagnostic `fallback_decoder` field identifies the selected fallback; it does not prove that a particular wake activation used it instead of the fast keyword detector.
+
+On a Windows developer machine with `clang-cl`, prepare the optional resource with `python scripts/build_windows_wake_helper.py`. It builds only the helper with its explicit guarded AVX2 profile in a separate Cargo target directory, then stages the generated executable under ignored `src-tauri/resources/wake-accelerated/`. The app build embeds that file's digest; the Windows resource configuration includes it in the package. For the existing cross-build image, use `--container-image notdot-windows-builder-llvm20` and a dedicated helper `--target-dir`. Never reuse the normal app's native dependency cache or apply the helper's ISA flags to the app.
+
+The disabled release workflow prepares the helper separately and explicitly keeps the normal Windows build generic. Its enablement gates remain unchanged. The helper and package selection still need installed Windows acceptance after changes; an accelerated decoder benchmark alone is not a complete wake or voice test.
+
+Before an in-app update, notdot stops capture and waits for the wake helper to exit. New listening stays blocked during installation. If installation fails, only a fresh listening request can resume it; old recordings are never restarted. If the operating system cannot confirm helper cleanup, close and reopen notdot before trying the update again.

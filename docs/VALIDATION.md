@@ -1,0 +1,193 @@
+# Validation record
+
+This is a dated testing log for developers. It records what was tested, what failed and what still needs checking. Passing one test does not mean the whole app is ready to release. For everyday use, see [Settings](settings.md).
+
+Environment: macOS arm64; Rust/Cargo 1.97.0; Tauri 2.12.5; Trunk 0.22.1; installed ChatGPT Codex runtime 0.164.0-alpha.11.1. No API key is stored in the repository or test evidence.
+
+## Verified
+
+- Real Rust bridge starts Terra Medium, completes a turn, restarts and recalls the previous answer using the same persisted thread ID.
+- Native Tauri/WASM app completed a real user turn, and Desktop read the same completed history while notdot remained running. That native test used the earlier development composer; the default UI now excludes it.
+- Nine core/provider Rust tests cover settings restart/validation, explicit retention intent, memory restart/deletion and dependent-summary retraction, interleaved agent events/unsupported approval rejection, runtime exit, provider bad inputs, preview-URL safety, and voice search/pagination over a local HTTP fixture.
+- Native and WASM Clippy pass with warnings denied, including the opt-in WASM debug UI configuration.
+- Native onboarding saves and returns to a borderless orb-only surface. The saved name and palette survive app restart.
+- Live account voice catalog loads successfully. Search filters the native dropdown; more than five available voices reveals search. Voice preview API/playback path was exercised without a visible failure.
+- User-reported hardware E2E passed: after selecting/saving a voice, the user tried a spoken message and confirmed “I heard a spoken reply”.
+- Live provider smoke synthesized a fixed phrase (25,538 MP3 bytes) and transcribed it back as “The voice bridge is working”. This is an actual TTS → STT API round trip, not a microphone E2E test.
+- Moving the colour slider changes the panel's accent/background immediately; cancelling restores the saved palette. Temporary test voice selection was cleared afterward; the user's name/palette and saved key were retained.
+- Default generated HTML and WASM were inspected for absence of the debug conversation composer. The optimized binary also excludes the debug-only voice smoke entry point; Enter did not open a text interface in the optimized native app.
+- Optimized macOS app bundle built at approximately 17.34 MiB. Initial release builds reproduced an upstream Mach-O LINKEDIT alignment failure in stripped proc-macro libraries; explicit `strip = "none"` for release/build dependencies resolved the same build command.
+- The optimized app launched using the saved palette. Renderer initialization now guards all drawing until persisted settings arrive; CSS also hides the canvas until that point. App data directory permissions are 0700.
+
+## Important boundaries
+
+- The user confirmed hearing a spoken reply after using the optimized app, verifying microphone → STT → Terra → TTS → speaker flow. Capture-device removal and other hardware failure modes have not been tested. The implementation uses explicit, bounded push-to-talk; it is not realtime/full-duplex streaming.
+- Only ElevenLabs is currently registered. Other providers can implement the Rust provider interface; no additional provider is advertised as implemented.
+- Desktop history reading is verified; seamless shared Desktop runtime ownership and live Desktop UI refresh are not.
+- Memory now supports opt-in automatic extraction and semantic distillation in addition to explicit requests; see the semantic learning follow-up below. Model-derived notes remain observed, source-linked data.
+- Forgetting excludes notes and dependent summaries from recall. It does not securely erase conversation history or underlying historical versions.
+- App-server remains an experimental external runtime dependency. Host approval/elicitation and desktop-only tools unsupported by notdot are rejected.
+- Local bundles are development artifacts; signing/notarization, public distribution, cross-platform packaging and full third-party notice generation are not release-validated.
+
+## Remote CI
+
+At implementation commit `569e989`, GitHub Actions run [40415491777](https://github.com/kabudu/notdot/actions/runs/40415491777) failed before executing any steps. Its check annotation states: “The job was not started because recent account payments have failed or your spending limit needs to be increased.” No runner logs exist because the job did not start. Local checks and the optimized bundle build passed; this does not substitute for remote CI. PR remains draft/unmerged pending account remediation and a successful run.
+
+An additional pure Rust gesture regression verifies that a native window drag cannot activate recording when local coordinates return to their original position; primary clicks still activate, and secondary/control-clicks do not.
+
+## Animation follow-up
+
+The original amplitude-only motion was too subtle to establish an obvious thinking/speaking state. The renderer now uses an explicit mode mapping, a high-contrast rotating thinking halo, and radial waveform/body pulses measured from Web Audio during recording/playback. Native window visibility controls drawing; background suspension is disabled on macOS 14+ so the floating companion can keep updating without focus.
+
+Two additional pure Rust tests cover waiting-stage/playback mode mapping and silence/known-waveform RMS. During a live native preview, the local diagnostic recorded `idle → thinking → speaking → idle`, advancing rendered frames, `reduced=false`, metering enabled during playback, and a measured peak speaking RMS of approximately 0.269. This is measured playback data, not a synthetic amplitude setting. A bounded local status file makes future visual-state failures diagnosable without storing speech content.
+
+## Desktop lifecycle follow-up
+
+At the owner's explicit request, GitHub Actions is now disabled at repository level, verified with the Actions permissions API. Workflow sources remain prepared; the release workflow also requires a public repository and an explicit public-release variable. The earlier billing failure above is historical evidence, not the current reason CI is absent. No release, tag, merge or visibility change was performed.
+
+Local `scripts/ci-local.sh` passes for the reviewed working tree: core/provider/native tests, native and WASM Clippy (default/debug UI), gesture/visual regressions and the release-manifest regression. New coverage includes settings migration/startup preferences, interrupt requests carrying both identities, strict update consent, persisted update deferral, target-specific release URLs, and the real Tauri updater's HTTP/signature path. Synthetic signed content is accepted; tampering and version replay are rejected. No fixture is installed and this does not prove a full update/restart.
+
+The Windows x64 current-user NSIS installer was transferred through the existing Windows App shared folder, SHA-256 checked on the laptop, installed and launched. Native UI showed the logomark in About, settings/switches, integrated voice picker and update controls. Testing exposed and corrected an extra console and oversized settings on the remote display. The corrected UI fits the available screen. `where codex` found no executable in the laptop's PATH; no Windows Terra/tool/voice round trip is claimed. No API key or account token was transferred from the Mac.
+
+The macOS app and updater archive build locally with version-bound updater signatures; these remain development artifacts without Developer ID/notarization. Linux x64 compiles on Debian 12 and the Debian package builds. AppImage packaging succeeded after isolating a static-PIE packaging-launcher failure under Mac-hosted Linux emulation: the vendor plugin's extracted AppRun works where its AppImage launcher returns exec-format error. This is an emulation workaround for packaging tools, not a modification to notdot's runtime or signature checks. Final artifact inventory and the unclosed installed-platform gates are recorded in release-readiness.md.
+
+Mac startup follow-up: a one-second native process sample identified `get_password` waiting in macOS Security on the main setup thread. The corrected launch uses a background metadata-only Keychain query and keeps secret decryption in the existing voice authorization path. Native launch, saved-key detection, preserved preferences and About were exercised after this fix. No credential ACL was changed and no credential value was read into test output.
+
+The local release preview stages three real updater-signed artifacts (macOS arm64, Windows x64 and Linux x64), a complete latest.json and SHA-256 checksums without publishing. The Linux AppImage is approximately 110.89 MiB and Debian package 9.22 MiB. The final Linux package predates the macOS-only metadata-query adjustment; Linux credential behaviour is unchanged by that guarded code. A public release must rebuild from its exact tagged revision. The Mac later locked, so remaining live voice/installed-update trials were stopped; they are not claimed complete.
+
+## Voice quota follow-up
+
+The quota implementation passes `scripts/ci-local.sh`: 25 core/provider/native tests, three standalone interaction/visual tests, one Python release regression, formatting and native/WASM Clippy including debug UI. `cargo xwin check -p notdot --target x86_64-pc-windows-msvc --locked` also passes. Local HTTP fixtures exercise the real ElevenLabs client request boundaries with synthetic credentials: account usage, permission failure, payment/legacy quota errors, invalid key and rate limits. No paid calls are needed for these cases.
+
+Ledger tests cover all thresholds, jumps, restart, account/cycle changes, stale/expired/unknown usage and unavailable accounting. Native monitor tests persist and reload delivery acknowledgements, preserve alerts with backoff after missing OS speech, reject old-credential results, and ensure successful transcription cannot clear a synthesis quota failure. Delivery tests inject the local speech callback; they do not establish OS speaker output. History is marked before speech to suppress crash/restart duplication; a crash during an announcement may lose that one spoken notice.
+
+Live UI/account verification was attempted through the native app, but CUA returned “The Mac is locked and automatic unlock could not unlock it.” No lock bypass was attempted, no user's quota was depleted, and a live balance/speaker acceptance check remains open. Prior release-preview packages predate quota monitoring and must not be published as including it.
+
+Provider sources: [user/account response](https://elevenlabs.io/docs/api-reference/user/get), [subscription fields](https://elevenlabs.io/docs/api-reference/user/subscription/get), [billing distinctions](https://elevenlabs.io/docs/overview/administration/billing), [typed errors](https://elevenlabs.io/docs/eleven-api/resources/errors). Account identity and subscription are obtained in one authenticated `/v1/user` request; the UI redacts identity while the local ledger uses it for per-account warning history.
+
+The optimized macOS bundle and updater archive build successfully with local ad-hoc signing, and `codesign --verify --deep --strict target/release/bundle/macos/notdot.app` passes. The app is approximately 20.44 MiB; it has not been live-verified after this build because the Mac remains locked. No release preview was overwritten or published.
+
+## Wake-phrase follow-up
+
+Wake listening is opt-in and off for existing settings. The Rust worker owns one microphone and one keyword detector, downmixes callbacks through a bounded queue, and keeps all background audio local and ephemeral. Only PCM captured after detection is consumed through a one-shot native command into the existing STT client; the frontend receives the transcript and never receives raw wake audio. Settings/name/mute changes revoke the active capture epoch.
+
+Busy UI/voice states, playback, system announcements and missing frontend heartbeats pause listening; no-speech, duration/sample-count, queue-overflow and microphone-stall bounds prevent indefinite capture. Linux build prerequisites now include ALSA headers. Static sherpa-onnx and both selected model sets are included in the app; model checksums are verified during the build.
+
+The original English BPE model failed the “Hey Ava” synthetic fixture. A newer pronunciation model plus its local dictionary handles dictionary-covered names; BPE remains a fallback for unknown spellings. Coarticulated “Hey Ava” needs a shared-vowel path, local onset-energy support and a short H→EY prefix check to reject the tested name-only false activation. These are bounded detector checks, not proof of universal acoustic accuracy.
+
+Automated tests exercise actual bundled inference for “Hey Ava” at two UK synthetic speech rates, name-only “Ava”, unrelated speech and old-name rejection after a rename. A full worker-frame integration feeds the real keyword audio, observes capturing, supplies request samples and silence, takes the resulting WAV, verifies its exact samples exclude background/keyword audio, and rejects a second take. Separate cases cover timeout/no speech, continuous speech limits, settings migration/persistence, mute/pause/expiry/rename cancellation and keyword-directive rejection. No microphone or paid STT/TTS call is used by these tests.
+
+`hey-ava-us.wav` is retained as a **known missed detection** for one US synthetic voice. It is not counted as a passing positive. Native microphone/accent, ambient-noise, echo and full wake→live STT→Terra→speaker acceptance remain unverified. CUA again reported the Mac locked; a request to unlock it was sent while independent validation continued. The passing fixtures justify an experimental feature, not a claim of reliable wake detection for all names or accents. Synthetic fixture provenance and redistribution limits are recorded alongside the files.
+
+Final local wake validation: `scripts/ci-local.sh` passes 30 core/provider/native tests, three standalone gesture/visual tests, one Python release regression, formatting and native/WASM Clippy (default/debug UI). The detector also passes with 48 kHz simulated device input, exercising sherpa's actual resampling to 16 kHz. `cargo xwin check -p notdot --target x86_64-pc-windows-msvc --locked` passes with CPAL 0.18.2 and sherpa-onnx 2.0.0. These are compile/fixture checks, not a Windows microphone trial.
+
+Linux x64 `cargo check -p notdot --locked` passes in the updated Debian 12 builder with ALSA headers, using the current source and static sherpa runtime. The first container attempt masked Cargo's executable directory with a cache mount; moving the cache to `/cargo` resolved that harness issue. The final incremental check also passes. This is Linux compilation, not an installed audio/desktop test.
+
+The optimized macOS app/updater archive includes both checksum-pinned model sets and notices (approximately 58.7 MiB app, 22.8 MiB archive). A local Web Audio activation tone complements the listening animation without consuming voice-provider quota. The live activation tone, microphone permission and complete wake-to-reply path remain unverified while the Mac is locked. Existing release-preview packages remain untouched.
+
+Final bundle verification: `codesign --verify --deep --strict` passes and all 17 packaged wake resources match their source bytes, including model weights, tokenisers and notices. GitHub Actions remains disabled, verified through the repository permissions API. No user preferences, credentials, release previews or public release state were changed.
+
+## Cancellation and semantic learning follow-up
+
+The missing-`turnId` fix was already present and its wire-level regression passes. Cancellation now also refuses empty/placeholder identities, recovers an unresolved timed-out submission by restarting the owned companion runtime, and ignores stale completion events for other active turns. Learning binds the input to the actual RPC turn ID even when completion arrives before the turn-start reply; failed/interrupted/cancelled turns are not queued for automatic learning; explicit retention still occurs at submission as before.
+
+The existing memory preference is preserved and labelled **Learn useful context**. Enabled completed interactions enter a bounded background queue. Explicit requests are retained at submission, independently of conversation/analysis success; automatic notes require a stable key, confidence >=0.85, an exact user evidence quote and bounded content. Known credential/action patterns and opted-out inputs are rejected. Corrections archive earlier automatic facts and invalidate dependent summaries. Model-generated digests must reference at least two supplied current facts and be shorter than their sources. Model judgement is not a proof of factual correctness: the records remain Observed and the review UI exposes origin/evidence.
+
+The learner owns a separate Codex app-server process so its events and per-thread capability overrides cannot interfere with the companion runtime. Threads are confirmed ephemeral Terra Medium, use structured output, and disable action/connector capabilities for analysis. Threads are unsubscribed after use; a failed/cancelled/deadline-exceeded analysis shuts down the owned learner process. Policy epochs invalidate queued/in-flight results on memory toggles or forgetting. Compaction changes the ledger revision so stale model proposals cannot apply after maintenance.
+
+A 90-second model deadline, eight queued jobs, 24 relevant/recent facts / 12 KB review context, output limits and the 2,000-record storage cap bound work; skips/errors appear in Settings.
+
+The new storage correction regression initially failed because reusing a record ID as the ingestion idempotency key replayed its insertion receipt instead of applying archival. Using a fresh mutation key per version fixes that behaviour. Core lifecycle tests now cover automatic insertion, correction, semantic source links, maintenance, reopen, forgetting/dependent-summary retraction, disabled recall, disabled/forgotten stale jobs, opt-outs, sensitive/ungrounded proposals and explicit retention independent of model availability. Native queue tests cover response/event ordering, stale/failed/cancelled completions, policy changes and overload.
+
+Explicit live authenticated tests use only synthetic facts and temporary ledgers. The core test passed actual Terra extraction, semantic distillation, correction using the existing semantic key, forgetting and reopen. The native worker test passed completed-interaction → queue → isolated runtime → validated persisted notes → Settings status. No user ledger, setting, credential or companion conversation was modified. Official protocol/config references: https://learn.chatgpt.com/docs/app-server and https://developers.openai.com/codex/config-reference. The live model tests remain opt-in/ignored during ordinary CI to avoid automatic account inference.
+
+Additional memory bounds regressions verify that an older relevant fact remains in a 24-note correction plan, unchanged periodic reviews skip inference, and differently worded digests of the same source set do not grow the ledger. Maintenance is policy-gated under the same mutation lock as saving, so toggling memory off cannot race a new compaction write.
+
+Final semantic-memory validation: local CI passes 40 core/provider/native tests, three standalone gesture/visual tests and one Python release regression; native and WASM Clippy (default/debug UI) pass. Both explicitly requested live test commands passed during this implementation: `cargo test -p notdot-core --test bridge live_semantic_learning --locked -- --ignored --nocapture` and `cargo test -p notdot learning::tests::live_completed --locked -- --ignored --nocapture`, with `NOTDOT_MEMORY_LIVE_RUNTIME` pointing to the installed native runtime. All live data is synthetic and isolated.
+
+Windows x64 and Linux x64 compile checks pass. The optimized macOS app/updater archive builds at approximately 59 MiB / 22.9 MiB. Native Settings inspection was attempted, but CUA reports the Mac locked; the updated visual review surface remains unverified.
+
+Explicit retention is preserved at submission even if a conversation fails or is cancelled; automatic learning still excludes unsuccessful turns. Explicit turns are not fed back into fact extraction as new automatic notes. Forgetting also retracts same-key fact versions and paraphrases whose exact evidence matches the forgotten note, plus derived summaries. This guards against a forgotten explicit note surviving as an automatic duplicate.
+
+Two default-parallel core test runs stalled after the added fixtures opened enough independent temporary Sled databases to occupy its shared flush pool. A one-second native process sample showed the Sled I/O workers waiting for log stability; the new forget regression passed immediately in isolation. The database fixtures now use a test-only async lock to match the app’s single-ledger topology. All assertions remain, and the complete default test/lint script passes after that harness change. No production database synchronisation was weakened or skipped.
+
+The final rebuilt macOS bundle passes `codesign --verify --deep --strict`; Windows and Linux x64 checks pass after the forgetting/fixture hardening. GitHub Actions remains disabled, verified through its permissions API. The new model passes used temporary synthetic ledgers only; no user preferences or existing notes were changed. No release, tag or merge was performed.
+
+
+## Controlled learning and initiative follow-up (2026-10-27)
+
+Acceptance mapping: preferences/useful context and semantic distillation reuse the isolated Terra learner; new automatic observations now enter a 30-day provisional state. Recall and digest validation exclude them until independently corroborated or explicitly confirmed. Replayed source turns cannot confirm themselves. Explicit correction cues supersede inferred keyed beliefs; Settings edits have priority over automatic inference and retain original evidence plus supersession links. Review exposes confidence, a local date, state and evidence, with edit/confirm/forget controls. Memory-off remains independent of interruption mode and explicit reminder storage.
+
+Reactive is the default for existing/new settings. Suggestions adds a silent orb marker; Proactive uses local speech for permitted reminders/check-ins. A separate 256-entry persisted journal governs local quiet hours, daily caps, minimum spacing, per-item permission, snooze, dismissal, expiry and at-most-once delivery claims. It never invokes model tools or external actions. Discovery is intentionally limited to recent confirmed keyed projects/goals/commitments; it does not guess arbitrary dates, infer task completion or run an unconstrained proactive agent.
+
+Explicit relative reminders support minutes/hours/days up to thirty days; unsupported expressions return a spoken explanation. These boundaries are part of the implemented behavior, not advertised future features.
+
+Automated validation: the complete local CI script passes 47 core/provider/native tests, three standalone gesture/visual tests, one Python regression, formatting and native/WASM Clippy (default/debug UI). New lifecycle checks cover reminder creation through the local voice-command boundary, persistence/reopen independent of memory, inferred permission isolation, removal of inferred data, persistence-failure receipts, quiet hours across midnight, caps, gaps, clock rollback, snooze/dismissal tombstones, provisional recall exclusion even after maintenance, independent-turn corroboration, replay rejection, user-edit authority and superseded provisional visibility.
+
+The live synthetic Terra test passes extraction → provisional storage → separate corroboration → digest → correction → forget → reopen. The first attempt used Settings confirmation before testing an inferred overwrite and correctly refused that overwrite; the harness now uses independent corroboration for that scenario, with manual-edit protection covered separately.
+
+Windows x64 and Linux x64 compile checks pass. The optimized macOS bundle builds at approximately 59.4 MiB (signed updater archive 23.1 MiB). CUA inspection returned “The Mac is locked and automatic unlock could not unlock it”; no lock bypass was attempted. Native layout/accessibility inspection and audible automatic reminder delivery remain unverified. Core scheduling tests exercise the real journal state machine, not actual OS speech hardware. No real user setting, ledger or credential was modified for these tests. GitHub Actions remains intentionally disabled; no public release, merge or tag was created.
+
+
+## Explicit automatic-startup control (2026-10-27)
+
+Settings now presents **Start notdot when I sign in** as a switch. Enabled plus the default immediate behavior saves the existing `login` mode; off saves `manual`. The optional desktop-wait behavior preserves `with_codex` migration and the existing watcher. Saving still uses the native Tauri autostart enable/disable mechanism, including rollback if persisting settings fails. No new daemon, system-wide pre-login service or desktop-window dependency was introduced. Existing users’ preferences are preserved, and the change does not enable login startup without the user saving it.
+
+The settings persistence test covers Login, Manual and WithCodex round trips and legacy defaults. WASM Clippy passes for default and debug UI; the optimized macOS bundle builds. A real logout/login and Windows/Linux startup-session acceptance were not exercised; OS startup registration code is unchanged. No real login-item preference was changed during validation.
+
+
+## Live model/effort selection (2026-10-27)
+
+The Settings Intelligence section uses runtime `model/list` results, including paginated model slugs, display names, descriptions, defaults and supported effort descriptions. Existing/new settings migrate to Terra/Medium; a default-reset action is disabled if that pair is absent. Opening Settings and a one-minute visible-panel interval refresh discovery; requests remain serialized in the frontend. Failed discovery clears/disables offered choices without replacing saved preferences. Changed selections are validated before persistence, then resume the same companion thread. Turn and isolated memory-analysis calls validate the current pair again. Learning updates/cancels its active model configuration through a watch channel. No hard-coded fallback list or silent model migration exists.
+
+Local CI passes 50 core/provider/native tests, three gesture/visual tests, one Python regression and native/WASM Clippy including debug UI. New tests exercise catalog pagination, hidden filtering, canonical request model slug vs picker ID, supported-effort enforcement, same-history model configuration, runtime retirement before submission, repeated-cursor rejection, settings migration/round-trip and release of pending RPC slots after repeated deadline failures. Explicit authenticated live verification found eight runtime models and completed a synthetic, isolated ephemeral analysis using GPT-6.1 Sol / Low; Terra/Medium availability was also validated. This changed no user setting, ledger or companion thread.
+
+Windows/Linux x64 compilation and the optimized macOS build pass. CUA returned that the Mac is locked; native picker interaction/layout remains unverified. The installed runtime catalog is the authority: upstream caching or entitlement changes after discovery can still cause server rejection, which is reported rather than concealed. The implementation does not claim access to all models from ChatGPT Work/Chat or guarantee real-time knowledge beyond the supported runtime catalog. Official reference: https://learn.chatgpt.com/docs/app-server#list-models-modellist.
+
+
+## Keychain prompt and session-cache follow-up (2026-10-27)
+
+Root cause found in code: startup checked key presence without decrypting it, but the periodic quota monitor called the same interactive credential reader as every STT/TTS operation. Metadata-only startup therefore did not prevent a background password prompt. All normal backend reads now use silent access plus a provider-scoped native session cache. Interactive reads occur only through the explicit Settings authorisation command; saving/deleting credentials remains an explicit OS operation.
+
+Settings automatic voice loading is gated on already-authorised access. macOS uses the same login keychain/service/account as keyring with authentication UI skipped; Windows uses its current-user credential read; Linux uses the existing Secret Service dependency to search already-unlocked items without calling Unlock or Prompt. Failures remain failures, never a plaintext fallback or broader ACL.
+
+Local CI passes 52 core/provider/native tests, three gesture/visual tests, one Python regression and native/WASM Clippy. Credential tests use synthetic loaders/stores, proving eight concurrent reads perform one load, provider isolation, cache reuse, replacement, preservation on a failed replacement, deletion, denied reads and a fresh process-state cache without persisted secrets. These are cache lifecycle tests, not proof of macOS permission-dialog behavior. Windows/Linux compilation and the optimized macOS build are checked separately. The Mac remains locked, so real keychain authorisation/restart/updated-signature acceptance remains unverified. No real stored key, login keychain password, ACL, signing identity or user setting was changed by tests.
+
+Apple documents that Always Allow remembers access, Allow Once does not, and modified trusted apps may need reauthorisation. The current ad-hoc development build can still require explicit approval after changes. This implementation prevents unsolicited prompts and redundant reads; it cannot grant itself persistent OS trust, unlock a locked keychain or guarantee zero approval prompts across development rebuilds. Cache entries are zeroised on normal replacement/removal/drop; already-created provider requests may retain their own copies until completion. References: https://support.apple.com/guide/keychain-access/if-youre-asked-for-access-to-your-keychain-kyca1243/mac and https://support.apple.com/guide/keychain-access/if-a-trusted-app-asks-for-keychain-access-kyca1331/mac.
+
+
+## Complete local memory reset (2026-10-27)
+
+Settings offers a two-step destructive confirmation with safe cancellation and a named Reset memory and restart action. The native command requires confirmation and no active turn, capture, voice operation or update installation. It writes/fsyncs a durable reset intent, invalidates learning, stops wake listening and closes the main runtime, then uses Tauri restart.
+
+Startup handles the intent before Memory::open and before any worker/runtime starts: persist thread_id=None, remove the entire ledger directory, remove followups.json, sync and clear the intent. This removes underlying ledger history/indexes rather than only hiding notes. A failed cleanup leaves the intent and aborts startup; retry can finish after partial progress. External Codex chats and filesystem backups are explicitly outside the deletion scope. No factory reset of settings or keychain items occurs.
+
+Local CI passes 54 core/provider/native tests, three standalone gesture/visual tests, one Python regression, formatting and native/WASM Clippy. Temporary-directory lifecycle tests populate/maintain/forget a real ledger, close it, mark and complete a reset, verify physical directory/journal removal, exact preservation of every settings field except thread_id, no remaining recall/review results and successful learning into a fresh ledger. Another test injects a cleanup failure and proves the intent survives and a later retry completes. Unrelated app-data files are preserved.
+
+These tests do not reset real user data or exercise a real app self-restart. Windows/Linux x64 compile checks and an optimized macOS build are run; native confirmation/restart acceptance remains unverified while the Mac is locked.
+
+Self-review also found the Settings save handler held send_gate while asking connect to acquire it again after changing model/name. Releasing the completed-save guard before reconnect removes that deterministic rejection; model/thread protocol tests continue passing. No model/voice preference was changed during validation.
+
+
+## Broad acceptance audit
+
+The 2026-10-27 validation sweep, fixes, source provenance, repeated local-memory performance measurements and exact outstanding native gates are tracked in [the acceptance record](validation/2026-10-27-acceptance.md). This adds security/dependency scans, real runtime/adversarial checks, Linux native tests, keyboard/modal/contrast regressions and an isolated read-only-credential QA profile. It does not claim completion of microphone/speaker or VoiceOver acceptance while the Mac is locked.
+
+
+## Live streaming voice acceptance
+
+The macOS `859727f` QA build passed acoustic microphone → live streaming transcription → Terra Medium → spoken reply tests in wake and one-click modes, plus active capture, model and playback cancellation. Native events delivered the first listening frame 15 ms after activation in the measured wake turn; partial transcription arrived before recording ended. See [measurements and limits](validation/2026-10-27-wake-streaming.md). This supersedes earlier pending gates for this macOS path; Windows/Linux and fresh promotional recording remain separate.
+
+
+## Native learning and memory E2E follow-up
+
+Completed targeted macOS voice/UI acceptance on `fd980d6`: extraction, provisional exclusion/corroboration, explicit retention, distillation, correction, restart persistence, later spoken recall, memory-off isolation, native Forget and summary retraction, follow-up discovery/permission/Snooze/Dismiss, and actual Reset/self-restart with fresh recall and learning. Tests found and fixed whole-update rejection caused by invalid optional summaries and missed project discovery caused by semantic-key word order. Full local CI passes; the original QA profile is restored and production data is unchanged. OS alert execution passed, but human audibility was not confirmed. See [evidence and limits](validation/2026-10-27-memory-e2e.md).
+
+
+## Voice-memory confirmation follow-up
+
+`a0efdc1` adds a transcription-language setting and requires read-back confirmation before the app stores new voice-derived facts. Automated real-ledger and authenticated learner tests pass. Microphone acceptance completed on macOS: read-back rejection, strict approval, later recall, bare-yes refusal, silence and Escape checks. Original QA profile restored; production hashes unchanged. The earlier memory run covers the previous ingestion behaviour. See [bounded results and limitations](validation/2026-10-27-stt-memory-safety.md).
+
+## Recognition comparison and alternate service
+
+The wider synthetic corpus found no measured gain from ElevenLabs rumble/background-filter experiments; those were removed. Wake-pause segmentation and the spoken approval prompt were corrected and checked acoustically. Optional Deepgram recognition/key setup is implemented and passes silent mock/compile checks; actual provider and microphone acceptance are deferred at the user’s request until tomorrow. See [results, rejected approaches and remaining gates](validation/2026-10-27-stt-recognition.md).

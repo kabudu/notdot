@@ -1,0 +1,20 @@
+[package]
+name = "notdot-wake-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+[features]
+accelerated = []
+[dependencies]
+whisper-rs = { version = "=0.16.0", default-features = false }
+rubato = { version = "=0.16.2", default-features = false }
+sha2 = "0.10"
+tokio.workspace = true
+[[bin]]
+name = "notdot-wake-helper"
+path = "src/bin/helper.rs"
+
+[dev-dependencies]
+hound = "3"
+tempfile = "3"

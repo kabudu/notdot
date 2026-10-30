@@ -1,0 +1,7 @@
+[build]
+target = "index.html"
+dist = "ui-dist"
+[watch]
+ignore = ["src-tauri", "target", "ui-dist", ".local"]
+[serve]
+port = 1420

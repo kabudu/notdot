@@ -1,0 +1,15 @@
+{
+  "bundle": {
+    "targets": [
+      "nsis"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
+    "resources": {
+      "resources/wake-accelerated/": "wake-accelerated/"
+    }
+  }
+}
