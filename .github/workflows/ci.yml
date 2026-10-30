@@ -49,8 +49,8 @@ jobs:
         run: sh scripts/ci-local.sh
       - name: Exercise the bundled wake model on this native Mac architecture
         run: cargo test -p notdot-wake-runtime --release --test lifecycle worker_reuses_one_model_process_and_matches_the_shared_engine --locked -- --ignored --exact --test-threads=1
-  linux-native-diagnostic:
-    if: github.event.repository.private == false && github.event_name == 'pull_request'
+  linux-native:
+    if: github.event.repository.private == false
     runs-on: ubuntu-22.04
     timeout-minutes: 25
     steps:
@@ -58,37 +58,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
           toolchain: 1.97.0
-      - name: Linux native diagnostic prerequisites
+          components: clippy
+      - name: Linux prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y gdb libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libssl-dev libdbus-1-dev libasound2-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libssl-dev libdbus-1-dev libasound2-dev
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
-          key: release-x86_64-unknown-linux-gnu-generic-v1
+          key: validation-linux-x64-cpp-abi0-v1
           env-vars: GGML_ MACOSX_DEPLOYMENT_TARGET
           cache-on-failure: true
-      - name: Rebuild the cached native library with the corrected ABI
+      # The pinned whisper-rs-sys build script does not track CXXFLAGS changes.
+      # Rebuild this small native package so restored caches cannot mix string ABIs.
+      - name: Rebuild the native C++ boundary
         run: cargo clean -p whisper-rs-sys
-      - name: Build Linux test executable
-        run: |
-          mkdir -p .local/linux-diagnostic
-          cargo test -p notdot --bin notdot --locked --no-run --message-format=json > .local/linux-diagnostic/build.jsonl
-          python3 - <<'PYTHON'
-          import json, os
-          from pathlib import Path
-          artifacts = [json.loads(line) for line in Path('.local/linux-diagnostic/build.jsonl').read_text().splitlines()]
-          binaries = [a['executable'] for a in artifacts if a.get('reason') == 'compiler-artifact' and a.get('target', {}).get('name') == 'notdot' and a.get('profile', {}).get('test') and a.get('executable')]
-          assert len(binaries) == 1, binaries
-          with open(os.environ['GITHUB_ENV'], 'a') as output:
-              output.write('NOTDOT_TEST_EXECUTABLE=' + binaries[0] + '\n')
-          PYTHON
-      - name: Run real Linux unit suite under GDB
-        shell: bash
-        run: |
-          set -o pipefail
-          gdb --batch --return-child-result -ex 'set pagination off' -ex 'set print thread-events off' -ex run -ex 'thread apply all bt 30' --args "$NOTDOT_TEST_EXECUTABLE" --nocapture 2>&1 | tee .local/linux-diagnostic/backtrace.log
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: always()
-        with:
-          name: linux-native-diagnostic
-          path: .local/linux-diagnostic
+      - name: Test Linux code and the bundled wake models
+        run: cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --locked
+      - name: Check Linux-specific Rust code
+        run: cargo clippy -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --all-targets --locked -- -D warnings
