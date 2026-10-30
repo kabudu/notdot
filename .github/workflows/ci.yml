@@ -141,6 +141,8 @@ jobs:
           $installers = @(Get-ChildItem 'target/x86_64-pc-windows-msvc/release/bundle/nsis' -Filter '*-setup.exe' -File)
           if ($installers.Count -ne 1 -or $installers[0].Length -eq 0) { throw 'Expected one nonempty NSIS installer' }
           Get-FileHash $installers[0].FullName -Algorithm SHA256
+      - name: Validate Windows toolset and redistribution records
+        run: ./scripts/windows-release-provenance.ps1
       # Observe after acceptance, so the probe cannot prewarm the tested path.
       - name: Observe synthetic helper startup and response timing
         if: always() && steps.helper_build.outcome == 'success'
