@@ -8,7 +8,9 @@
       "appimage": {
         "bundleMediaFramework": true,
         "files": {
-          "usr/share/common-licenses": "../third_party/linux-common-licenses"
+          "usr/share/common-licenses": "../third_party/linux-common-licenses",
+          "usr/share/doc/notdot/appimage-runtime": "../third_party/appimage-runtime",
+          "usr/share/doc/notdot/platform-copyright": "../.local/linux-binary-notices"
         }
       },
       "deb": {
@@ -26,5 +28,8 @@
         ]
       }
     }
+  },
+  "build": {
+    "beforeBundleCommand": "python3 scripts/prepare_linux_binary_notices.py"
   }
 }
