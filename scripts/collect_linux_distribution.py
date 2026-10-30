@@ -97,7 +97,26 @@ def check_symlinks(appdir):
                 raise ValueError('unsupported AppDir symlink target')
 
 
-def collect(appdir, output, covered, project, appimage, offset, expected_app_sha256):
+def copy_cached_source(cache, destination, source, version):
+    if not cache or {'package': source, 'version': version} not in cache['manifest']['sources']:
+        return False
+    prefix = 'sources/' + source + '/'
+    entries = [(name[len(prefix):], digest) for name, digest in cache['manifest']['files'].items()
+               if name.startswith(prefix)]
+    if not entries or not any(name.endswith('.dsc') for name, _ in entries):
+        raise ValueError('verified source cache lacks source archives')
+    for name, digest in entries:
+        if '/' in name or name in ('.', '..'):
+            raise ValueError('unsafe cached source path')
+        origin = cache['root'] / prefix / name
+        if origin.is_symlink() or not origin.is_file() or sha(origin) != digest:
+            raise ValueError('cached source digest mismatch: ' + source)
+    for name, _ in entries:
+        shutil.copyfile(cache['root'] / prefix / name, destination / name)
+    return True
+
+
+def collect(appdir, output, covered, project, appimage, offset, expected_app_sha256, source_cache=None):
     if not appdir.is_dir() or not (appdir / 'usr/bin/notdot').is_file():
         raise ValueError('AppDir must exist and contain usr/bin/notdot')
     check_symlinks(appdir)
@@ -237,6 +256,9 @@ def collect(appdir, output, covered, project, appimage, offset, expected_app_sha
         if key not in sources:
             directory = output / 'sources' / source
             directory.mkdir(parents=True, exist_ok=True)
+            if copy_cached_source(source_cache, directory, source, version):
+                sources[key] = {'package': source, 'version': version}
+                continue
             subprocess.run(['apt-get', 'source', '--download-only', '--only-source', key], cwd=directory, check=True, timeout=600)
             dsc = list(directory.glob('*.dsc'))
             if len(dsc) != 1:
@@ -249,7 +271,8 @@ def collect(appdir, output, covered, project, appimage, offset, expected_app_sha
     record = {'schema_version': 1, 'notdot_revision': revision,
               'appimage_sha256': sha(appimage), 'appimage_bytes': appimage.stat().st_size,
               'runtime_prefix_sha256': runtime_sha, 'squashfs_offset': offset,
-              'notdot_binary_sha256': expected_app_sha256, 'binaries': binaries,
+              'notdot_binary_sha256': expected_app_sha256,
+              'verified_source_cache_manifest_sha256': source_cache['sha256'] if source_cache else None, 'binaries': binaries,
               'binary_packages': [packages[p] for p in sorted(selected)],
               'sources': [sources[k] for k in sorted(sources)],
               'data_source_policy': 'usr/share XML/data mapped by exact installed-file hash; compiled schemas regenerated',
@@ -268,14 +291,25 @@ def main():
     parser.add_argument('--squashfs-offset', type=int, required=True)
     parser.add_argument('--app-binary-sha256', required=True, help='expected usr/bin/notdot hash from immutable build record')
     parser.add_argument('--project', type=Path, required=True, help='clean checkout of exact packaged notdot revision')
+    parser.add_argument('--source-cache', type=Path, help='previously completed source-companion directory; opt-in only')
+    parser.add_argument('--source-cache-manifest-sha256', help='independently recorded expected SHA256 of cache manifest.json')
     args = parser.parse_args()
+    source_cache = None
+    if args.source_cache or args.source_cache_manifest_sha256:
+        if not args.source_cache or not args.source_cache_manifest_sha256:
+            parser.error('source cache requires directory and independently recorded manifest hash')
+        cache_manifest = args.source_cache / 'manifest.json'
+        if sha(cache_manifest) != args.source_cache_manifest_sha256:
+            parser.error('source cache manifest digest mismatch')
+        source_cache = {'root': args.source_cache, 'manifest': json.loads(cache_manifest.read_text()),
+                        'sha256': args.source_cache_manifest_sha256}
     covered = json.loads(args.separately_covered.read_text())
     if not isinstance(covered, dict) or any(not re.fullmatch(r'[0-9a-f]{64}', k) or not isinstance(v, dict) or
             set(v) != {'notice', 'source'} or any(not isinstance(p, str) or not p for p in v.values())
             for k, v in covered.items()):
         parser.error('invalid separate-coverage manifest')
     record = collect(args.appdir.resolve(), args.output.resolve(), covered, args.project.resolve(),
-                     args.appimage.resolve(), args.squashfs_offset, args.app_binary_sha256)
+                     args.appimage.resolve(), args.squashfs_offset, args.app_binary_sha256, source_cache)
     archive = args.output.with_suffix('.tar.gz')
     with tarfile.open(archive, 'w:gz') as stream:
         stream.add(args.output, arcname=args.output.name)

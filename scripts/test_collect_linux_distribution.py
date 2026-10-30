@@ -129,5 +129,37 @@ class RuntimeBinding(unittest.TestCase):
             self.assertFalse(producer.runtime_equivalent(b'0123456789', b'0123456789'))
 
 
+class VerifiedCache(unittest.TestCase):
+    def fixture(self, root):
+        path = root / 'sources/example'
+        path.mkdir(parents=True)
+        (path / 'example.dsc').write_text('source-control')
+        (path / 'example.tar.gz').write_bytes(b'archive fixture bytes')
+        return {'root': root, 'manifest': {'sources': [{'package': 'example', 'version': '1.0'}],
+                'files': {str(p.relative_to(root)): module.sha(p) for p in path.iterdir()}}}
+
+    def test_exact_version_cache_copies_verified_archives(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cache = self.fixture(root)
+            output = root / 'output'
+            output.mkdir()
+            self.assertTrue(module.copy_cached_source(cache, output, 'example', '1.0'))
+            self.assertEqual((output / 'example.dsc').read_text(), 'source-control')
+            self.assertEqual(len(list(output.iterdir())), 2)
+            self.assertFalse(module.copy_cached_source(cache, output, 'example', '2.0'))
+
+    def test_tampered_cache_is_rejected_without_copying(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cache = self.fixture(root)
+            (root / 'sources/example/example.tar.gz').write_bytes(b'tampered')
+            output = root / 'output'
+            output.mkdir()
+            with self.assertRaisesRegex(ValueError, 'digest mismatch'):
+                module.copy_cached_source(cache, output, 'example', '1.0')
+            self.assertEqual(list(output.iterdir()), [])
+
+
 if __name__ == '__main__':
     unittest.main()
