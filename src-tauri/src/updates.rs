@@ -480,6 +480,46 @@ mod tests {
         }
     }
     #[test]
+    fn failed_install_clears_spoken_consent_and_preserves_restart_journal() {
+        let dir = std::env::temp_dir().join(format!(
+            "notdot-update-failure-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("updates.json");
+        let updates = Updates::new(path.clone());
+        {
+            let mut i = updates.lock_state();
+            i.journal.last_check = 12345;
+            i.journal.deferred = Some("1.0.0".into());
+            i.status.phase = "installing".into();
+            i.status.version = Some("2.0.0".into());
+            i.status.prompt = true;
+            i.consent = Some(("2.0.0".into(), Instant::now() + Duration::from_secs(30)));
+        }
+        updates.persist().unwrap();
+        updates.fail("synthetic installation failed");
+        let status = updates.status();
+        assert_eq!(status.phase, "error");
+        assert_eq!(status.version.as_deref(), Some("2.0.0"));
+        assert_eq!(status.message, "synthetic installation failed");
+        assert!(!status.prompt);
+        assert!(updates.lock_state().consent.is_none());
+        let restarted = Updates::new(path);
+        let i = restarted.lock_state();
+        assert_eq!(i.journal.last_check, 12345);
+        assert_eq!(i.journal.deferred.as_deref(), Some("1.0.0"));
+        assert!(i.consent.is_none());
+        assert_eq!(i.status.phase, "idle");
+        drop(i);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn deferred_version_and_polling_time_survive_restart() {
         let path =
             std::env::temp_dir().join(format!("notdot-update-test-{}.json", std::process::id()));
