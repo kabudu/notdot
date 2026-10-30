@@ -1,0 +1,165 @@
+{
+  "schema_version": 1,
+  "description": "Five fixed, non-personal neural synthetic speech fixtures. No user recording or Apple System Voices output.",
+  "fixture_license": "Apache-2.0 (notdot project test assets; upstream source terms/declarations retained below)",
+  "tool": {
+    "name": "Piper",
+    "release": "2023.11.14-2",
+    "source_revision": "38917ffd8c0e219c6581d73e07b30ef1d572fce1",
+    "license": "MIT",
+    "license_file": "voice-synthesis/PIPER-ENGINE-LICENSE.md",
+    "source_license_url": "https://raw.githubusercontent.com/rhasspy/piper/38917ffd8c0e219c6581d73e07b30ef1d572fce1/LICENSE.md",
+    "archive_url": "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_aarch64.tar.gz",
+    "archive_sha256": "fea0fd2d87c54dbc7078d0f878289f404bd4d6eea6e7444a77835d1537ab88eb",
+    "executable_sha256": "0c44a6360a21367b5d03b8656c3e274f4de715f6533245d8c1f17c242631912b",
+    "phonemizer_executable_sha256": "87d1679f011b05a0195ef42a9401ec12e59c216ee91c4e5b6440498da4daa9ba",
+    "execution": "Linux arm64 container, network disabled,2CPU/2GiB bound; files only, no playback. The tool/model binaries are not distributed in this repository."
+  },
+  "model": {
+    "name": "en_US-ljspeech-medium",
+    "architecture": "neural VITS/ONNX",
+    "repository": "https://huggingface.co/rhasspy/piper-voices",
+    "revision": "5041a7a49ae5b3a0f30e6837769eb03fdbb231bd",
+    "license": "MIT as declared by pinned repository README",
+    "license_declaration": "voice-synthesis/PIPER-VOICES-README.md",
+    "model_card": "voice-synthesis/LJSPEECH-MODEL-CARD.md",
+    "url": "https://huggingface.co/rhasspy/piper-voices/resolve/5041a7a49ae5b3a0f30e6837769eb03fdbb231bd/en/en_US/ljspeech/medium/en_US-ljspeech-medium.onnx",
+    "sha256": "6f52a751e2349abe7a76735eb09dc1875298c77ea2342ffd2fef79ff81b87f22",
+    "bytes": 63531379,
+    "hash_checked_against": "published Hugging Face LFS object ID",
+    "original_config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/5041a7a49ae5b3a0f30e6837769eb03fdbb231bd/en/en_US/ljspeech/medium/en_US-ljspeech-medium.onnx.json",
+    "original_config_sha256": "141d612cc0a95ed7efc1ca936b845c2364967f2e9217c5dbfcf69fc4d6c65860",
+    "dataset": {
+      "name": "LJ Speech",
+      "publisher_url": "https://keithito.com/LJ-Speech-Dataset/",
+      "license_statement": "Publisher and model card identify the dataset as public domain; publisher specifies US public-domain status.",
+      "credits": "Keith Ito; Linda Johnson / LibriVox"
+    }
+  },
+  "generation": {
+    "config": "voice-synthesis/ljspeech-fixture.onnx.json",
+    "config_sha256": "0d3ed8e0a2a8206d39a0b0be3849e1c2b1b9aa843260c98732020518c0453684",
+    "config_change": {
+      "phoneme_type": {
+        "original": "espeak",
+        "fixture": "text"
+      }
+    },
+    "phonemization": "Piper phonemizer English en; join returned IPA codepoints; replace the name pronunciation ˈɑːvə with intended ˈeɪvə. Actual complete synthesis phonemes are recorded per file.",
+    "reason": "Correct proper-name pronunciation, not a detector/threshold change. Unrelated negative speech is unaltered.",
+    "parameters": {
+      "noise_scale": 0,
+      "noise_w": 0,
+      "sentence_silence": 0.2
+    },
+    "resampling": "Actual PCM audio resampling: Python3.9.6 audioop.ratecv(pcm,2,1,22050,16000,None), not a WAV header change.",
+    "padding": {
+      "leading_zero_frames": 2400,
+      "trailing_zero_frames": 4800
+    },
+    "post_gain": null
+  },
+  "files": [
+    {
+      "file": "hey-ava.wav",
+      "text": "Hey Ava.",
+      "synthesis_phonemes": "hˈeɪ ˈeɪvə.",
+      "length_scale": 1.15,
+      "noise_scale": 0,
+      "noise_w": 0,
+      "sample_rate": 16000,
+      "channels": 1,
+      "sample_bits": 16,
+      "leading_silence_ms": 150,
+      "trailing_silence_ms": 300,
+      "sha256": "3d401797214dd0dadbb79566af6a250d26524436ccc88eb50c6a88d925cfc5cd",
+      "bytes": 46850,
+      "frames": 23403,
+      "duration_seconds": 1.4626875,
+      "expected_hey_ava": true
+    },
+    {
+      "file": "hey-ava-uk.wav",
+      "text": "Hey Ava",
+      "synthesis_phonemes": "hˈeɪ ˈeɪvə",
+      "length_scale": 1.0,
+      "noise_scale": 0,
+      "noise_w": 0,
+      "sample_rate": 16000,
+      "channels": 1,
+      "sample_bits": 16,
+      "leading_silence_ms": 150,
+      "trailing_silence_ms": 300,
+      "sha256": "551185644cba466f44a1f35bb161babeed44c5c3ed99cc85121ba1f3dd6208f2",
+      "bytes": 43878,
+      "frames": 21917,
+      "duration_seconds": 1.3698125,
+      "expected_hey_ava": true
+    },
+    {
+      "file": "hey-ava-us.wav",
+      "text": "Hey Ava",
+      "synthesis_phonemes": "hˈeɪ ˈeɪvə",
+      "length_scale": 0.85,
+      "noise_scale": 0,
+      "noise_w": 0,
+      "sample_rate": 16000,
+      "channels": 1,
+      "sample_bits": 16,
+      "leading_silence_ms": 150,
+      "trailing_silence_ms": 300,
+      "sha256": "d22bf56e9822772c3bbffa0af9705c88c7a6aa47e20df230ea07744b8b71390f",
+      "bytes": 42020,
+      "frames": 20988,
+      "duration_seconds": 1.31175,
+      "expected_hey_ava": true
+    },
+    {
+      "file": "ava.wav",
+      "text": "Ava",
+      "synthesis_phonemes": "ˈeɪvə",
+      "length_scale": 1.0,
+      "noise_scale": 0,
+      "noise_w": 0,
+      "sample_rate": 16000,
+      "channels": 1,
+      "sample_bits": 16,
+      "leading_silence_ms": 150,
+      "trailing_silence_ms": 300,
+      "sha256": "a4a07c473afef9b1f01ac6688641431bac7d3c99225162259a435c8ff09b5a24",
+      "bytes": 37934,
+      "frames": 18945,
+      "duration_seconds": 1.1840625,
+      "expected_hey_ava": false
+    },
+    {
+      "file": "negative.wav",
+      "text": "The weather is pleasant today",
+      "synthesis_phonemes": "ðə wˈɛðəɹ ɪz plˈɛzənt tədˈeɪ",
+      "length_scale": 1.0,
+      "noise_scale": 0,
+      "noise_w": 0,
+      "sample_rate": 16000,
+      "channels": 1,
+      "sample_bits": 16,
+      "leading_silence_ms": 150,
+      "trailing_silence_ms": 300,
+      "sha256": "8edbfa0f8a66940dc21363836fa4d10b841f9630f4a0baedc1e6f9541322ceb8",
+      "bytes": 69512,
+      "frames": 34734,
+      "duration_seconds": 2.170875,
+      "expected_hey_ava": false
+    }
+  ],
+  "limitations": [
+    "Legacy uk/us filenames are compatibility IDs; all clips use one English-US LJSpeech model with timing variations, not separate accent acceptance.",
+    "Passing this fixed synthetic corpus does not establish human hearing, hardware, accent, arbitrary-name or false-activation reliability."
+  ],
+  "retained_source_files": {
+    "LJSPEECH-MODEL-CARD.md": "fbee1529c89d36b3fe76d7e9f3f832dce17f44900a52d76a9bda735654766b4d",
+    "PIPER-ENGINE-LICENSE.md": "4cd71dece7037f1d6d93cce7570c57ab75ea9ac566fd4990be2f3ab08d15b47f",
+    "PIPER-VOICES-README.md": "33e93643fce5180886300f9f0070eeeab8af148efb8e84361f8904def80fd9fb",
+    "REGENERATE.md": "aab557c8f16d55156119cc556eb3aa3a00dfc22bf5cbec895ee5cdf4c9161b90",
+    "ljspeech-fixture.onnx.json": "0d3ed8e0a2a8206d39a0b0be3849e1c2b1b9aa843260c98732020518c0453684"
+  }
+}
