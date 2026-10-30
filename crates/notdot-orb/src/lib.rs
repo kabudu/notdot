@@ -1010,7 +1010,7 @@ fn open_panel(view: &Shared) {
     input("key").set_placeholder(if view.borrow().snapshot.key_configured {
         "Key saved · leave blank to keep"
     } else {
-        "Enter your voice service API key"
+        "New key, or use a saved key below"
     });
     element("heading").set_text_content(Some(if s.onboarding_complete {
         "Settings"
@@ -1806,6 +1806,9 @@ pub fn start() -> Result<(), JsValue> {
     });
     on(element("authorize-stt-key").as_ref(), "click", |_| {
         let _ = element("authorize-stt-key").set_attribute("disabled", "");
+        element("stt-key-status").set_text_content(Some(
+            "Approve your computer’s saved-key request. You do not need to enter the API key again.",
+        ));
         spawn_local(async {
             match call("authorize_voice_key", json!({"provider":"deepgram"})).await {
                 Ok(_) => message("Deepgram key access allowed."),
@@ -1818,7 +1821,7 @@ pub fn start() -> Result<(), JsValue> {
         let provider = select("provider").value();
         let _ = element("authorize-key").set_attribute("disabled", "");
         element("key-access-status")
-            .set_text_content(Some("Waiting for your computer to allow key access…"));
+            .set_text_content(Some("Approve your computer’s saved-key request. You do not need to enter the API key again."));
         spawn_local(async move {
             let result = call("authorize_voice_key", json!({"provider":provider})).await;
             let _ = element("authorize-key").remove_attribute("disabled");
@@ -2502,7 +2505,7 @@ pub fn start() -> Result<(), JsValue> {
                         } else if snapshot.key_configured {
                             "Key saved · leave blank to keep"
                         } else {
-                            "Enter your voice service API key"
+                            "New key, or use a saved key below"
                         });
                     }
                     element("followup-status").set_text_content(Some(&format!(
@@ -2512,9 +2515,11 @@ pub fn start() -> Result<(), JsValue> {
                     )));
                     let _ = element("authorize-key")
                         .toggle_attribute_with_force("hidden", snapshot.key_authorized);
-                    element("stt-key-status").set_text_content(Some(if snapshot.stt_ready && snapshot.settings.stt_provider=="deepgram" {"Deepgram key is ready. Live validation is pending."}else{"Save the Deepgram key, or allow access if you saved it before. Playback still uses your voice service."}));
+                    if !element("authorize-stt-key").has_attribute("disabled") {
+                        element("stt-key-status").set_text_content(Some(if snapshot.stt_ready && snapshot.settings.stt_provider=="deepgram" {"Deepgram is ready."}else{"Already saved a Deepgram key? Allow access above. Otherwise, enter a new key."}));
+                    }
                     if !element("authorize-key").has_attribute("disabled") {
-                        element("key-access-status").set_text_content(Some(if snapshot.key_authorized {"Your saved key is ready."} else if snapshot.key_checking {"Checking your saved key…"} else {"Allow access to your saved key if needed, or enter a new one above."}));
+                        element("key-access-status").set_text_content(Some(if snapshot.key_authorized {"Your saved key is ready."} else if snapshot.key_checking {"Checking your saved key…"} else {"Already saved a key? Allow access above; you do not need to enter it again."}));
                     }
                     element("memory-status")
                         .set_text_content(snapshot.learning["message"].as_str());
