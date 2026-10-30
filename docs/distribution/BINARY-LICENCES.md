@@ -17,11 +17,19 @@ Relevant original terms and guidance:
 
 No Microsoft runtime is relicensed under Apache-2.0. A new runner/toolset requires a fresh provenance record; the internal QA version is not a pin for public builds.
 
+### Windows installer components
+
+The standard Tauri NSIS installer includes the NSIS stub and `nsis_tauri_utils` 0.5.3 plugin. Their original NSIS 3.13 COPYING and Tauri MIT notice are bundled on Windows under `windows-notices/`, alongside upstream archive/binary hashes and source locations in `provenance.json`. These installer tool components are separate from the app's Rust dependency inventory; common `semver` and `windows-sys` notices are already present in that inventory. The checked standard configuration uses `downloadBootstrapper`: it downloads the Microsoft WebView2 runtime installer when needed, rather than embedding bootstrapper bytes in notdot's installer.
+
 ## Linux Debian packages
 
 The `.deb` depends on distro-provided GTK/WebKit, GStreamer/codecs, audio and speech packages. It does not redistribute those platform libraries. Their package managers provide their own notices and sources. Keep notdot's bundled Rust/native/model notices; do not copy the AppImage platform-library inventory onto this different distribution boundary.
 
 ## Linux AppImage
+
+Before bundling, the Linux hook runs `scripts/prepare_linux_binary_notices.py`. It copies original public package copyright files into a marked build directory; it never copies installed programs or permits a copyright symlink to escape the public documentation roots. The image contains this conservative build-environment set under `usr/share/doc/notdot/platform-copyright`. The source manifest identifies and checks the exact redistributed package subset.
+
+Original AppRun/runtime headers and licences, plus libfuse, squashfuse, musl, mimalloc, zlib and zstd notices, are retained under `usr/share/doc/notdot/appimage-runtime`. Full referenced common licence texts are embedded too. The collector checks the actual image's copies against the retained source provenance; a source companion alone does not replace binary attribution.
 
 The working media framework is intentionally retained. Original full common licence texts are tracked in `third_party/linux-common-licenses/`, hash-indexed beside that directory and copied into each AppImage under `usr/share/common-licenses`. The collector verifies their exact presence. This AppImage-only mapping does not overwrite the system-owned common files in Debian packages. Its codec pool includes GPL components, so shipping only copyright files or links to upstream home pages is insufficient. Each exact AppImage must have a companion corresponding-source archive at the **same release download location**, containing:
 
