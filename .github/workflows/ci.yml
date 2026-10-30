@@ -4,11 +4,65 @@ on:
     branches: [master]
   pull_request:
   workflow_call:
+    inputs:
+      force_full:
+        description: Require all native checks, including for release preparation
+        type: boolean
+        default: true
 permissions:
   contents: read
 jobs:
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      full: ${{ steps.plan.outputs.full }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: plan
+        env:
+          CI_EVENT: ${{ github.event_name }}
+          CI_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          CI_FORCE_FULL: ${{ inputs.force_full || false }}
+        run: python3 scripts/ci_changes.py classify
+  content:
+    name: Content checks
+    needs: changes
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - run: python3 scripts/check_site.py
+      - run: python3 scripts/check_content_links.py
+      - run: python3 scripts/distribution_notices.py
+      - run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - name: Check committed whitespace
+        env:
+          CI_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 - <<'PY'
+          import os, re, subprocess
+          base, head = os.environ['CI_BASE'], os.environ['CI_HEAD']
+          if all(re.fullmatch(r'[0-9a-f]{40}', value) and int(value, 16) for value in (base, head)):
+              subprocess.run(['git', 'diff', '--check', f'{base}...{head}', '--'], check=True)
+          else:
+              subprocess.run(['git', 'diff', '--check'], check=True)
+          PY
   windows-native:
-    if: github.event.repository.private == false
+    needs: changes
+    if: github.event.repository.private == false && needs.changes.outputs.full == 'true'
     runs-on: windows-2022
     timeout-minutes: 45
     steps:
@@ -48,7 +102,8 @@ jobs:
         if: always() && steps.helper_build.outcome == 'success'
         run: python scripts/probe_windows_wake_helper.py
   windows-metadata:
-    if: github.event.repository.private == false
+    needs: changes
+    if: github.event.repository.private == false && needs.changes.outputs.full == 'true'
     runs-on: windows-2022
     timeout-minutes: 5
     env:
@@ -60,7 +115,8 @@ jobs:
           python-version: '3.12'
       - run: python -m unittest discover -s scripts -p test_voice_fixtures.py
   macos:
-    if: github.event.repository.private == false
+    needs: changes
+    if: github.event.repository.private == false && needs.changes.outputs.full == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -90,7 +146,8 @@ jobs:
       - name: Exercise the bundled wake model on this native Mac architecture
         run: cargo test -p notdot-wake-runtime --release --test lifecycle worker_reuses_one_model_process_and_matches_the_shared_engine --locked -- --ignored --exact --test-threads=1
   linux-native:
-    if: github.event.repository.private == false
+    needs: changes
+    if: github.event.repository.private == false && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-22.04
     env:
       GGML_NATIVE: "OFF"
@@ -138,3 +195,18 @@ jobs:
           ADVISORY_EXIT_CODE: ${{ steps.linux_wake_48k.outputs.exit_code }}
           LINUX_WAKE_REPORT: ${{ github.server_url }}/${{ github.repository }}/blob/${{ github.sha }}/docs/validation/2026-10-29-linux.md
         run: python3 scripts/check_linux_wake_advisory.py .local/linux-wake-48k.log "$ADVISORY_EXIT_CODE"
+
+  validation:
+    name: validation
+    if: always()
+    needs: [changes, content, windows-native, windows-metadata, macos, linux-native]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Require the selected validation path to succeed
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python3 scripts/ci_changes.py gate

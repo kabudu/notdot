@@ -14,7 +14,7 @@ Include affected versions, prerequisites, minimal reproduction, impact and any p
 
 Provider credentials use the OS keychain. Conversation and memory data are local application data, not encrypted separately by notdot; protect your OS account and backups. Activated audio goes to the configured recognition service (which may differ from the playback service); transcripts and recalled context go to the Codex runtime/model. Wake-word listening stays on your computer until the companion wakes. A wake phrase is not authentication. Permission to remember is separate from permission to interrupt or take actions outside the chat.
 
-The installed authenticated Codex runtime and connected providers have their own permissions and policies. See [platform validation and its limits](release-readiness.md) for the environments and workflows exercised. Never treat a test pass as a security guarantee.
+The installed authenticated Codex runtime and connected providers have their own permissions and policies. See [platform validation and its limits](docs/release-readiness.md) for the environments and workflows exercised. Never treat a test pass as a security guarantee.
 
 ## Latest review
 
