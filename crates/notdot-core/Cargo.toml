@@ -1,0 +1,14 @@
+[package]
+publish = false
+name = "notdot-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+mnemara = { version = "=0.6.0", features = ["sled"] }
+uuid = { version = "1", features = ["v4"] }
+[dev-dependencies]
+tempfile = "3"

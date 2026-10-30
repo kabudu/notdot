@@ -1,0 +1,73 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "notdot",
+  "version": "0.1.0",
+  "identifier": "com.kabudu.notdot",
+  "build": {
+    "beforeDevCommand": "trunk serve --port 1420",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "trunk build --release",
+    "frontendDist": "../ui-dist",
+    "windows": {
+      "staticVCRuntime": false
+    }
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "notdot",
+        "width": 360,
+        "height": 360,
+        "minWidth": 360,
+        "minHeight": 360,
+        "transparent": true,
+        "decorations": false,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "resizable": false,
+        "backgroundColor": "#00000000",
+        "backgroundThrottling": "disabled"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost; media-src 'self' blob:; img-src 'self' data: blob:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "app"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "14.0",
+      "infoPlist": "Info.plist",
+      "entitlements": "Entitlements.plist"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "resources/wake/": "wake/",
+      "resources/notices/": "notices/"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVFNzk1RjQzOUM5ODg2MTEKUldRUmhwaWNRMTk1N3JYYlpnZC9vQitRaERSZldFUDVEZ25tU3pLOVp3ZWFIMzdwTHpQclcvczgK",
+      "endpoints": [
+        "https://github.com/kabudu/notdot/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      },
+      "requireSignedVersion": true
+    }
+  }
+}

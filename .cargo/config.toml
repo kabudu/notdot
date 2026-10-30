@@ -1,0 +1,10 @@
+# The bundled Windows sherpa-onnx libraries use the static MSVC runtime.
+# Keep Rust and other native dependencies on that same runtime.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# whisper.cpp's older CMake policy otherwise selects /MD despite Rust's /MT.
+# These MSVC properties have no effect on non-MSVC builds.
+[env]
+CMAKE_POLICY_DEFAULT_CMP0091 = "NEW"
+CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreaded"

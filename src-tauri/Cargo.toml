@@ -1,0 +1,47 @@
+[package]
+publish = false
+name = "notdot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[build-dependencies]
+sha2 = "0.10"
+tauri-build = { version = "2", features = [] }
+[dependencies]
+notdot-core = { path = "../crates/notdot-core" }
+notdot-voice = { path = "../crates/notdot-voice" }
+notdot-wake-runtime = { path = "../crates/notdot-wake-runtime" }
+tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
+tauri-plugin-single-instance = "2"
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+base64 = "0.22"
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls", "system-proxy"] }
+tauri-plugin-autostart = "2"
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+sherpa-onnx = "=2.0.0"
+sentencepiece-rs = "=0.2.2"
+cpal = "=0.18.2"
+hound = "3"
+zeroize = "1"
+chrono = "0.4"
+uuid = { version = "1", features = ["v4"] }
+whisper-rs = { version = "=0.16.0", default-features = false }
+rubato = { version = "=0.16.2", default-features = false }
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
+[dev-dependencies]
+async-trait = "0.1"
+tauri = { version = "2", features = ["test"] }
+tempfile = "3"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus-secret-service = "4.1"
