@@ -1,0 +1,24 @@
+{
+  "productName": "notdot Update Acceptance Fixture",
+  "version": "9.9.8",
+  "identifier": "com.kabudu.notdot.update-acceptance-fixture",
+  "app": {
+    "windows": [],
+    "macOSPrivateApi": true
+  },
+  "bundle": {
+    "active": false,
+    "icon": [
+      "../../src-tauri/icons/32x32.png"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "requireSignedVersion": true,
+      "pubkey": "fixture-key-is-provided-by-native-builder",
+      "endpoints": [
+        "https://example.invalid/unused"
+      ]
+    }
+  }
+}
