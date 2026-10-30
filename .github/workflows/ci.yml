@@ -29,6 +29,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
           key: release-x86_64-pc-windows-msvc-generic-v1
+          shared-key: build
           env-vars: GGML_ MACOSX_DEPLOYMENT_TARGET
           cache-on-failure: true
       - name: Prepare guarded Windows wake helper
