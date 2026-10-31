@@ -7,3 +7,6 @@
 .app-orb{display:block;width:100%;max-width:490px;height:auto;aspect-ratio:1;pointer-events:none}
 
 .demo .video-player{margin-block:24px 12px}.demo .fine{margin-top:12px}video::cue{background:#0a1018;color:#edf4fa}
+
+/* Keep setup requirements beside Download, readable at every screen size. */
+.setup{max-width:36rem;font-size:15px;line-height:1.6}.setup p{margin:0 0 8px}.setup strong{color:var(--text)}.setup ul{margin:0;padding-left:20px;color:var(--muted)}.setup li+li{margin-top:6px}.setup .optional{margin-top:8px;font-size:14px}
