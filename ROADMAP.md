@@ -23,8 +23,9 @@ A new backend needs streaming where supported, reliable cancellation, clear erro
 - **More languages.** Expand recognition, wake phrases and spoken replies together, with clear choices for the languages each service supports.
 - **Clearer names and numbers.** Improve recognition of names, dates and similar-sounding words, with tests in different rooms and on different microphones.
 
-## Memory and reminders
+## Memory, notes and reminders
 
+- **Voice notes.** Dictate a titled note, list or idea, then find, hear, correct or delete it by voice. Allow export and keep these notes separate from learned preferences and facts.
 - **Correct memories by speaking.** Make it easier to explain what changed, replace an old fact and confirm exactly what will be kept.
 - **Understand suggestions.** Show which remembered facts led to a suggestion or check-in and make them easy to correct.
 - **Richer reminders.** Support calendar dates, recurring reminders and a choice of snooze durations.
