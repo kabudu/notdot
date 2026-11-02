@@ -187,6 +187,11 @@ jobs:
           key: validation-${{ matrix.os }}-generic-v1
           env-vars: GGML_ MACOSX_DEPLOYMENT_TARGET
           cache-on-failure: true
+      - name: Repair pruned Sherpa native library cache
+        run: |
+          NOTDOT_NATIVE_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+          test -n "$NOTDOT_NATIVE_TARGET"
+          python3 scripts/repair_sherpa_cache.py --target "$NOTDOT_NATIVE_TARGET"
       - name: Run complete local validation
         run: sh scripts/ci-local.sh
       - name: Exercise the bundled wake model on this native Mac architecture
@@ -213,6 +218,8 @@ jobs:
           key: validation-linux-x64-cpp-abi0-v1
           env-vars: GGML_ MACOSX_DEPLOYMENT_TARGET
           cache-on-failure: true
+      - name: Repair pruned Sherpa native library cache
+        run: python3 scripts/repair_sherpa_cache.py --target x86_64-unknown-linux-gnu
       # The pinned whisper-rs-sys build script does not track CXXFLAGS changes.
       # Rebuild this small native package so restored caches cannot mix string ABIs.
       - name: Rebuild the native C++ boundary

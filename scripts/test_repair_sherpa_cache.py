@@ -1,3 +1,4 @@
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,6 +8,18 @@ from repair_sherpa_cache import repair
 
 
 class RepairSherpaCacheTests(unittest.TestCase):
+    def test_every_native_ci_cache_is_repaired_before_cargo_validation(self):
+        workflow = (Path(__file__).resolve().parents[1] / '.github/workflows/ci.yml').read_text()
+        jobs = dict(re.findall(r'^  ([a-z-]+):\n(.*?)(?=^  [a-z-]+:|\Z)', workflow, re.M | re.S))
+        for job in ['windows-native', 'macos', 'linux-native']:
+            with self.subTest(job=job):
+                steps = jobs[job]
+                cache = steps.index('Swatinem/rust-cache@')
+                repair_step = steps.index('scripts/repair_sherpa_cache.py')
+                validation = min(steps.find(command) for command in ['cargo test ', 'sh scripts/ci-local.sh', 'cargo build '] if command in steps)
+                self.assertLess(cache, repair_step)
+                self.assertLess(repair_step, validation)
+
     def test_pruned_directories_and_cached_paths_are_discarded(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
