@@ -30,7 +30,7 @@
     if(cmd==='report_visual'){record('visual',{mode:args.report.mode});return null;}
     if(cmd==='wake_activity'){record('lease',{ready:args.ready});return null;}
     if(cmd==='model_catalog')return [{model:'gpt-6.1-terra',displayName:'Terra',supportedReasoningEfforts:[{reasoningEffort:'medium',description:'Medium'}]}];
-    if(cmd==='voices')return {voices:[],next_cursor:null};
+    if(cmd==='voice_catalog')return {voices:[{id:'synthetic',name:'Synthetic',description:'Test adapter'}],next_cursor:null};
     if(cmd==='start_capture'){
       if(active || state.phase!=='idle') throw Error('Capture overlapped playback/model');
       if(args.followup && performance.now()-lastEnd<590) throw Error('Echo guard violated');

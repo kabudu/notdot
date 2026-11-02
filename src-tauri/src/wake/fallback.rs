@@ -580,23 +580,21 @@ mod tests {
         for (name, expected, job) in framed {
             let backend = decoder.identity();
             let started = Instant::now();
-            let heard = decoder
-                .recognize(
-                    "Hey Ava",
-                    &job.samples,
-                    job.rate,
-                    Arc::new(AtomicU64::new(job.epoch)),
-                    job.epoch,
-                )
-                .unwrap();
+            let heard = decoder.recognize(
+                "Hey Ava",
+                &job.samples,
+                job.rate,
+                Arc::new(AtomicU64::new(job.epoch)),
+                job.epoch,
+            );
             eprintln!(
-                "framed_wake fixture={name} rate={} backend={backend} after={} elapsed_ms={} heard={heard} expected={expected}",
+                "framed_wake fixture={name} rate={} backend={backend} after={} elapsed_ms={} result={heard:?} expected={expected}",
                 job.rate,
                 decoder.identity(),
                 started.elapsed().as_millis()
             );
             assert_eq!(
-                heard,
+                heard.expect("production fallback must finish within its unchanged decode budget"),
                 expected,
                 "{name} at{}Hz: backend={backend}, after={}, elapsed={:?}",
                 job.rate,
