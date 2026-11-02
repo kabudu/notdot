@@ -247,6 +247,21 @@
        <span aria-hidden="true" class="switch-track">
        </span>
       </label>
+      <label class="switch-row">
+       <span class="switch-copy">
+        Keep the conversation going
+        <span class="switch-description">
+         After a spoken reply, listen briefly without another click or wake phrase. Audio during this window goes to your speech service. Say “That’s all” or press Escape to stop.
+        </span>
+       </span>
+       <input id="followup-enabled" role="switch" type="checkbox"/>
+       <span aria-hidden="true" class="switch-track"></span>
+      </label>
+      <label hidden="" id="followup-window">
+       <span id="followup-seconds-label">Wait up to 8 seconds</span>
+       <input id="followup-seconds" type="range" min="3" max="20" step="1" value="8" aria-labelledby="followup-seconds-label"/>
+       <span class="hint">If you start speaking in time, a pause ends your request as usual.</span>
+      </label>
       <label>
        Wake phrase
        <select id="wake-phrase">

@@ -9,7 +9,7 @@ fi
 "$NOTDOT_TEST_PYTHON" scripts/distribution_notices.py
 "$NOTDOT_TEST_PYTHON" scripts/check_voice_fixtures.py
 cargo fmt --all --check
-cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --locked
+cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-orb -p notdot --locked
 cargo clippy -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --all-targets --locked -- -D warnings
 cargo clippy -p notdot-orb --target wasm32-unknown-unknown --locked -- -D warnings
 cargo clippy -p notdot-orb --target wasm32-unknown-unknown --features debug-ui --locked -- -D warnings

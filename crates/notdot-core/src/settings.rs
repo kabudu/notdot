@@ -27,6 +27,8 @@ pub struct Settings {
     pub startup: Startup,
     pub open_desktop: bool,
     pub automatic_updates: bool,
+    pub followup_enabled: bool,
+    pub followup_seconds: u32,
     pub wake_enabled: bool,
     pub wake_name_only: bool,
     pub microphone_muted: bool,
@@ -50,6 +52,8 @@ impl Default for Settings {
             startup: Startup::Manual,
             open_desktop: false,
             automatic_updates: true,
+            followup_enabled: false,
+            followup_seconds: 8,
             wake_enabled: false,
             wake_name_only: false,
             microphone_muted: false,
@@ -85,6 +89,9 @@ impl Settings {
         }
     }
     pub fn save(&self, path: &Path) -> Result<(), String> {
+        if !(3..=20).contains(&self.followup_seconds) {
+            return Err("Choose a follow-up window between 3 and 20 seconds".into());
+        }
         if !matches!(self.stt_provider.as_str(), "voice" | "deepgram")
             || (self.stt_provider == "deepgram" && self.speech_language != "en")
             || !matches!(self.speech_language.as_str(), "en" | "auto")
@@ -156,6 +163,20 @@ mod tests {
         );
         assert!(legacy.initiative.valid());
         assert!(legacy.automatic_updates);
+        assert!(!legacy.followup_enabled);
+        assert_eq!(legacy.followup_seconds, 8);
+        s.followup_enabled = true;
+        s.followup_seconds = 12;
+        s.save(&p).unwrap();
+        let restored = Settings::load(&p).unwrap();
+        assert!(restored.followup_enabled);
+        assert_eq!(restored.followup_seconds, 12);
+        for invalid in [0, 2, 21, u32::MAX] {
+            s.followup_seconds = invalid;
+            assert!(s.save(&p).is_err());
+            assert_eq!(Settings::load(&p).unwrap().followup_seconds, 12);
+        }
+        s.followup_seconds = 8;
         assert!(!legacy.wake_enabled);
         assert!(!legacy.wake_name_only);
         assert!(!legacy.microphone_muted);

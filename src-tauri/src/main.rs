@@ -312,6 +312,7 @@ async fn start_capture(
     state: State<'_, Arc<AppState>>,
     token: String,
     limit: u32,
+    followup: Option<bool>,
 ) -> Result<(), String> {
     if !window.is_visible().unwrap_or(false) || window.is_minimized().unwrap_or(true) {
         return Err("Show notdot before speaking".into());
@@ -325,7 +326,20 @@ async fn start_capture(
     {
         return Err("Voice capture is not ready".into());
     }
-    state.wake.start_manual(&token, limit)
+    if followup.unwrap_or(false) {
+        if !s.settings.followup_enabled
+            || !s.settings.onboarding_complete
+            || s.key_checking
+            || s.settings.voice_id.is_empty()
+        {
+            return Err("Follow-up listening is turned off or not ready".into());
+        }
+        state
+            .wake
+            .start_followup(&token, s.settings.followup_seconds)
+    } else {
+        state.wake.start_manual(&token, limit)
+    }
 }
 #[tauri::command]
 fn finish_capture(state: State<'_, Arc<AppState>>, token: String) -> Result<(), String> {

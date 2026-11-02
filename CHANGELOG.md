@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- **Keep the conversation going.** Optionally listen for a follow-up after a spoken reply, with an adjustable window, clear orb feedback and “That’s all” to stop.
+
 ## [0.1.0] - 2026-10-30
 
 Talk to notdot through a desktop orb that listens and replies aloud using ChatGPT Codex.

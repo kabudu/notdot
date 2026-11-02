@@ -18,6 +18,12 @@ With wake listening on, say your wake phrase. Orb clicks and Enter/Space do not 
 
 With wake listening off, click the orb once, speak, then pause. notdot sends the request after 1.4 seconds of silence. A second click sends sooner; Escape cancels. Silence without speech is discarded after eight seconds.
 
+**Keep the conversation going** is off by default. Turn it on in the wake and microphone settings, choose a follow-up window from **3 to 20 seconds** (normally **8**), then **Save**. After the complete spoken reply finishes, two soft rings show that notdot is listening for another request. You do not need another click or wake phrase. If you start speaking within the window, you can finish your request normally; a pause sends it.
+
+Say **“That’s all”** while it is listening, or press **Escape**, to end the exchange. It also stops on silence, mute, opening Settings or About, hiding the window, loss of voice-service access or an error. Ending an exchange returns to the usual wake or click mode. To interrupt a reply while it is speaking, use Escape; voice interruption is a separate planned feature.
+
+Follow-up audio is sent to your chosen speech-recognition service and may count towards its usage. The microphone stays closed during notdot’s spoken reply and the short pause afterwards. Follow-up listening currently requires a streaming speech service.
+
 **Speech recognition** normally uses your voice service. To try **Deepgram Flux · experimental**, select it, keep **Spoken language** set to **English**, enter its key in **Deepgram API key**, then choose **Save**. Leave the key blank to keep a saved one; use **Allow saved Deepgram key access** if macOS needs approval. Your selected ElevenLabs voice still handles replies. Deepgram live acceptance is pending; no accuracy or speed improvement has been established yet. It uses one streaming pass, with no premium hints or second decoding pass. Its usage is separate from the voice-usage bar. In QA builds, the Deepgram key has a separate keychain entry from the normal app.
 
 **Spoken language** starts with English, which gives the service a language hint. Choose **Detect automatically** for other languages. This does not guarantee that every word will be recognised correctly.
