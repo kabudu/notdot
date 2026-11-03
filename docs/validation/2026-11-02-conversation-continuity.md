@@ -75,6 +75,16 @@ The native Linux VM starts successfully through the already authorised `notdot L
 
 A metadata-only Secret Service check reports the Linux default key collection as locked. No secret was read and no Unlock or Prompt operation was requested. Current-source offline capture/model tests can proceed; cloud-backed Linux STT/TTS acceptance remains unavailable until the existing key collection can be read normally.
 
+### Linux native and final silence/echo results
+
+The current production Linux code (`1cdc5ea`; `34d4a54` only changes the debug evaluator) was built for ARM64 and run on the Ubuntu 24.04 VM. The offline native suite passed **63 tests**, with **12 intentionally ignored**. A separate physical microphone diagnostic observed 424 quiet frames without a false wake. Playing the wake fixture and then a spoken fixture through the Mac speaker into the forwarded VM microphone produced exactly one activation, 36 audio packets and one completed voiced capture, followed by clean permission-lease shutdown. No cloud transcription or model reply was involved in that Linux diagnostic.
+
+A separate guest-output/forwarded-input route test captured only in RAM: output and recording completed successfully, and the playback interval had about 3.4 times the baseline RMS. The production Linux GUI also launched in an isolated data directory without a credential prompt. Its follow-up switch and duration saved as enabled/12 seconds; the original Linux profile was untouched. The owned test app was closed afterward. These results establish local audio routing, capture and native settings behaviour, not full cloud-backed voice acceptance.
+
+On the existing authorised Mac process, a reply containing “Hey, Ava.” completed, its follow-up window closed silently, and no extra model turn or self-activation appeared during 20 seconds of observation. One earlier attempt using the original wake fixture missed activation; the UK fixture activated successfully. Keep that miss in the evidence rather than claiming perfect reliability. The running process remains `75e3365`.
+
+At `34d4a54`, hosted Intel Mac CI failed on the sixth framed fallback corpus decode (about 3.15 seconds against the unchanged three-second limit). Ten subsequent failures were shared fixture-lock poisoning from that first panic. This is a remaining intermittent decode-performance failure, despite the preceding full green run at `1cdc5ea`; first-use preparation did not eliminate it. No deadline, recognition guard or required check was relaxed. Current-head CI must be green and the timing failure understood before acceptance.
+
 ## Required before merge/release
 
 - [ ] Real microphone → configured STT → Terra Medium → configured TTS exchange with two or more follow-ups, in click and wake modes.
