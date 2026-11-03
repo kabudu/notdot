@@ -107,13 +107,23 @@ At `b597f15`, the Intel Mac completed the main local validation suite, then fail
 
 The replacement command passed locally on Apple Silicon: ten expected matches/rejections, approximately 153–160 ms per decode. The separate earlier Intel in-process timing miss remains an observation; correcting this irrelevant helper check does not explain or claim to fix it. After a normal restart of the same Developer ID-signed Mac QA bundle, both saved voice keys were ready without another approval. The original QA profile was then restored and test apps stopped.
 
-## Required before merge/release
+### Remaining Windows control and runner timing checks
 
-- [ ] Real microphone → configured STT → Terra Medium → configured TTS exchange with two or more follow-ups, in click and wake modes.
-- [ ] Verify the stop phrase by speaking; quoted/embedded phrases must not end an ordinary request.
-- [ ] Hear the full streamed answer before the microphone reopens; verify no self-triggering in actual speakers/room conditions.
-- [ ] Check no-speech timeout and speech beginning near the deadline without cutting off the request.
-- [ ] Verify Escape, mute, hiding and opening Settings while listening and while an activation is in flight.
-- [ ] Repeat hardware acceptance on Windows and Linux, including the chosen speech backends. Hosted CI establishes compilation/model/logic results, not device audio behaviour.
+A fresh disposable Windows chat completed the microphone-ready arithmetic question and opened a 20-second follow-up. Escape closed it after about 13.3 seconds; twelve further seconds showed no model turn or delayed capture reopening. This verifies active follow-up cancellation on the laptop. The automated production-WASM scenarios separately cover cancellation during an in-flight start. The original Windows profile was restored again and the app, scoped observer, local collector and temporary keep-awake guard stopped.
 
-The existing 0.1.0 release and website claims are unchanged. Do not mark the roadmap item shipped until these voice checks pass.
+The corrected CI run `41724133790` passed Apple Silicon and Linux but exposed a Windows negative-fixture timeout. Its first failure was `negative.wav` in the generic decoder after the accelerated backend had become unavailable; subsequent model failures were fixture-lock poisoning. A direct, microphone-free helper probe on the physical laptop accepted all three wake phrases and rejected both negative fixtures in 1.23–1.30 seconds per decode (1.48-second startup). This confirms the packaged helper handles the complete corpus on that laptop; it does not prove the cause of the intermittent shared-runner failure.
+
+Native suites now run with one test worker, removing unrelated test concurrency while preserving the complete corpus, three-second production deadlines and all required jobs. The post-test Windows helper diagnostic now includes all five fixtures so future failures retain negative-case timing too. These are runner-isolation and diagnostic changes, not a confirmed production performance fix. The entire local validation script passed with serial execution, including 95 Python checks; the next hosted run must establish its result.
+
+## Acceptance status
+
+- [x] Generated speech through real microphone → configured STT → Terra Medium → configured TTS, with connected follow-ups on Mac, Windows and Linux.
+- [x] Spoken stop; quoted/embedded stop phrases covered by earlier native checks and current parser/UI regression tests.
+- [x] Streamed reply/recording exclusion, silent follow-up closure and bounded echo observation. Linux sentence completeness independently verified from speaker output after its playback fix.
+- [x] A follow-up starting near the deadline continues to its natural endpoint (Mac and Windows); native boundary tests cover all configured durations.
+- [x] Active follow-up Escape on Windows; mute, hide, Settings and in-flight start cancellation covered by the production-WASM integration suite. This does not imply every timing boundary was physically repeated on every platform.
+- [x] Native acoustic checks on all three platforms. Linux cloud voice used click mode; local wake routing passed separately, and the maintainer's existing distro-specific wake waiver remains applicable.
+- [ ] Current-head hosted CI green, including the serial native suites and production Intel Mac corpus.
+- [ ] Final PR review, with the intermittent hosted timing failures and speech-recognition observations above retained as evidence.
+
+The existing 0.1.0 release and website claims are unchanged. The feature is not marked shipped before merge/release. Generated-speech checks do not replace a broader human assessment of accents, room noise or perceived sound quality.

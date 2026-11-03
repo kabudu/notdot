@@ -9,7 +9,9 @@ fi
 "$NOTDOT_TEST_PYTHON" scripts/distribution_notices.py
 "$NOTDOT_TEST_PYTHON" scripts/check_voice_fixtures.py
 cargo fmt --all --check
-cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-orb -p notdot --locked
+# Wake inference has a real wall-clock deadline. Keep unrelated test work from
+# competing with it on small/shared runners; retain every fixture and deadline.
+cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-orb -p notdot --locked -- --test-threads=1
 cargo clippy -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --all-targets --locked -- -D warnings
 cargo clippy -p notdot-orb --target wasm32-unknown-unknown --locked -- -D warnings
 cargo clippy -p notdot-orb --target wasm32-unknown-unknown --features debug-ui --locked -- -D warnings
