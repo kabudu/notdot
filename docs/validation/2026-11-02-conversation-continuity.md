@@ -101,6 +101,12 @@ After the Linux playback change, a fresh microphone-ready two-turn run returned 
 
 Full CI at `fe9f4c1` passed on all platforms, including Intel Mac and the Windows installer. That green result does not explain the earlier intermittent Intel decode deadline failure. The playback fix requires its own subsequent CI result. Detailed synthetic diagnostics remain local; credentials and incidental background transcripts are not published.
 
+### CI coverage correction
+
+At `b597f15`, the Intel Mac completed the main local validation suite, then failed the separate ignored helper lifecycle corpus with `Failure::Unavailable`. That extra CI command exercised a standalone executable which macOS neither packages nor selects: helper selection in the app is Windows-only, and the macOS resources contain the in-process model. CI now explicitly exercises the production Mac framing/corpus test in release mode instead. This covers all five positive/negative fixtures at both 16 kHz and 48 kHz with the unchanged three-second utterance deadline. Protocol/lifecycle unit tests still run, and Windows retains its guarded helper and native corpus checks. No production deadline, recognition guard or required platform job was relaxed.
+
+The replacement command passed locally on Apple Silicon: ten expected matches/rejections, approximately 153–160 ms per decode. The separate earlier Intel in-process timing miss remains an observation; correcting this irrelevant helper check does not explain or claim to fix it. After a normal restart of the same Developer ID-signed Mac QA bundle, both saved voice keys were ready without another approval. The original QA profile was then restored and test apps stopped.
+
 ## Required before merge/release
 
 - [ ] Real microphone → configured STT → Terra Medium → configured TTS exchange with two or more follow-ups, in click and wake modes.

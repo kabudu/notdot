@@ -194,8 +194,10 @@ jobs:
           python3 scripts/repair_sherpa_cache.py --target "$NOTDOT_NATIVE_TARGET"
       - name: Run complete local validation
         run: sh scripts/ci-local.sh
-      - name: Exercise the bundled wake model on this native Mac architecture
-        run: cargo test -p notdot-wake-runtime --release --test lifecycle worker_reuses_one_model_process_and_matches_the_shared_engine --locked -- --ignored --exact --test-threads=1
+      # macOS ships the in-process decoder, not the Windows helper executable.
+      # Exercise its real framing and unchanged decode deadline in release mode.
+      - name: Exercise the production Mac wake decoder
+        run: cargo test -p notdot --release wake::fallback::tests::production_framed_fallback_corpus_bypasses_keyword_spotting --locked -- --exact --nocapture --test-threads=1
   linux-native:
     needs: changes
     if: github.event.repository.private == false && needs.changes.outputs.full == 'true'
