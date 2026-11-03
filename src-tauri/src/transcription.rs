@@ -146,7 +146,8 @@ impl Streaming {
                 let retry = allow_batch_retry
                     && !matches!(
                         error.kind,
-                        VoiceErrorKind::Authentication
+                        VoiceErrorKind::NoSpeech
+                            | VoiceErrorKind::Authentication
                             | VoiceErrorKind::Permission
                             | VoiceErrorKind::Quota
                             | VoiceErrorKind::RateLimit
@@ -575,6 +576,33 @@ mod tests {
             assert!(closed.load(Ordering::Relaxed));
             assert!(manager.inner.lock().await.is_none());
         }
+    }
+    #[tokio::test]
+    async fn explicit_no_speech_never_falls_back_to_a_billable_batch_request() {
+        let manager = Streaming::default();
+        let (input, _) = mpsc::channel(1);
+        let (answer, result) = oneshot::channel();
+        answer
+            .send(Completion::failed(VoiceError::new(
+                VoiceErrorKind::NoSpeech,
+                "No speech heard",
+            )))
+            .ok()
+            .unwrap();
+        *manager.inner.lock().await = Some(Session {
+            token: "empty-followup".into(),
+            input,
+            result: Some(result),
+            task: tokio::spawn(async {}),
+            cancelled: Arc::new(AtomicBool::new(false)),
+            started: Instant::now(),
+        });
+        assert_eq!(
+            manager.take("empty-followup", true).await.unwrap_err().kind,
+            VoiceErrorKind::NoSpeech
+        );
+        assert!(manager.inner.lock().await.is_none());
+        assert_eq!(manager.report.lock().await.mode, "failed");
     }
     #[tokio::test]
     async fn cancelled_session_never_requests_batch_fallback() {

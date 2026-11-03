@@ -1,6 +1,6 @@
 # Conversation continuity: implementation and acceptance
 
-Status: feature branch `codex/conversation-continuity`; not released. Real voice testing is deferred at the owner’s request until the next voice session. No microphone, speaker, saved credentials or live speech/model services were used for the UI integration checks below.
+Status: feature branch `codex/conversation-continuity`; not released. Unattended Mac voice checks ran on 3 November after the owner approved saved-key access. The browser integration checks use synthetic services and audio; they are described separately below.
 
 ## Behaviour
 
@@ -19,7 +19,7 @@ Status: feature branch `codex/conversation-continuity`; not released. Real voice
 - Settings tests: backwards compatibility, saved on/off preference and duration, and rejection of invalid windows without overwriting saved values.
 - Native capture tests: silence boundaries at 3/8/20 seconds at 16 kHz and 48 kHz; speech continuing beyond the initial window; normal silence endpoint; cancellation identity and mute rejection. These exercise captured samples, not a physical input device.
 - Pure Rust scheduling tests: opt-in, completed playback, the guard interval, one automatic opening, permission withdrawal and exact stop phrases.
-- Browser integration harness: actual built production WASM interface with explicitly synthetic Tauri IPC, capture, STT, model and audio adapters. It covers click- and wake-initiated exchanges, repeated turns, stop routing, no reopening after stop/timeout, Escape, mute, hiding and settings, in-flight activation cancellation, settings-control persistence, and capture exclusion during playback and inter-sentence gaps. All 13 browser scenarios passed. This is integration simulation, not real microphone-to-model-to-speaker evidence.
+- Browser integration harness: actual built production WASM interface with explicitly synthetic Tauri IPC, capture, STT, model and audio adapters. It covers click- and wake-initiated exchanges, repeated turns, stop routing, no reopening after stop/timeout, Escape, mute, hiding and settings, in-flight activation cancellation, settings-control persistence, and capture exclusion during playback and inter-sentence gaps. All 14 browser scenarios passed, including provider-confirmed empty speech returning to idle without a model message or Settings dialog. This is integration simulation, not real microphone-to-model-to-speaker evidence.
 
 Reproduce the silent browser checks with:
 
@@ -30,6 +30,30 @@ python3.12 -m http.server 8095 --bind 127.0.0.1 --directory .local/continuity-ui
 ```
 
 Open `http://localhost:8095/` and choose **Run silent integration checks**. The harness installs virtual audio adapters before loading WASM and rejects browser microphone requests. It uses only staged test phrases, no keys and no external service requests. Rebuild before preparing it again. Test adapters are not included in the app bundle.
+
+## Native Mac voice evidence — 3 November
+
+The running QA bundle was built from `75e3365`, with the production WASM interface, in a disposable profile. Memory, reminders and automatic updates were disabled. Existing OS credentials were used inside the app, with no key export. Generated test speech played through the Mac speaker into its physical microphone; Deepgram Flux transcribed it, Terra remained on Medium, and ElevenLabs Bella played the reply. This is acoustic integration evidence for these staged phrases, not human hearing or broad accent/recognition acceptance. No demo recorder ran.
+
+| Check | Observed result |
+| --- | --- |
+| Wake-initiated continuity | Initial arithmetic question, two automatic follow-ups and spoken stop completed. The disposable Codex chat contains the three expected questions and answers **12**, **7**, **18**, with no stop phrase or self-generated model turn. |
+| Spoken stop | “That’s all” ended the automatic capture and returned to wake listening. No further activation was observed during the bounded settling interval. |
+| Click-initiated continuity | One click started capture. A follow-up began about 6.2 seconds into the 8-second window and continued beyond that deadline; the full question reached the model, which answered **14**. |
+| Empty initial window | In the clean timeout attempt, capture ended about 8.1 seconds after opening, then wake listening resumed. No new model turn was added. |
+| Embedded stop words | “In one short sentence, explain the phrase that is all” reached the model and received an ordinary spoken answer. |
+| Escape during opening | The real follow-up label appeared, Escape cancelled activation, and no automatic reopening followed. |
+| Escape during active capture | Native diagnostics show capture opening, then cancellation about one second later and return to idle, with no extra model message or reopening during nine seconds of observation. |
+| Reply/capture separation | Observed captures begin after complete playback, with roughly 0.8–1.0 seconds between the reported playback end and native capture start in these runs. No model received notdot’s own reply. A later short automatic capture did produce a no-update STT timeout; see below. |
+
+The first near-deadline test driver waited for `paused` at the end, but click mode correctly reports `disabled`. Its overall driver timeout was a harness terminal-state mistake: the native timeline and the independently inspected chat establish the completed question, reply and empty-window closure. Do not count that driver status as a clean automated pass.
+
+### Defects found and changes awaiting rebuilt-native acceptance
+
+- Native visual diagnostics rejected the new `followup` mode, although the actual orb displayed it. The whitelist now accepts every serialised UI mode, covered by a cross-crate protocol check.
+- After the longer embedded-phrase answer, an automatic capture was submitted with no Deepgram speech updates and failed finalisation. No unintended text reached the model. The old adapter ignored all `Warning` events. [Flux documents](https://developers.deepgram.com/docs/flux/force-end-turn) a specific `FORCE_END_TURN_NO_ACTIVE_TURN` warning in place of a final transcript when there is no active turn. A local WebSocket regression reproduced the old timeout for this response; it now returns a typed no-speech outcome, closes the UI window and never retries a billable batch pass. Unknown warnings, missing responses, and a no-active-turn warning after observed speech remain failures. The live server event was not retained, so this protocol defect is established independently; it is not proof of the exact server response in that acoustic attempt.
+
+The new no-speech path passed the provider WebSocket tests, native session tests, the full local validation suite and all 14 production-WASM browser scenarios. The running QA process was intentionally kept alive to retain authorised key access while the owner was away; it does **not** contain these final native changes. Repeat physical silence/echo acceptance on the rebuilt bundle before merging. Windows/Linux physical continuity checks have not yet run on this branch.
 
 ## Required before merge/release
 

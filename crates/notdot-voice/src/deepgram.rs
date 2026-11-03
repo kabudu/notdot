@@ -127,6 +127,23 @@ impl Flux {
                         tx.try_send(Err(err(VoiceErrorKind::Provider, "Invalid Deepgram event")));
                     break;
                 };
+                // Flux does not emit EndOfTurn when ForceEndTurn has no active
+                // turn. Treat only its explicit acknowledgement as empty input;
+                // absent events and unrelated warnings remain real failures.
+                if value["type"] == "Warning" && value["code"] == "FORCE_END_TURN_NO_ACTIVE_TURN" {
+                    let error = if seen.load(Ordering::Relaxed) == 0 {
+                        err(VoiceErrorKind::NoSpeech, "No speech heard")
+                    } else {
+                        err(
+                            VoiceErrorKind::Provider,
+                            "Deepgram did not confirm the spoken request",
+                        )
+                    };
+                    if tx.try_send(Err(error)).is_err() {
+                        break;
+                    }
+                    continue;
+                }
                 if value["type"] == "Error" {
                     let _ = tx.try_send(Err(err(
                         VoiceErrorKind::Provider,
@@ -269,6 +286,68 @@ impl Drop for Flux {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn no_active_turn_warning_is_empty_only_without_observed_speech() {
+        for (updates, code, expected) in [
+            (
+                false,
+                "FORCE_END_TURN_NO_ACTIVE_TURN",
+                VoiceErrorKind::NoSpeech,
+            ),
+            (
+                true,
+                "FORCE_END_TURN_NO_ACTIVE_TURN",
+                VoiceErrorKind::Provider,
+            ),
+            (false, "UNKNOWN_WARNING", VoiceErrorKind::Network),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                while let Some(Ok(message)) = ws.next().await {
+                    if let Message::Text(text) = message {
+                        assert_eq!(
+                            serde_json::from_str::<serde_json::Value>(&text).unwrap()["type"],
+                            "ForceEndTurn"
+                        );
+                        if updates {
+                            ws.send(Message::Text(json!({"type":"TurnInfo","event":"Update","transcript":"synthetic words"}).to_string().into())).await.unwrap();
+                        }
+                        ws.send(Message::Text(
+                            json!({"type":"Warning","code":code}).to_string().into(),
+                        ))
+                        .await
+                        .unwrap();
+                        // Keep the transport alive: a warning is not a disconnect.
+                        while ws.next().await.is_some() {}
+                        break;
+                    }
+                }
+            });
+            let mut stream = Flux::connect(
+                &format!("ws://{addr}"),
+                reqwest::header::HeaderValue::from_static("Token synthetic"),
+                16000,
+            )
+            .await
+            .unwrap();
+            stream.send(&[0; 640]).await.unwrap();
+            let error = stream
+                .commit_with_timeout(Duration::from_millis(250))
+                .await
+                .unwrap_err();
+            assert_eq!(error.kind, expected, "updates={updates}, code={code}");
+            if expected == VoiceErrorKind::NoSpeech {
+                assert_eq!(error.to_string(), "No speech heard");
+            }
+            assert!(!error.to_string().contains("synthetic words"));
+            assert_eq!(stream.stats().committed_segments, 0);
+            stream.close().await;
+            server.await.unwrap();
+        }
+    }
     #[tokio::test]
     async fn binary_upload_final_turn_only_and_sensitive_header() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

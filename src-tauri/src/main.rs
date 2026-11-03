@@ -298,6 +298,11 @@ async fn transcribe_wake(state: State<'_, Arc<AppState>>, id: u64) -> Result<Str
         Ok(Some(text)) => {
             return quota::finish(&state, &provider, generation, "stt", Ok(text)).await;
         }
+        // An explicit provider no-speech acknowledgement is an empty capture,
+        // not a failed request and never a reason to retry/bill a batch pass.
+        Err(error) if error.kind == notdot_voice::VoiceErrorKind::NoSpeech => {
+            return quota::finish(&state, &provider, generation, "stt", Ok(String::new())).await;
+        }
         Err(error) => return quota::finish(&state, &provider, generation, "stt", Err(error)).await,
         Ok(None) if provider == "deepgram" => {
             return Err("Deepgram speech recognition did not start. Please try again.".into());
