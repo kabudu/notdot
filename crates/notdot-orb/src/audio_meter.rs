@@ -104,6 +104,15 @@ impl Meter {
     }
     pub fn playback(&mut self, audio: &HtmlAudioElement) -> Result<bool, JsValue> {
         self.playback = None;
+        // Linux WebKit's MediaElementAudioSourceNode truncated sentence tails
+        // in native output tests. Preserve ordinary HTML media output there;
+        // the orb still uses its smooth, unmetered speaking animation.
+        if web_sys::window()
+            .and_then(|window| window.navigator().user_agent().ok())
+            .is_some_and(|agent| agent.contains("Linux"))
+        {
+            return Ok(false);
+        }
         let Some(context) = &self.context else {
             return Ok(false);
         };
