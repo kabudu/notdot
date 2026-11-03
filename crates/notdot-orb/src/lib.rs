@@ -613,6 +613,25 @@ fn conversation_now() -> f64 {
         .expect("browser performance clock")
         .now()
 }
+fn reflect_manual_capture_ready(view: &mut View, wake: &Value) -> bool {
+    if !matches!(wake["phase"].as_str(), Some("capturing" | "ready"))
+        || wake["manual"] != true
+        || !view.native_manual
+        || wake["capture_token"].as_str() != view.capture_token.as_deref()
+    {
+        return false;
+    }
+    if view.local_phase == Some("starting_capture") {
+        if wake["phase"] == "capturing" {
+            let _ = view.meter.wake_cue();
+        }
+        view.local_phase = Some("listening");
+        if view.conversation.starting() {
+            view.conversation.opened();
+        }
+    }
+    true
+}
 fn followup_allowed(view: &Shared, snapshot: &Snapshot) -> bool {
     let v = view.borrow();
     snapshot.settings.followup_enabled
@@ -650,7 +669,8 @@ fn wake_ready(view: &Shared, snapshot: &Snapshot) -> bool {
         && !snapshot.key_checking
         && !snapshot.settings.voice_id.is_empty()
         && !v.voice_pending
-        && (v.local_phase.is_none() || (v.native_manual && v.local_phase == Some("listening")))
+        && (v.local_phase.is_none()
+            || (v.native_manual && matches!(v.local_phase, Some("starting_capture" | "listening"))))
         && v.recording.is_none()
         && ((v.update_listening.is_none() && v.memory_listening.is_none()) || v.native_manual)
         && !dialog("panel").open()
@@ -1437,10 +1457,10 @@ async fn voice_inner(view: Shared, followup: bool) -> Result<(), String> {
         let mut v = view.borrow_mut();
         v.native_manual = true;
         if followup {
-            v.conversation.opened();
+            v.conversation.begin_capture();
         }
         v.capture_token = Some(token.clone());
-        v.local_phase = Some("listening");
+        v.local_phase = Some("starting_capture");
     }
     let result = call(
         "start_capture",
@@ -2462,6 +2482,9 @@ pub fn start() -> Result<(), JsValue> {
             };
             if wake["phase"] == "capturing" && ready {
                 let mut v = owner.borrow_mut();
+                if wake["manual"] == true && !reflect_manual_capture_ready(&mut v, &wake) {
+                    return;
+                }
                 if wake["manual"] != true && v.last_capture_cue != token {
                     let _ = v.meter.wake_cue();
                     v.last_capture_cue = token.into();
@@ -2512,6 +2535,8 @@ pub fn start() -> Result<(), JsValue> {
                     {
                         stop_audio(&target);
                     }
+                    // Polling is a backstop if the capture-start event is lost.
+                    reflect_manual_capture_ready(&mut target.borrow_mut(), &snapshot.wake);
                     let allowed = followup_allowed(&target, &snapshot);
                     let start_followup = if target.borrow().conversation.listening() {
                         false
@@ -2552,7 +2577,12 @@ pub fn start() -> Result<(), JsValue> {
                             let _ = v.meter.wake_cue();
                             v.last_capture_cue = token.clone();
                         }
-                        v.capture_token = Some(token);
+                        if snapshot.wake["manual"] != true
+                            || (v.native_manual
+                                && v.capture_token.as_deref() == Some(token.as_str()))
+                        {
+                            v.capture_token = Some(token);
+                        }
                     }
                     if target.borrow().native_manual && snapshot.wake["phase"] == "error" {
                         let error = snapshot.wake["message"]
@@ -3196,6 +3226,9 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                     }
                     visual_state::Mode::Listening => {
                         "Listening. Speak, then pause to send. Escape cancels."
+                    }
+                    visual_state::Mode::Thinking if v.local_phase == Some("starting_capture") => {
+                        "Starting microphone. Wait for the listening cue. Escape cancels."
                     }
                     visual_state::Mode::Thinking => "Thinking.",
                     visual_state::Mode::Speaking => "Speaking. Press Escape to stop.",

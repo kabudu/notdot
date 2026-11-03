@@ -59,6 +59,9 @@ pub fn recognize(
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     params.set_n_threads(limits.threads);
     params.set_max_tokens(32);
+    // A wake address must begin the first speech segment. Do not decode later
+    // segments that cannot make an unrelated opening into an address.
+    params.set_single_segment(true);
     params.set_temperature_inc(0.);
     params.set_suppress_nst(true);
     params.set_language(Some("en"));

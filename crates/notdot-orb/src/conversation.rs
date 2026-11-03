@@ -34,6 +34,9 @@ impl Conversation {
     pub(crate) fn starting(&self) -> bool {
         self.phase == Phase::Starting
     }
+    pub(crate) fn begin_capture(&mut self) {
+        self.phase = Phase::Starting;
+    }
     pub(crate) fn opened(&mut self) {
         self.phase = Phase::Listening;
     }

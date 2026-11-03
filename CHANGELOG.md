@@ -4,7 +4,9 @@
 
 - **Keep the conversation going.** Optionally listen for a follow-up after a spoken reply, with an adjustable window, clear orb feedback and “That’s all” to stop.
 
-- **Quieter follow-up timeouts.** Treat Deepgram’s confirmed empty speech turn as silence rather than a connection error.
+- **Clearer voice feedback.** Wait for a short cue when the microphone is ready. Empty follow-ups close quietly.
+
+- **Complete Linux replies.** Preserve the ends of spoken sentences.
 
 ## [0.1.0] - 2026-10-30
 

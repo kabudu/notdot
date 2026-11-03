@@ -16,9 +16,9 @@ The choices come from your installed Codex tool and account. notdot checks them 
 
 With wake listening on, say your wake phrase. Orb clicks and Enter/Space do not start a separate recording. Drag still moves the orb, right-click opens Settings, and Escape cancels.
 
-With wake listening off, click the orb once, speak, then pause. notdot sends the request after 1.4 seconds of silence. A second click sends sooner; Escape cancels. Silence without speech is discarded after eight seconds.
+With wake listening off, click the orb once. A short chime tells you the microphone is ready; then speak and pause. notdot sends the request after 1.4 seconds of silence. A second click sends sooner; Escape cancels. Silence without speech is discarded after eight seconds.
 
-**Keep the conversation going** is off by default. Turn it on in the wake and microphone settings, choose a follow-up window from **3 to 20 seconds** (normally **8**), then **Save**. After the complete spoken reply finishes, two soft rings show that notdot is listening for another request. You do not need another click or wake phrase. If you start speaking within the window, you can finish your request normally; a pause sends it.
+**Keep the conversation going** is off by default. Turn it on in the wake and microphone settings, choose a follow-up window from **3 to 20 seconds** (normally **8**), then **Save**. After the complete spoken reply finishes, a short chime and two soft rings show that notdot is listening for another request. You do not need another click or wake phrase. If you start speaking within the window, you can finish your request normally; a pause sends it.
 
 Say **“That’s all”** while it is listening, or press **Escape**, to end the exchange. It also stops on silence, mute, opening Settings or About, hiding the window, loss of voice-service access or an error. Ending an exchange returns to the usual wake or click mode. To interrupt a reply while it is speaking, use Escape; voice interruption is a separate planned feature.
 

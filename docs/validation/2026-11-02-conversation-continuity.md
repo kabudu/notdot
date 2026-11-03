@@ -123,6 +123,18 @@ The pinned `whisper-rs-sys` build script selects `RelWithDebInfo` plus `WHISPER_
 
 The full local release-profile validation passed: all native/core/voice/orb/runtime tests, Clippy checks and 95 Python checks. Hosted validation of this configuration is still required.
 
+## Microphone-ready feedback and bounded wake decoding — 3 November late evening
+
+The orb previously showed listening before the native microphone was ready. Manual and follow-up capture now show a preparing state, then the actual capture-ready event (or its matching snapshot) promotes listening and plays a short cue. Capture-token ownership prevents stale events from reviving a cancelled start. A very short capture can reach ready before its started event is observed; the initial integration regression caught this race, and both states are handled without replaying a late cue. All **16** production-WASM integration scenarios passed, including both delayed readiness cases and cancellation during startup.
+
+The rebuilt Developer ID-signed Mac QA app reopened both saved voice services non-interactively without another approval. Its physical speaker-to-microphone three-sentence turn completed; follow-up closed after about 8.4 seconds with no extra turn during the 20-second observation. The cue did not trigger another turn. An initial generated clip played at the exact native start was not captured; the successful repeat allowed 350 ms after readiness. These timing observations are retained rather than claiming opening-word reliability from a single clip. The original QA profile was restored afterward.
+
+The rebuilt Ubuntu VM app likewise completed the three-sentence turn and a quiet follow-up, closing about 8.5 seconds after opening. Its ordinary media route and unmetered animation remain in use. Windows deployment of the matching UI is pending in this entry.
+
+Hosted run `41729234798` at `8a99fed` passed both Macs and Linux, but failed Windows: the framed short-name negative exceeded the helper deadline, then the next cold generic recovery decode timed out. Exact production-framed request bytes were exported temporarily from the corpus test, with the export hook removed afterward. On the physical Windows laptop all ten baseline requests passed in 1.24–1.46 seconds. This establishes a hosted timing difference, not a universally solved timeout.
+
+The wake decoder now asks Whisper for only the first speech segment, since a valid address must start there. The 32-token ceiling, strict address/no-speech checks, cancellation and three-second request budget are unchanged. Locally the two short-name negatives changed from 532/1205 ms to 240/249 ms; all ten framed expectations still passed. The rebuilt Windows helper also passed all ten exact frames in 1.24–1.36 seconds. These sequential measurements are indicative, not a controlled hardware benchmark. Hosted CI must still verify this candidate. The full local validation script passed, including release native tests, all-target/WASM Clippy and 95 Python checks.
+
 ## Acceptance status
 
 - [x] Generated speech through real microphone → configured STT → Terra Medium → configured TTS, with connected follow-ups on Mac, Windows and Linux.

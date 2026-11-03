@@ -20,8 +20,8 @@ impl Mode {
             "listening" => Self::Listening,
             "followup" => Self::Followup,
             "announcing" => Self::Speaking,
-            "thinking" | "connecting" | "transcribing" | "synthesizing" | "updating"
-            | "resetting" => Self::Thinking,
+            "thinking" | "connecting" | "starting_capture" | "transcribing" | "synthesizing"
+            | "updating" | "resetting" => Self::Thinking,
             "error" => Self::Error,
             _ => Self::Idle,
         }
@@ -54,7 +54,13 @@ mod tests {
     use super::*;
     #[test]
     fn all_waiting_stages_are_visibly_thinking_and_playback_overrides_idle() {
-        for stage in ["thinking", "connecting", "transcribing", "synthesizing"] {
+        for stage in [
+            "thinking",
+            "connecting",
+            "starting_capture",
+            "transcribing",
+            "synthesizing",
+        ] {
             assert_eq!(Mode::resolve(stage, false, false), Mode::Thinking);
         }
         assert_eq!(
