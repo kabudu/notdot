@@ -1,6 +1,10 @@
 # Roadmap
 
-These are the next additions planned for notdot. Priorities may change with user feedback; dates are not promised. See the [README](README.md) for the features available today.
+Completed work and the next additions planned for notdot. Priorities may change with user feedback; dates are not promised. See the [README](README.md) for the features available today.
+
+## Implemented
+
+- **Conversation continuity.** Turn on an optional 3–20 second listening window after spoken replies. Two soft orb rings show when you can answer; say “That’s all”, press Escape or stay silent to stop. The microphone pauses while notdot speaks. [Implementation and tests](https://github.com/kabudu/notdot/pull/22) · [Settings guide](docs/settings.md).
 
 ## More voice choices
 
@@ -19,7 +23,6 @@ A new backend needs streaming where supported, reliable cancellation, clear erro
 ## More natural conversations
 
 - **Interrupt by speaking.** Stop a reply with your voice, without the assistant reacting to its own speaker output.
-- **Conversation continuity.** After you wake notdot and it asks a question, let you answer without another click or wake phrase. Offer an optional, bounded listening window for follow-up turns, with clear orb feedback, a timeout and an easy way to stop. Pause microphone capture while notdot speaks so it does not answer its own voice.
 - **More languages.** Expand recognition, wake phrases and spoken replies together, with clear choices for the languages each service supports.
 - **Clearer names and numbers.** Improve recognition of names, dates and similar-sounding words, with tests in different rooms and on different microphones.
 
