@@ -10,7 +10,7 @@ For a bug, open an issue with your OS, notdot/runtime versions, reproduction ste
 
 Start with the [Settings guide](docs/settings.md) to understand the app, then follow the [development guide](docs/guide.md). Create a focused branch, keep changes reviewable, and explain the problem and resulting behaviour in your pull request. Run `scripts/ci-local.sh` for application changes. For documentation-only changes, check links and examples; for the website, run `python3 scripts/check_site.py` and inspect narrow and wide layouts.
 
-Documentation and website edits run quick content and link checks in GitHub Actions. Changes to the app, dependencies or build process run the full Mac, Windows and Linux checks. Release builds always run the full checks.
+Documentation and website edits run quick content and link checks in GitHub Actions. Changes to the app, dependencies or build process run the full Mac, Windows and Linux checks. A copy-only update to an existing feature PR can reuse a successful native run when all tested native inputs still match. Missing or expired evidence triggers a full run. Release builds always run the full checks.
 
 Voice changes need real microphone → transcription → response → audible playback evidence, including cancellation and failure handling. Clearly distinguish mocks, synthetic fixtures and hardware testing. Never commit credentials, personal recordings or private conversation history. Use your own accounts and staged, non-sensitive demo content.
 

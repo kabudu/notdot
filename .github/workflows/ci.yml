@@ -16,8 +16,12 @@ jobs:
     name: Classify changes
     runs-on: ubuntu-22.04
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     outputs:
       full: ${{ steps.plan.outputs.full }}
+      native: ${{ steps.plan.outputs.native }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -29,6 +33,7 @@ jobs:
           CI_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           CI_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
           CI_FORCE_FULL: ${{ inputs.force_full || false }}
+          GH_TOKEN: ${{ github.token }}
         run: python3 scripts/ci_changes.py classify
   content:
     name: Content checks
@@ -265,3 +270,15 @@ jobs:
         env:
           CI_NEEDS: ${{ toJSON(needs) }}
         run: python3 scripts/ci_changes.py gate
+      - name: Record the successfully tested native inputs
+        if: needs.changes.outputs.full == 'true'
+        run: python3 scripts/ci_changes.py fingerprint > native-validation.txt
+      - name: Retain native validation evidence for later copy-only commits
+        if: needs.changes.outputs.full == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-validation-${{ needs.changes.outputs.native }}
+          path: native-validation.txt
+          retention-days: 30
+          if-no-files-found: error
