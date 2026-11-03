@@ -25,7 +25,8 @@ pub async fn run(path: PathBuf) -> Result<(), String> {
         .join(crate::app_context().config().identifier.clone());
     let settings = Settings::load(&dir.join("settings.json"))?;
     let key = Arc::new(credentials::Credentials::read_only())
-        .read(settings.transcription_id(), true)
+        // Unattended diagnostics must fail closed, never request OS approval.
+        .read(settings.transcription_id(), false)
         .await?;
     let provider = notdot_voice::transcription_provider(
         settings.transcription_id(),
