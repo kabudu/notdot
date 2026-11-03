@@ -115,6 +115,14 @@ The corrected CI run `41724133790` passed Apple Silicon and Linux but exposed a 
 
 Native suites now run with one test worker, removing unrelated test concurrency while preserving the complete corpus, three-second production deadlines and all required jobs. The post-test Windows helper diagnostic now includes all five fixtures so future failures retain negative-case timing too. These are runner-isolation and diagnostic changes, not a confirmed production performance fix. The entire local validation script passed with serial execution, including 95 Python checks; the next hosted run must establish its result.
 
+### Match deadline tests to the shipping build profile
+
+Serial execution alone did not resolve Intel timing: run `41727177560` again timed out on `negative.wav` in the generic decoder (about 3.79 seconds). Windows passed its native suite in that run. Therefore test concurrency is not described as the confirmed cause or complete fix.
+
+The pinned `whisper-rs-sys` build script selects `RelWithDebInfo` plus `WHISPER_DEBUG` for a diagnostic build and `Release` for the shipping build; local CMake caches confirm the distinction. Native runtime/deadline tests now use `cargo test --release` so they measure the same inference configuration as installers. Windows also uses the installer's explicit x86-64 target, avoiding a separate host-target native build. All fixtures, assertions and production time limits remain unchanged; debug/all-target Clippy and production/debug WASM checks remain in the script. This removes a build-profile mismatch, without claiming that every possible shared-runner scheduling delay is eliminated.
+
+The full local release-profile validation passed: all native/core/voice/orb/runtime tests, Clippy checks and 95 Python checks. Hosted validation of this configuration is still required.
+
 ## Acceptance status
 
 - [x] Generated speech through real microphone → configured STT → Terra Medium → configured TTS, with connected follow-ups on Mac, Windows and Linux.
