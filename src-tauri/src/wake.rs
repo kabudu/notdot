@@ -357,6 +357,7 @@ struct Detector {
     rejected_energy: u64,
     rejected_prefix: u64,
     elapsed: f64,
+    quiet_seconds: f64,
     voice_gate: VoiceGate,
     voiced: std::collections::VecDeque<(f64, f64, bool)>,
 }
@@ -439,6 +440,7 @@ impl Detector {
             rejected_energy: 0,
             rejected_prefix: 0,
             elapsed: 0.,
+            quiet_seconds: 0.,
             voice_gate: VoiceGate::default(),
             voiced: Default::default(),
         })
@@ -447,17 +449,23 @@ impl Detector {
         if self.fallback.accept(rate, samples) {
             return true;
         }
-        // Bound the native feature history too. Prefer resetting in quiet audio.
-        if self.elapsed >= 120. || (self.elapsed >= 60. && energy(samples) < 0.008) {
+        let voiced = self.voice_gate.observe(energy(samples));
+        let seconds = samples.len() as f64 / f64::from(rate);
+        self.quiet_seconds = if voiced {
+            0.
+        } else {
+            self.quiet_seconds + seconds
+        };
+        // Sherpa 2.0 resets decoder offsets after 1.5 s of trailing blanks,
+        // without rebasing its feature stream. Recreate the stream in quiet
+        // audio first, so token times and acoustic-support times stay aligned.
+        // Keep both the Hey-prefix and speech-support guards unchanged.
+        if self.elapsed >= 120. || self.quiet_seconds >= 1. {
             self.reset_keyword();
         }
         let start = self.elapsed;
-        self.elapsed += samples.len() as f64 / rate as f64;
-        self.voiced.push_back((
-            start,
-            self.elapsed,
-            self.voice_gate.observe(energy(samples)),
-        ));
+        self.elapsed += seconds;
+        self.voiced.push_back((start, self.elapsed, voiced));
         while self
             .voiced
             .front()
@@ -525,6 +533,7 @@ impl Detector {
     fn reset_keyword(&mut self) {
         self.stream = self.kws.create_stream();
         self.elapsed = 0.;
+        self.quiet_seconds = 0.;
         self.voiced.clear();
     }
 }
@@ -1840,6 +1849,23 @@ mod tests {
             eprintln!("local human fixture gain={gain}, detected={detected}");
             assert!(detected, "human wake phrase missed at gain {gain}");
         }
+    }
+    #[test]
+    fn quiet_idle_rebases_the_primary_stream_before_sherpas_internal_reset() {
+        let _models = model_fixture_guard();
+        let mut detector = Detector::new(&models(), "Hey Ava").unwrap();
+        for _ in 0..250 {
+            assert!(!detector.accept(16000, &[0.; 320]));
+            // Sherpa resets decoder offsets after 1.5 s of blanks. Our acoustic
+            // support timeline must restart with a fresh feature stream earlier.
+            assert!(
+                detector.elapsed < 1.5,
+                "primary and acoustic clocks can diverge after quiet idle"
+            );
+        }
+        assert!(detects(&mut detector, &audio("hey-ava.wav")));
+        detector.reset();
+        assert!(!detects(&mut detector, &audio("negative.wav")));
     }
     #[test]
     fn wake_after_extended_idle_and_rejected_candidates() {
