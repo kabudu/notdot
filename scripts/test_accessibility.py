@@ -45,6 +45,17 @@ class Accessibility(unittest.TestCase):
         for hue in range(361):
             a,b=sorted((lum(rgb),lum(colorsys.hls_to_rgb(hue/360,light,sat))))
             self.assertGreaterEqual((b+.05)/(a+.05),3.0,f'hue {hue}')
+    def test_native_visual_reports_accept_every_serialized_orb_mode(self):
+        # This is a protocol compatibility check across the two independent
+        # crates: a new UI mode must not be silently rejected by native logging.
+        ui=(ROOT/'crates/notdot-orb/src/visual_state.rs').read_text()
+        native=(ROOT/'src-tauri/src/main.rs').read_text()
+        names=set(re.findall(r'Self::\w+\s*=>\s*"([a-z]+)"',ui))
+        validator=native.split('async fn report_visual(',1)[1].split('.ok_or("Invalid visual mode")',1)[0]
+        accepted=set(re.findall(r'"([a-z]+)"',validator))
+        self.assertTrue(names)
+        self.assertLessEqual(names,accepted)
+
     def test_production_markup_has_no_conversation_composer(self):
         self.assertFalse(any(t=='textarea' or a.get('id')in ('composer','text','reply') for t,a in self.markup.tags))
         self.assertIn('prefers-reduced-motion',(ROOT/'style.css').read_text())

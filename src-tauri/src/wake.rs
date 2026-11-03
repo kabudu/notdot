@@ -1890,7 +1890,14 @@ mod tests {
                     std::thread::sleep(Duration::from_millis(10));
                     detected |= d.accept(16000, &[0.; 320]);
                 }
-                assert_eq!(detected, name == "hey-ava.wav", "{name} after {idle}s idle");
+                assert_eq!(
+                    detected,
+                    name == "hey-ava.wav",
+                    "{name} after {idle}s idle: backend={} busy={} error={:?}",
+                    d.fallback.backend(),
+                    d.fallback.is_busy(),
+                    d.fallback.error
+                );
                 if detected {
                     d.reset();
                 }

@@ -84,7 +84,12 @@ struct VisualLog {
 async fn report_visual(state: State<'_, Arc<AppState>>, report: Value) -> Result<(), String> {
     let mode = report["mode"]
         .as_str()
-        .filter(|s| matches!(*s, "idle" | "listening" | "thinking" | "speaking" | "error"))
+        .filter(|s| {
+            matches!(
+                *s,
+                "idle" | "listening" | "followup" | "thinking" | "speaking" | "error"
+            )
+        })
         .ok_or("Invalid visual mode")?;
     let rms = report["rms"]
         .as_f64()
