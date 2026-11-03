@@ -59,9 +59,10 @@ fn run() -> Result<(), ()> {
     let mut params = WhisperContextParameters::default();
     params.use_gpu(false).flash_attn(false);
     let context = WhisperContext::new_with_params(model, params).map_err(|_| ())?;
+    let threads = std::thread::available_parallelism().map_or(2, |n| n.get().min(4)) as i32;
+    engine::prepare(&context, &phrase, threads).map_err(|_| ())?;
     output.write_all(protocol::READY).map_err(|_| ())?;
     output.flush().map_err(|_| ())?;
-    let threads = std::thread::available_parallelism().map_or(2, |n| n.get().min(4)) as i32;
     let mut last = 0;
     while let Some((id, samples)) = protocol::read_request(&mut input).map_err(|_| ())? {
         if id <= last {

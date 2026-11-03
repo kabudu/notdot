@@ -23,6 +23,24 @@ impl Default for DecodeLimits {
         }
     }
 }
+/// Prepare first-use inference before a decoder is advertised as ready. This
+/// uses synthetic silence, never microphone audio, and does not change the
+/// three-second budget used for actual wake requests.
+pub fn prepare(context: &WhisperContext, phrase: &str, threads: i32) -> Result<(), String> {
+    recognize(
+        context,
+        phrase,
+        &[0.; 16000],
+        16000,
+        Arc::new(AtomicU64::new(0)),
+        0,
+        DecodeLimits {
+            budget: Duration::from_secs(8),
+            threads,
+        },
+    )
+    .map(|_| ())
+}
 pub fn recognize(
     context: &WhisperContext,
     phrase: &str,

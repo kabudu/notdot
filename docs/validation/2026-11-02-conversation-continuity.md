@@ -55,6 +55,14 @@ The first near-deadline test driver waited for `paused` at the end, but click mo
 
 The new no-speech path passed the provider WebSocket tests, native session tests, the full local validation suite and all 14 production-WASM browser scenarios. The running QA process was intentionally kept alive to retain authorised key access while the owner was away; it does **not** contain these final native changes. Repeat physical silence/echo acceptance on the rebuilt bundle before merging. Windows/Linux physical continuity checks have not yet run on this branch.
 
+## CI wake deadline follow-up
+
+`09ed078` completed full CI successfully, including the unsigned Windows installer. At `d39d083`, Windows and both Mac architectures passed, but Linux's first fallback corpus test exceeded the unchanged three-second recognition deadline. Later model tests failed because that panic poisoned the shared fixture mutex; they are not independent failures. Earlier Windows observations also showed a slow first helper inference followed by faster requests in the same process. This establishes a first-use cost worth preparing for, but does not establish that every intermittent deadline miss has the same cause.
+
+The generic decoder and optional helper now run one bounded synthetic-silence inference before reporting ready. Preparation has an eight-second compute budget; initial helper readiness is capped at ten seconds including loading. Real wake utterances and helper restarts inside an utterance retain their three-second deadlines, strict address/prefix guards and cancellation behaviour. No microphone is open during preparation. The native worker rechecks mute, revision, epoch and the live permission lease immediately before opening it, because those may have changed during setup. A preparation failure keeps wake listening unavailable rather than pretending the decoder is ready. Generic fallback after a helper failure retains its existing per-request path; no retry is added to the failed utterance.
+
+The full local suite passed with this change. Final platform CI and rebuilt-native acceptance remain required. The Linux VM could not start its authorised voice launcher unattended: it reported “Enable microphone access for notdot Linux VM in System Settings.” No permission was weakened or prompt approved automatically.
+
 ## Required before merge/release
 
 - [ ] Real microphone → configured STT → Terra Medium → configured TTS exchange with two or more follow-ups, in click and wake modes.

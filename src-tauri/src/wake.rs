@@ -1060,6 +1060,21 @@ impl Worker {
                 }
             }
         }
+        // Model preparation is blocking on this dedicated worker. Permission
+        // may have changed while it ran; never open a mic for that stale lease.
+        {
+            let i = inner.lock().expect("wake state");
+            if i.revision != revision
+                || i.epoch != epoch
+                || i.config.muted
+                || (!i.config.enabled && i.manual_token.is_none())
+                || !i
+                    .lease
+                    .is_some_and(|t| t.elapsed() < Duration::from_secs(3))
+            {
+                return;
+            }
+        }
         if self.mic.is_none() {
             match Microphone::open() {
                 Ok(mic) => {
