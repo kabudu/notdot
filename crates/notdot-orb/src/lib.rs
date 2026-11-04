@@ -2659,13 +2659,13 @@ pub fn start() -> Result<(), JsValue> {
                     };
                     element("wake-status").set_text_content(Some(wake_hint(&snapshot)));
                     let health = if snapshot.wake["phase"] == "listening"
-                        && snapshot.wake["fallback_warning"].as_str().is_some()
+                        && let Some(warning) = snapshot.wake["fallback_warning"].as_str()
                     {
-                        "Wake listening is active. Backup recognition will retry on your next phrase."
+                        format!("Wake listening is active. {warning}")
                     } else {
-                        ""
+                        String::new()
                     };
-                    element("wake-health").set_text_content(Some(health));
+                    element("wake-health").set_text_content(Some(&health));
                     let orb = element("orb");
                     let wake_mode = snapshot.settings.wake_enabled;
                     let _ = orb.set_attribute("role", if wake_mode { "img" } else { "button" });

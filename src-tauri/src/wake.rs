@@ -521,7 +521,9 @@ impl Detector {
                     self.rejected_prefix = self.rejected_prefix.saturating_add(1);
                 }
                 if supported && prefix {
-                    self.fallback.error = None;
+                    if matches!(self.fallback.backend(), "generic" | "accelerated") {
+                        self.fallback.error = None;
+                    }
                     return true;
                 }
             }
@@ -1650,8 +1652,12 @@ mod tests {
         if *detected {
             detector.fallback.reset();
         }
-        for _ in 0..350 {
-            if !detector.fallback.is_busy() {
+        // Fixture teardown can include a cancelled decode (three seconds) and
+        // an audio-free replacement warm-up (ten seconds). Neither wait extends
+        // the production utterance deadline or replays its audio.
+        let deadline = Instant::now() + Duration::from_secs(14);
+        while Instant::now() < deadline {
+            if !detector.fallback.is_busy() && detector.fallback.backend() != "recovering" {
                 return;
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -1661,9 +1667,11 @@ mod tests {
             }
         }
         assert!(
-            !detector.fallback.is_busy(),
-            "{stage} did not settle: elapsed={:?} rate={rate} detected={detected} error={:?}",
+            !detector.fallback.is_busy() && detector.fallback.backend() != "recovering",
+            "{stage} did not settle: elapsed={:?} rate={rate} detected={detected} backend={} failures={} error={:?}",
             start.elapsed(),
+            detector.fallback.backend(),
+            detector.fallback.failures,
             detector.fallback.error
         );
     }
@@ -1866,6 +1874,29 @@ mod tests {
         }
     }
     #[test]
+    fn unavailable_backup_does_not_stop_primary_processing() {
+        let _models = model_fixture_guard();
+        let directory = tempfile::tempdir().unwrap();
+        let mut detector = Detector::new(&models(), "Hey Ava").unwrap();
+        detector.fallback =
+            fallback::Fallback::new(&directory.path().join("missing.bin"), "Hey Ava").unwrap();
+        assert_eq!(detector.fallback.backend(), "unavailable");
+        let mut samples = vec![0.; 8000];
+        samples.extend(audio("hey-ava-uk.wav"));
+        samples.extend(vec![0.; 16000]);
+        for frame in samples.chunks(320) {
+            let _ = detector.accept(16000, frame);
+        }
+        assert!(
+            detector.elapsed > 0.,
+            "primary inference must continue after unavailable backup setup"
+        );
+        assert!(
+            detector.fallback.error.is_some(),
+            "a primary match must not hide a real backup outage"
+        );
+    }
+    #[test]
     fn a_fallback_decode_failure_does_not_disable_primary_wake_detection() {
         let _models = model_fixture_guard();
         let wake = isolated();
@@ -1974,6 +2005,7 @@ mod tests {
         let _models = model_fixture_guard();
         for idle in [2, 5, 25, 65] {
             let mut d = Detector::new(&models(), "Hey Ava").unwrap();
+            let initial_backend = d.fallback.backend();
             for _ in 0..idle * 50 {
                 assert!(!d.accept(16000, &[0.; 320]));
             }
@@ -1985,23 +2017,29 @@ mod tests {
                 for _ in 0..60 {
                     detected |= d.accept(16000, &[0.; 320]);
                 }
-                for _ in 0..400 {
-                    if !d.fallback.is_busy() {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
-                    detected |= d.accept(16000, &[0.; 320]);
-                }
+                drain_fixture_fallback(&mut d, 16000, &mut detected, "after idle fixture");
                 assert_eq!(
                     detected,
                     name == "hey-ava.wav",
-                    "{name} after {idle}s idle: backend={} busy={} error={:?}",
+                    "{name} after {idle}s idle: initial_backend={initial_backend} backend={} busy={} failures={} error={:?}",
                     d.fallback.backend(),
                     d.fallback.is_busy(),
+                    d.fallback.failures,
                     d.fallback.error
                 );
                 if detected {
                     d.reset();
+                    let mut cancelled_match = false;
+                    drain_fixture_fallback(
+                        &mut d,
+                        16000,
+                        &mut cancelled_match,
+                        "cancelled idle fixture",
+                    );
+                    assert!(
+                        !cancelled_match,
+                        "a cancelled fixture must not activate later"
+                    );
                 }
             }
         }

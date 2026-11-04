@@ -2,14 +2,13 @@
 //! Audio is bounded, ephemeral, and never sent to a voice provider or written.
 use super::VoiceGate;
 use notdot_wake_runtime::engine::DecodeLimits;
-#[cfg(any(windows, test))]
 use std::time::{Duration, Instant};
 use std::{
     collections::VecDeque,
     path::Path,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     thread::JoinHandle,
@@ -29,13 +28,16 @@ struct AcceleratedDecoder {
     client: Option<notdot_wake_runtime::client::Client>,
     resource_root: std::path::PathBuf,
     model: std::path::PathBuf,
+    retry_after: Option<Instant>,
 }
 enum Decoder {
     Generic(WhisperContext),
+    Unavailable {
+        model: std::path::PathBuf,
+        retry_after: Instant,
+    },
     #[cfg(windows)]
     Accelerated(Box<AcceleratedDecoder>),
-    #[cfg(windows)]
-    GenericPending(std::path::PathBuf),
 }
 impl Decoder {
     fn new(model: &Path, phrase: &str) -> Result<Self, String> {
@@ -49,15 +51,21 @@ impl Decoder {
             ) && let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                && let Ok(client) = runtime.block_on(notdot_wake_runtime::client::Client::start(
-                    &helper, model, phrase,
-                ))
             {
+                let client = runtime
+                    .block_on(notdot_wake_runtime::client::Client::start(
+                        &helper, model, phrase,
+                    ))
+                    .ok();
+                let retry_after = client
+                    .is_none()
+                    .then(|| Instant::now() + Duration::from_secs(30));
                 return Ok(Self::Accelerated(Box::new(AcceleratedDecoder {
                     runtime,
-                    client: Some(client),
+                    client,
                     resource_root: root.to_owned(),
                     model: model.to_owned(),
+                    retry_after,
                 })));
             }
         }
@@ -68,12 +76,14 @@ impl Decoder {
     fn identity(&self) -> &'static str {
         match self {
             Self::Generic(_) => "generic",
+            Self::Unavailable { .. } => "unavailable",
             #[cfg(windows)]
-            Self::Accelerated(_) => "accelerated",
+            Self::Accelerated(a) if a.client.is_some() => "accelerated",
             #[cfg(windows)]
-            Self::GenericPending(_) => "generic",
+            Self::Accelerated(_) => "recovering",
         }
     }
+    #[cfg(test)]
     fn recognize(
         &mut self,
         phrase: &str,
@@ -82,53 +92,59 @@ impl Decoder {
         epoch: Arc<AtomicU64>,
         expected: u64,
     ) -> Result<bool, String> {
+        self.recognize_with_budget(
+            phrase,
+            samples,
+            rate,
+            epoch,
+            expected,
+            Duration::from_secs(3),
+        )
+    }
+    fn recognize_with_budget(
+        &mut self,
+        phrase: &str,
+        samples: &[f32],
+        rate: u32,
+        epoch: Arc<AtomicU64>,
+        expected: u64,
+        budget: Duration,
+    ) -> Result<bool, String> {
         if epoch.load(Ordering::Relaxed) != expected {
             return Ok(false);
         }
-        #[cfg(windows)]
-        if let Self::GenericPending(path) = self {
-            let context = generic_context(path)?;
-            *self = Self::Generic(context);
-        }
         match self {
-            Self::Generic(context) => recognize(context, phrase, samples, rate, epoch, expected),
+            Self::Unavailable { .. } => Err(
+                "Some wake phrases may be missed because backup recognition is unavailable.".into(),
+            ),
+            Self::Generic(context) => recognize_with_limits(
+                context,
+                phrase,
+                samples,
+                rate,
+                epoch,
+                expected,
+                DecodeLimits {
+                    budget,
+                    ..DecodeLimits::default()
+                },
+            ),
             #[cfg(windows)]
             Self::Accelerated(accelerated) => {
                 let AcceleratedDecoder {
-                    runtime,
-                    client,
-                    resource_root,
-                    model,
+                    runtime, client, ..
                 } = accelerated.as_mut();
                 let audio = notdot_wake_runtime::engine::normalize(samples, rate)?;
-                let start = Instant::now();
+                if client.is_none() {
+                    return Err(
+                        "Some wake phrases may be missed while recognition restarts.".into(),
+                    );
+                }
                 let result = runtime.block_on(async {
-                    if client.is_none() {
-                        let helper = notdot_wake_runtime::package::select(
-                            resource_root,
-                            option_env!("NOTDOT_WAKE_HELPER_SHA256").unwrap_or(""),
-                            notdot_wake_runtime::package::capable_cpu(),
-                        )
-                        .ok_or(notdot_wake_runtime::client::Failure::Unavailable)?;
-                        *client = Some(
-                            notdot_wake_runtime::client::Client::start_cancellable(
-                                &helper,
-                                model,
-                                phrase,
-                                Some((epoch.clone(), expected)),
-                            )
-                            .await?,
-                        );
-                    }
                     client
                         .as_mut()
                         .expect("helper initialized")
-                        .recognize(
-                            &audio,
-                            epoch,
-                            expected,
-                            Duration::from_secs(3).saturating_sub(start.elapsed()),
-                        )
+                        .recognize(&audio, epoch, expected, budget)
                         .await
                 });
                 match result {
@@ -138,17 +154,85 @@ impl Decoder {
                         Ok(false)
                     }
                     Err(notdot_wake_runtime::client::Failure::Unavailable) => {
-                        // Do not decode this utterance twice or extend its deadline.
-                        // A subsequent utterance uses the unchanged generic decoder.
-                        let path = model.clone();
-                        *self = Self::GenericPending(path);
-                        Ok(false)
+                        *client = None;
+                        Err("Backup wake recognition was interrupted. It is restarting.".into())
                     }
                 }
             }
-            #[cfg(windows)]
-            Self::GenericPending(_) => unreachable!("initialized above"),
         }
+    }
+    // Recovery never receives audio and never replays the failed utterance.
+    // One idle attempt is allowed after a fault; failed attempts back off for
+    // thirty seconds and require another speech attempt before trying again.
+    fn recover(
+        &mut self,
+        phrase: &str,
+        epoch: Arc<AtomicU64>,
+        expected: u64,
+    ) -> Option<Result<(), String>> {
+        if let Self::Unavailable { model, retry_after } = self {
+            if Instant::now() < *retry_after {
+                return None;
+            }
+            *retry_after = Instant::now() + Duration::from_secs(30);
+            let result = Self::new(model, phrase);
+            return Some(match result {
+                Ok(decoder) => {
+                    *self = decoder;
+                    if self.unavailable() {
+                        Err("Some wake phrases may be missed. Check whether your security software blocked notdot.".into())
+                    } else {
+                        Ok(())
+                    }
+                }
+                Err(error) => Err(error),
+            });
+        }
+        #[cfg(windows)]
+        if let Self::Accelerated(a) = self {
+            if a.client.is_some() || a.retry_after.is_some_and(|at| Instant::now() < at) {
+                return None;
+            }
+            a.retry_after = Some(Instant::now() + Duration::from_secs(30));
+            let helper = notdot_wake_runtime::package::select(
+                &a.resource_root,
+                option_env!("NOTDOT_WAKE_HELPER_SHA256").unwrap_or(""),
+                notdot_wake_runtime::package::capable_cpu(),
+            );
+            let Some(helper) = helper else {
+                return Some(Err("Backup wake recognition is unavailable. Check whether your security software blocked notdot.".into()));
+            };
+            let result = a
+                .runtime
+                .block_on(notdot_wake_runtime::client::Client::recover(
+                    &helper, &a.model, phrase, epoch, expected,
+                ));
+            return match result {
+                Ok(client) => {
+                    a.client = Some(client);
+                    a.retry_after = None;
+                    Some(Ok(()))
+                }
+                Err(notdot_wake_runtime::client::Failure::Cancelled) => {
+                    a.retry_after = None;
+                    None
+                }
+                Err(notdot_wake_runtime::client::Failure::Unavailable) => Some(Err("Backup wake recognition could not restart. Check whether your security software blocked notdot.".into())),
+            };
+        }
+        #[cfg(not(windows))]
+        let _ = (phrase, epoch, expected);
+        None
+    }
+    fn unavailable(&self) -> bool {
+        if matches!(self, Self::Unavailable { .. }) {
+            return true;
+        }
+        #[cfg(windows)]
+        if let Self::Accelerated(a) = self {
+            return a.client.is_none();
+        }
+        false
     }
 }
 impl Decoder {
@@ -172,13 +256,19 @@ struct Job {
     epoch: u64,
     samples: Vec<f32>,
     rate: u32,
+    deadline: Instant,
+}
+enum Event {
+    Decoded(u64, Result<bool, String>, &'static str),
+    Recovered(u64, Result<(), String>, &'static str),
 }
 pub(super) struct Fallback {
     sender: Option<mpsc::SyncSender<Job>>,
-    receiver: mpsc::Receiver<(u64, Result<bool, String>, &'static str)>,
+    receiver: mpsc::Receiver<Event>,
     backend: &'static str,
     thread: Option<JoinHandle<bool>>,
     epoch: Arc<AtomicU64>,
+    alive: Arc<AtomicBool>,
     busy: bool,
     gate: VoiceGate,
     tail: VecDeque<f32>,
@@ -191,25 +281,56 @@ pub(super) struct Fallback {
 }
 impl Fallback {
     pub(super) fn new(path: &Path, phrase: &str) -> Result<Self, String> {
-        let mut decoder = Decoder::new(path, phrase)?;
+        // A missing or failed backup must not disable the independent primary
+        // keyword detector. The worker can retry its setup after a later phrase.
+        let (mut decoder, setup_error) = match Decoder::new(path, phrase) {
+            Ok(decoder) => (decoder, None),
+            Err(error) => (
+                Decoder::Unavailable {
+                    model: path.to_owned(),
+                    retry_after: Instant::now() + Duration::from_secs(30),
+                },
+                Some(format!("Backup wake recognition could not start: {error}")),
+            ),
+        };
         let backend = decoder.identity();
+        let initial_error = setup_error.or_else(|| decoder.unavailable().then(||
+            "Some wake phrases may be missed. Check whether your security software blocked notdot.".to_owned()
+        ));
+        let failures = u64::from(initial_error.is_some());
         let (sender, jobs) = mpsc::sync_channel::<Job>(1);
-        let (results, receiver) = mpsc::sync_channel(1);
+        let (results, receiver) = mpsc::sync_channel(2);
         let epoch = Arc::new(AtomicU64::new(0));
         let worker_epoch = epoch.clone();
+        let alive = Arc::new(AtomicBool::new(true));
+        let worker_alive = alive.clone();
         let phrase = phrase.to_owned();
         let thread = std::thread::Builder::new()
             .name("notdot-wake-fallback".into())
             .spawn(move || {
                 while let Ok(job) = jobs.recv() {
-                    let result = decoder.recognize(
+                    let result = match job.deadline.checked_duration_since(Instant::now()).filter(|budget| !budget.is_zero()) {
+                    Some(budget) => decoder.recognize_with_budget(
                         &phrase,
                         &job.samples,
                         job.rate,
                         worker_epoch.clone(),
                         job.epoch,
-                    );
-                    let _ = results.try_send((job.epoch, result, decoder.identity()));
+                        budget,
+                    ),
+                    None => Err("That wake phrase expired while recognition was recovering. Please say it again.".into()),
+                    };
+                    let _ = results.try_send(Event::Decoded(job.epoch, result, decoder.identity()));
+                    // A reset can supersede a warm-up. Retry at most once for
+                    // that newer epoch; shutdown never starts a replacement.
+                    for _ in 0..2 {
+                        if !worker_alive.load(Ordering::Relaxed) { break; }
+                        let expected = worker_epoch.load(Ordering::Relaxed);
+                        if let Some(result) = decoder.recover(&phrase, worker_epoch.clone(), expected) {
+                            let _ = results.try_send(Event::Recovered(expected, result, decoder.identity()));
+                        }
+                        if worker_epoch.load(Ordering::Relaxed) == expected { break; }
+                    }
                 }
                 decoder.shutdown()
             })
@@ -220,6 +341,7 @@ impl Fallback {
             backend,
             thread: Some(thread),
             epoch,
+            alive,
             busy: false,
             gate: VoiceGate::default(),
             tail: VecDeque::new(),
@@ -228,11 +350,12 @@ impl Fallback {
             // Keep a natural short pause between the greeting and name in one decode.
             pause_ms: 350,
             speech: 0,
-            error: None,
-            failures: 0,
+            error: initial_error,
+            failures,
         })
     }
     pub(super) fn shutdown(&mut self) -> bool {
+        self.alive.store(false, Ordering::Relaxed);
         self.epoch.fetch_add(1, Ordering::Relaxed);
         self.sender.take();
         self.thread
@@ -255,7 +378,23 @@ impl Fallback {
         self.gate = VoiceGate::default();
     }
     pub(super) fn accept(&mut self, rate: u32, samples: &[f32]) -> bool {
-        if let Ok((epoch, result, backend)) = self.receiver.try_recv() {
+        while let Ok(event) = self.receiver.try_recv() {
+            if let Event::Recovered(epoch, result, backend) = event {
+                if epoch == self.epoch.load(Ordering::Relaxed) {
+                    self.backend = backend;
+                    match result {
+                        Ok(()) => self.error = None,
+                        Err(error) => {
+                            self.failures = self.failures.saturating_add(1);
+                            self.error = Some(error);
+                        }
+                    }
+                }
+                continue;
+            }
+            let Event::Decoded(epoch, result, backend) = event else {
+                unreachable!()
+            };
             self.backend = backend;
             self.busy = false;
             if epoch == self.epoch.load(Ordering::Relaxed) {
@@ -269,6 +408,10 @@ impl Fallback {
                     Err(e) => {
                         self.failures = self.failures.saturating_add(1);
                         self.error = Some(e);
+                        self.samples.clear();
+                        self.tail.clear();
+                        self.speech = 0;
+                        self.silence = 0;
                     }
                 }
             }
@@ -304,6 +447,7 @@ impl Fallback {
                     epoch: self.epoch.load(Ordering::Relaxed),
                     samples,
                     rate,
+                    deadline: Instant::now() + Duration::from_secs(3),
                 };
                 self.busy = self
                     .sender
@@ -321,6 +465,7 @@ impl Drop for Fallback {
         let _ = self.shutdown();
     }
 }
+#[cfg(test)]
 fn recognize(
     context: &WhisperContext,
     phrase: &str,
@@ -358,6 +503,121 @@ fn addressed(text: &str, phrase: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn interrupted_accelerator_recovers_without_permanent_generic_fallback() {
+        let _models = super::super::model_fixture_guard();
+        if !notdot_wake_runtime::package::capable_cpu()
+            || option_env!("NOTDOT_WAKE_HELPER_SHA256")
+                .unwrap_or("")
+                .is_empty()
+        {
+            return;
+        }
+        let root = super::super::fixture_root();
+        let mut decoder = Decoder::new(
+            &root.join("resources/wake/ggml-tiny.en-q5_1.bin"),
+            "Hey Ava",
+        )
+        .unwrap();
+        let Decoder::Accelerated(a) = &mut decoder else {
+            panic!("expected the packaged accelerator");
+        };
+        assert!(
+            a.runtime
+                .block_on(a.client.as_mut().expect("helper ready").shutdown())
+        );
+        let mut wav = hound::WavReader::open(root.join("tests/fixtures/hey-ava-uk.wav")).unwrap();
+        let samples: Vec<_> = wav
+            .samples::<i16>()
+            .map(|s| f32::from(s.unwrap()) / 32768.)
+            .collect();
+        let epoch = Arc::new(AtomicU64::new(0));
+        assert!(
+            decoder
+                .recognize("Hey Ava", &samples, 16000, epoch.clone(), 0)
+                .is_err()
+        );
+        assert_eq!(decoder.identity(), "recovering");
+        assert!(matches!(
+            decoder.recover("Hey Ava", epoch.clone(), 0),
+            Some(Ok(()))
+        ));
+        assert_eq!(decoder.identity(), "accelerated");
+        assert!(
+            decoder
+                .recognize("Hey Ava", &samples, 16000, epoch.clone(), 0)
+                .unwrap()
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let Decoder::Accelerated(a) = &mut decoder else {
+            unreachable!()
+        };
+        assert!(a.runtime.block_on(a.client.as_mut().unwrap().shutdown()));
+        a.client = None;
+        a.resource_root = directory.path().to_owned();
+        assert!(matches!(
+            decoder.recover("Hey Ava", epoch.clone(), 0),
+            Some(Err(_))
+        ));
+        assert!(
+            decoder.recover("Hey Ava", epoch, 0).is_none(),
+            "a failed recovery must back off"
+        );
+        assert!(decoder.shutdown());
+        assert!(notdot_wake_runtime::client::all_helpers_reaped());
+    }
+    #[test]
+    fn failed_backup_setup_remains_a_bounded_recoverable_state() {
+        let _models = super::super::model_fixture_guard();
+        let dir = tempfile::tempdir().unwrap();
+        let model = dir.path().join("missing-model.bin");
+        let mut fallback = Fallback::new(&model, "Hey Ava").unwrap();
+        assert_eq!(fallback.backend(), "unavailable");
+        assert!(fallback.error.is_some());
+        fallback
+            .sender
+            .as_ref()
+            .unwrap()
+            .send(Job {
+                epoch: 0,
+                samples: vec![0.1; 320],
+                rate: 16000,
+                deadline: Instant::now() - Duration::from_secs(1),
+            })
+            .unwrap();
+        fallback.busy = true;
+        let until = Instant::now() + Duration::from_secs(2);
+        while fallback.busy && Instant::now() < until {
+            assert!(!fallback.accept(16000, &[0.; 320]));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!fallback.busy);
+        assert!(fallback.error.as_deref().unwrap().contains("expired"));
+        assert!(fallback.shutdown());
+    }
+    #[test]
+    fn recovery_metadata_cannot_match_audio_or_finish_a_newer_job() {
+        let _models = super::super::model_fixture_guard();
+        let dir = tempfile::tempdir().unwrap();
+        let mut fallback = Fallback::new(&dir.path().join("missing.bin"), "Hey Ava").unwrap();
+        let (events, receiver) = mpsc::sync_channel(2);
+        fallback.receiver = receiver;
+        fallback.busy = true;
+        events
+            .send(Event::Recovered(99, Ok(()), "generic"))
+            .unwrap();
+        assert!(!fallback.accept(16000, &[0.; 320]));
+        assert_eq!(fallback.backend(), "unavailable");
+        assert!(fallback.error.is_some());
+        assert!(fallback.busy);
+        events.send(Event::Recovered(0, Ok(()), "generic")).unwrap();
+        assert!(!fallback.accept(16000, &[0.; 320]));
+        assert_eq!(fallback.backend(), "generic");
+        assert!(fallback.error.is_none());
+        assert!(fallback.busy);
+        assert!(fallback.shutdown());
+    }
     #[test]
     #[ignore = "bounded local wake decode comparison; synthetic audio, no microphone or provider"]
     fn decode_budget_diagnostic() {

@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 - **Other Codex chats.** Read relevant history, or enable controls to send work, add instructions and stop tasks notdot started. Choose when spoken confirmation is required.
-- **Wake recovery.** A backup-recognition failure no longer disables the independent primary wake detector.
+- **Wake recovery.** Recover the Windows wake helper after interruptions, keep primary wake listening active and show backup-recognition problems in Settings.
 
 ## [0.2.0] - 2026-11-04
 

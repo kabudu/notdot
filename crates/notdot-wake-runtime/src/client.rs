@@ -72,6 +72,24 @@ impl Client {
         // Restarts inside an utterance retain its existing three-second bound.
         Self::start_with_timeout(helper, model, phrase, cancel, Duration::from_secs(3)).await
     }
+    /// Warm a replacement while idle, independently of any utterance deadline.
+    /// Cancellation still kills and reaps the replacement before returning.
+    pub async fn recover(
+        helper: &Path,
+        model: &Path,
+        phrase: &str,
+        epoch: Arc<AtomicU64>,
+        expected: u64,
+    ) -> Result<Self, Failure> {
+        Self::start_with_timeout(
+            helper,
+            model,
+            phrase,
+            Some((epoch, expected)),
+            Duration::from_secs(10),
+        )
+        .await
+    }
     async fn start_with_timeout(
         helper: &Path,
         model: &Path,
@@ -137,6 +155,13 @@ impl Client {
         if let Err(error) = ready {
             client.shutdown().await;
             return Err(error);
+        }
+        if cancel
+            .as_ref()
+            .is_some_and(|(epoch, expected)| epoch.load(Ordering::Relaxed) != *expected)
+        {
+            client.shutdown().await;
+            return Err(Failure::Cancelled);
         }
         Ok(client)
     }

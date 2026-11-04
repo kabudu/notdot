@@ -37,6 +37,48 @@ fn model() -> PathBuf {
         .unwrap()
 }
 #[tokio::test]
+async fn background_recovery_replaces_a_failed_child_and_respects_cancellation() {
+    let _scenario = HELPER_SCENARIO.lock().await;
+    let epoch = Arc::new(AtomicU64::new(0));
+    let mut failed = Client::start(&protocol_fixture(), &model(), "Hey Ava")
+        .await
+        .unwrap();
+    let old_pid = failed.pid();
+    assert_eq!(
+        failed
+            .recognize(&[0.; 320], epoch.clone(), 0, Duration::ZERO)
+            .await,
+        Err(Failure::Unavailable)
+    );
+    assert!(failed.pid().is_none());
+    let mut recovered = Client::recover(&protocol_fixture(), &model(), "Hey Ava", epoch.clone(), 0)
+        .await
+        .unwrap();
+    assert!(recovered.pid().is_some());
+    assert_ne!(recovered.pid(), old_pid);
+    assert!(recovered.shutdown().await);
+    {
+        let fixture = protocol_fixture();
+        let model = model();
+        let replacement = Client::recover(&fixture, &model, "Recovery wait", epoch.clone(), 0);
+        tokio::pin!(replacement);
+        std::future::poll_fn(|cx| {
+            assert!(replacement.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        epoch.store(1, Ordering::Relaxed);
+        assert!(matches!(replacement.await, Err(Failure::Cancelled)));
+    }
+    epoch.store(1, Ordering::Relaxed);
+    assert!(matches!(
+        Client::recover(&protocol_fixture(), &model(), "Hey Ava", epoch, 0).await,
+        Err(Failure::Cancelled)
+    ));
+    assert!(all_helpers_reaped());
+}
+
+#[tokio::test]
 async fn cancellation_and_timeout_kill_and_reap_the_helper() {
     let _scenario = HELPER_SCENARIO.lock().await;
     let mut cancelled = Client::start(&protocol_fixture(), &model(), "Hey Ava")
