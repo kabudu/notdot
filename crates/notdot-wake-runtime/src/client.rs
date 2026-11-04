@@ -61,13 +61,23 @@ pub struct Client {
 }
 impl Client {
     pub async fn start(helper: &Path, model: &Path, phrase: &str) -> Result<Self, Failure> {
-        Self::start_cancellable(helper, model, phrase, None).await
+        Self::start_with_timeout(helper, model, phrase, None, Duration::from_secs(10)).await
     }
     pub async fn start_cancellable(
         helper: &Path,
         model: &Path,
         phrase: &str,
         cancel: Option<(Arc<AtomicU64>, u64)>,
+    ) -> Result<Self, Failure> {
+        // Restarts inside an utterance retain its existing three-second bound.
+        Self::start_with_timeout(helper, model, phrase, cancel, Duration::from_secs(3)).await
+    }
+    async fn start_with_timeout(
+        helper: &Path,
+        model: &Path,
+        phrase: &str,
+        cancel: Option<(Arc<AtomicU64>, u64)>,
+        startup_budget: Duration,
     ) -> Result<Self, Failure> {
         if cancel
             .as_ref()
@@ -110,7 +120,7 @@ impl Client {
         };
         let mut cancellation = interval(Duration::from_millis(20));
         let ready = tokio::select! {
-        ready=timeout(Duration::from_secs(3), async {
+        ready=timeout(startup_budget, async {
             let mut hello = Vec::new();
             protocol::write_hello(&mut hello, phrase)?;
             client.input.write_all(&hello).await?;

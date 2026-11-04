@@ -61,9 +61,9 @@ impl Decoder {
                 })));
             }
         }
-        #[cfg(not(windows))]
-        let _ = phrase;
-        Ok(Self::Generic(generic_context(model)?))
+        let context = generic_context(model)?;
+        notdot_wake_runtime::engine::prepare(&context, phrase, DecodeLimits::default().threads)?;
+        Ok(Self::Generic(context))
     }
     fn identity(&self) -> &'static str {
         match self {
@@ -480,7 +480,13 @@ mod tests {
             let started = Instant::now();
             let heard = decoder
                 .recognize("Hey Ava", &samples, rate, Arc::new(AtomicU64::new(0)), 0)
-                .unwrap();
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "{name}: backend={backend}, after={}, elapsed={:?}: {error}",
+                        decoder.identity(),
+                        started.elapsed()
+                    )
+                });
             assert_eq!(
                 heard,
                 expected,
@@ -580,23 +586,21 @@ mod tests {
         for (name, expected, job) in framed {
             let backend = decoder.identity();
             let started = Instant::now();
-            let heard = decoder
-                .recognize(
-                    "Hey Ava",
-                    &job.samples,
-                    job.rate,
-                    Arc::new(AtomicU64::new(job.epoch)),
-                    job.epoch,
-                )
-                .unwrap();
+            let heard = decoder.recognize(
+                "Hey Ava",
+                &job.samples,
+                job.rate,
+                Arc::new(AtomicU64::new(job.epoch)),
+                job.epoch,
+            );
             eprintln!(
-                "framed_wake fixture={name} rate={} backend={backend} after={} elapsed_ms={} heard={heard} expected={expected}",
+                "framed_wake fixture={name} rate={} backend={backend} after={} elapsed_ms={} result={heard:?} expected={expected}",
                 job.rate,
                 decoder.identity(),
                 started.elapsed().as_millis()
             );
             assert_eq!(
-                heard,
+                heard.expect("production fallback must finish within its unchanged decode budget"),
                 expected,
                 "{name} at{}Hz: backend={backend}, after={}, elapsed={:?}",
                 job.rate,

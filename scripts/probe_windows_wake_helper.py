@@ -38,7 +38,7 @@ def main():
             ready = process.stdout.read(8)
             records.append({'ready': ready == b'NDWKRDY1', 'seconds': time.monotonic() - started})
             if ready == b'NDWKRDY1':
-                for identifier, name in enumerate(('hey-ava.wav', 'hey-ava.wav', 'hey-ava-uk.wav'), 1):
+                for identifier, name in enumerate(('hey-ava.wav', 'hey-ava-uk.wav', 'hey-ava-us.wav', 'ava.wav', 'negative.wav'), 1):
                     with wave.open(str(root / 'src-tauri/tests/fixtures' / name)) as wav:
                         assert (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) == (1, 2, 16000)
                         values = struct.unpack('<' + 'h' * wav.getnframes(), wav.readframes(wav.getnframes()))

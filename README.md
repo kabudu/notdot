@@ -2,6 +2,11 @@
 
 # notdot
 
+[![CI](https://github.com/kabudu/notdot/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/kabudu/notdot/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/kabudu/notdot)](https://github.com/kabudu/notdot/releases/latest)
+[![Licence: Apache 2.0](https://img.shields.io/badge/licence-Apache%202.0-blue.svg)](LICENSE)
+[![Downloads](https://img.shields.io/github/downloads/kabudu/notdot/total)](https://github.com/kabudu/notdot/releases)
+
 **A voice companion for your desktop.**
 
 Talk to an animated orb that listens and replies aloud. notdot works with the ChatGPT Codex app and can remember useful details with your permission.
@@ -19,7 +24,8 @@ https://github.com/user-attachments/assets/8279f3a2-af14-4c5b-8960-e69596ca5ad5
 ## What you can do
 
 - **Talk naturally.** Say your wake phrase or click once, speak, then pause to send. Press Escape to cancel.
-- **Keep a conversation going.** Continue the same chat after restarting notdot. You can view its history in Codex.
+- **Follow up without starting again.** Turn on an optional listening window after replies. Keep talking, or say “That’s all” to stop.
+- **Pick up where you left off.** Continue the same chat after restarting notdot. You can view its history in Codex.
 - **Choose what it remembers.** Turn learning on or off, review and edit saved memories, forget individual notes or reset them all.
 - **Make it yours.** Choose its name, orb colour, voice and how much it can interrupt you.
 

@@ -3,6 +3,7 @@ pub(crate) enum Mode {
     #[default]
     Idle,
     Listening,
+    Followup,
     Thinking,
     Speaking,
     Error,
@@ -17,9 +18,10 @@ impl Mode {
         }
         match status {
             "listening" => Self::Listening,
+            "followup" => Self::Followup,
             "announcing" => Self::Speaking,
-            "thinking" | "connecting" | "transcribing" | "synthesizing" | "updating"
-            | "resetting" => Self::Thinking,
+            "thinking" | "connecting" | "starting_capture" | "transcribing" | "synthesizing"
+            | "updating" | "resetting" => Self::Thinking,
             "error" => Self::Error,
             _ => Self::Idle,
         }
@@ -28,6 +30,7 @@ impl Mode {
         match self {
             Self::Idle => "idle",
             Self::Listening => "listening",
+            Self::Followup => "followup",
             Self::Thinking => "thinking",
             Self::Speaking => "speaking",
             Self::Error => "error",
@@ -51,7 +54,13 @@ mod tests {
     use super::*;
     #[test]
     fn all_waiting_stages_are_visibly_thinking_and_playback_overrides_idle() {
-        for stage in ["thinking", "connecting", "transcribing", "synthesizing"] {
+        for stage in [
+            "thinking",
+            "connecting",
+            "starting_capture",
+            "transcribing",
+            "synthesizing",
+        ] {
             assert_eq!(Mode::resolve(stage, false, false), Mode::Thinking);
         }
         assert_eq!(
@@ -64,6 +73,9 @@ mod tests {
         assert_eq!(Mode::resolve("error", false, true), Mode::Error);
         assert_eq!(Mode::resolve("idle", true, true), Mode::Speaking);
         assert_eq!(Mode::resolve("listening", false, false), Mode::Listening);
+        assert_eq!(Mode::resolve("followup", false, false), Mode::Followup);
+        assert_eq!(Mode::resolve("followup", true, false), Mode::Speaking);
+        assert_eq!(Mode::Followup.name(), "followup");
     }
     #[test]
     fn audio_meter_distinguishes_silence_from_known_waveform() {

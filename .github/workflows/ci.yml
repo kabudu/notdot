@@ -16,8 +16,12 @@ jobs:
     name: Classify changes
     runs-on: ubuntu-22.04
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     outputs:
       full: ${{ steps.plan.outputs.full }}
+      native: ${{ steps.plan.outputs.native }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -29,6 +33,7 @@ jobs:
           CI_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           CI_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
           CI_FORCE_FULL: ${{ inputs.force_full || false }}
+          GH_TOKEN: ${{ github.token }}
         run: python3 scripts/ci_changes.py classify
   content:
     name: Content checks
@@ -122,7 +127,7 @@ jobs:
       - name: Rebuild generic native decoder with the selected generator
         run: cargo clean -p whisper-rs-sys
       - name: Test native Windows code and bundled models
-        run: cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --locked
+        run: cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-orb -p notdot --release --target x86_64-pc-windows-msvc --locked -- --test-threads=1
       - name: Check Windows-specific Rust code
         run: cargo clippy -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --all-targets --locked -- -D warnings
       - name: Install verified prebuilt release tools
@@ -187,10 +192,17 @@ jobs:
           key: validation-${{ matrix.os }}-generic-v1
           env-vars: GGML_ MACOSX_DEPLOYMENT_TARGET
           cache-on-failure: true
+      - name: Repair pruned Sherpa native library cache
+        run: |
+          NOTDOT_NATIVE_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+          test -n "$NOTDOT_NATIVE_TARGET"
+          python3 scripts/repair_sherpa_cache.py --target "$NOTDOT_NATIVE_TARGET"
       - name: Run complete local validation
         run: sh scripts/ci-local.sh
-      - name: Exercise the bundled wake model on this native Mac architecture
-        run: cargo test -p notdot-wake-runtime --release --test lifecycle worker_reuses_one_model_process_and_matches_the_shared_engine --locked -- --ignored --exact --test-threads=1
+      # macOS ships the in-process decoder, not the Windows helper executable.
+      # Exercise its real framing and unchanged decode deadline in release mode.
+      - name: Exercise the production Mac wake decoder
+        run: cargo test -p notdot --release wake::fallback::tests::production_framed_fallback_corpus_bypasses_keyword_spotting --locked -- --exact --nocapture --test-threads=1
   linux-native:
     needs: changes
     if: github.event.repository.private == false && needs.changes.outputs.full == 'true'
@@ -213,12 +225,14 @@ jobs:
           key: validation-linux-x64-cpp-abi0-v1
           env-vars: GGML_ MACOSX_DEPLOYMENT_TARGET
           cache-on-failure: true
+      - name: Repair pruned Sherpa native library cache
+        run: python3 scripts/repair_sherpa_cache.py --target x86_64-unknown-linux-gnu
       # The pinned whisper-rs-sys build script does not track CXXFLAGS changes.
       # Rebuild this small native package so restored caches cannot mix string ABIs.
       - name: Rebuild the native C++ boundary
         run: cargo clean -p whisper-rs-sys
       - name: Test Linux code and the bundled wake models
-        run: cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --locked
+        run: cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-orb -p notdot --release --locked -- --test-threads=1
       - name: Check Linux-specific Rust code
         run: cargo clippy -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --all-targets --locked -- -D warnings
       # Isolate one known accuracy case under the maintainer 0.1 Linux policy.
@@ -256,3 +270,15 @@ jobs:
         env:
           CI_NEEDS: ${{ toJSON(needs) }}
         run: python3 scripts/ci_changes.py gate
+      - name: Record the successfully tested native inputs
+        if: needs.changes.outputs.full == 'true'
+        run: python3 scripts/ci_changes.py fingerprint > native-validation.txt
+      - name: Retain native validation evidence for later copy-only commits
+        if: needs.changes.outputs.full == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-validation-${{ needs.changes.outputs.native }}
+          path: native-validation.txt
+          retention-days: 30
+          if-no-files-found: error

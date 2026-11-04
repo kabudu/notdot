@@ -8,6 +8,8 @@ pub enum VoiceErrorKind {
     Quota,
     RateLimit,
     Network,
+    /// The recognizer explicitly confirmed that no speech turn was active.
+    NoSpeech,
     InvalidInput,
     Provider,
     Unsupported,

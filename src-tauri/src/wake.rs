@@ -96,6 +96,7 @@ struct Inner {
     manual_token: Option<String>,
     finish_requested: bool,
     manual_limit: u32,
+    manual_initial_silence: u32,
     cancelled: notdot_core::request_cancel::Requests,
 }
 pub struct Wake {
@@ -137,6 +138,7 @@ impl Wake {
             manual_token: None,
             finish_requested: false,
             manual_limit: 60,
+            manual_initial_silence: 8,
             cancelled: Default::default(),
         }));
         let weak = Arc::downgrade(&inner);
@@ -259,8 +261,14 @@ impl Wake {
         Ok(guard)
     }
     pub fn start_manual(&self, token: &str, limit: u32) -> Result<(), String> {
+        self.start_capture(token, limit, 8)
+    }
+    pub fn start_followup(&self, token: &str, seconds: u32) -> Result<(), String> {
+        self.start_capture(token, 60, seconds)
+    }
+    fn start_capture(&self, token: &str, limit: u32, initial_silence: u32) -> Result<(), String> {
         notdot_core::request_cancel::Requests::validate(token)?;
-        if ![12, 60].contains(&limit) {
+        if ![12, 60].contains(&limit) || !(3..=20).contains(&initial_silence) {
             return Err("Invalid recording limit".into());
         }
         let mut i = self.inner.lock().expect("wake state");
@@ -272,6 +280,7 @@ impl Wake {
         }
         i.manual_token = Some(token.to_owned());
         i.manual_limit = limit;
+        i.manual_initial_silence = initial_silence;
         i.finish_requested = false;
         i.pending = None;
         i.status.request_id = None;
@@ -348,6 +357,7 @@ struct Detector {
     rejected_energy: u64,
     rejected_prefix: u64,
     elapsed: f64,
+    quiet_seconds: f64,
     voice_gate: VoiceGate,
     voiced: std::collections::VecDeque<(f64, f64, bool)>,
 }
@@ -430,6 +440,7 @@ impl Detector {
             rejected_energy: 0,
             rejected_prefix: 0,
             elapsed: 0.,
+            quiet_seconds: 0.,
             voice_gate: VoiceGate::default(),
             voiced: Default::default(),
         })
@@ -438,17 +449,23 @@ impl Detector {
         if self.fallback.accept(rate, samples) {
             return true;
         }
-        // Bound the native feature history too. Prefer resetting in quiet audio.
-        if self.elapsed >= 120. || (self.elapsed >= 60. && energy(samples) < 0.008) {
+        let voiced = self.voice_gate.observe(energy(samples));
+        let seconds = samples.len() as f64 / f64::from(rate);
+        self.quiet_seconds = if voiced {
+            0.
+        } else {
+            self.quiet_seconds + seconds
+        };
+        // Sherpa 2.0 resets decoder offsets after 1.5 s of trailing blanks,
+        // without rebasing its feature stream. Recreate the stream in quiet
+        // audio first, so token times and acoustic-support times stay aligned.
+        // Keep both the Hey-prefix and speech-support guards unchanged.
+        if self.elapsed >= 120. || self.quiet_seconds >= 1. {
             self.reset_keyword();
         }
         let start = self.elapsed;
-        self.elapsed += samples.len() as f64 / rate as f64;
-        self.voiced.push_back((
-            start,
-            self.elapsed,
-            self.voice_gate.observe(energy(samples)),
-        ));
+        self.elapsed += seconds;
+        self.voiced.push_back((start, self.elapsed, voiced));
         while self
             .voiced
             .front()
@@ -516,6 +533,7 @@ impl Detector {
     fn reset_keyword(&mut self) {
         self.stream = self.kws.create_stream();
         self.elapsed = 0.;
+        self.quiet_seconds = 0.;
         self.voiced.clear();
     }
 }
@@ -727,6 +745,7 @@ impl VoiceGate {
 struct Capture {
     samples: Vec<f32>,
     limit_secs: Option<u32>,
+    initial_silence_secs: Option<u32>,
     total: usize,
     speech: usize,
     silence: usize,
@@ -756,7 +775,9 @@ impl Capture {
                 End::Empty
             };
         }
-        if self.speech < rate as usize / 5 && self.total >= rate as usize * 8 {
+        if self.speech < rate as usize / 5
+            && self.total >= rate as usize * self.initial_silence_secs.unwrap_or(8) as usize
+        {
             return End::Empty;
         }
         End::Continue
@@ -843,6 +864,7 @@ impl Worker {
         self.stream_packet.clear();
         self.capture = Some(Capture {
             limit_secs: Some(if manual { i.manual_limit } else { 30 }),
+            initial_silence_secs: Some(if manual { i.manual_initial_silence } else { 8 }),
             ..Default::default()
         });
         self.speech_gate
@@ -1036,6 +1058,21 @@ impl Worker {
                     self.error(inner, e);
                     return;
                 }
+            }
+        }
+        // Model preparation is blocking on this dedicated worker. Permission
+        // may have changed while it ran; never open a mic for that stale lease.
+        {
+            let i = inner.lock().expect("wake state");
+            if i.revision != revision
+                || i.epoch != epoch
+                || i.config.muted
+                || (!i.config.enabled && i.manual_token.is_none())
+                || !i
+                    .lease
+                    .is_some_and(|t| t.elapsed() < Duration::from_secs(3))
+            {
+                return;
             }
         }
         if self.mic.is_none() {
@@ -1829,6 +1866,23 @@ mod tests {
         }
     }
     #[test]
+    fn quiet_idle_rebases_the_primary_stream_before_sherpas_internal_reset() {
+        let _models = model_fixture_guard();
+        let mut detector = Detector::new(&models(), "Hey Ava").unwrap();
+        for _ in 0..250 {
+            assert!(!detector.accept(16000, &[0.; 320]));
+            // Sherpa resets decoder offsets after 1.5 s of blanks. Our acoustic
+            // support timeline must restart with a fresh feature stream earlier.
+            assert!(
+                detector.elapsed < 1.5,
+                "primary and acoustic clocks can diverge after quiet idle"
+            );
+        }
+        assert!(detects(&mut detector, &audio("hey-ava.wav")));
+        detector.reset();
+        assert!(!detects(&mut detector, &audio("negative.wav")));
+    }
+    #[test]
     fn wake_after_extended_idle_and_rejected_candidates() {
         let _models = model_fixture_guard();
         for idle in [2, 5, 25, 65] {
@@ -1851,7 +1905,14 @@ mod tests {
                     std::thread::sleep(Duration::from_millis(10));
                     detected |= d.accept(16000, &[0.; 320]);
                 }
-                assert_eq!(detected, name == "hey-ava.wav", "{name} after {idle}s idle");
+                assert_eq!(
+                    detected,
+                    name == "hey-ava.wav",
+                    "{name} after {idle}s idle: backend={} busy={} error={:?}",
+                    d.fallback.backend(),
+                    d.fallback.is_busy(),
+                    d.fallback.error
+                );
                 if detected {
                     d.reset();
                 }
@@ -2021,6 +2082,79 @@ mod tests {
         assert_eq!(streamed, samples.len() * 2);
     }
     #[test]
+    fn followup_silence_windows_expire_but_do_not_truncate_started_speech() {
+        for seconds in [3, 8, 20] {
+            for rate in [16000, 48000] {
+                let frame = vec![0.; rate / 50];
+                let mut capture = Capture {
+                    initial_silence_secs: Some(seconds),
+                    limit_secs: Some(60),
+                    ..Default::default()
+                };
+                for _ in 0..seconds * 50 - 1 {
+                    assert!(matches!(
+                        capture.accept(&frame, rate as u32, false),
+                        End::Continue
+                    ));
+                }
+                assert!(matches!(
+                    capture.accept(&frame, rate as u32, false),
+                    End::Empty
+                ));
+                let mut capture = Capture {
+                    initial_silence_secs: Some(seconds),
+                    limit_secs: Some(60),
+                    ..Default::default()
+                };
+                for _ in 0..seconds * 50 - 25 {
+                    assert!(matches!(
+                        capture.accept(&frame, rate as u32, false),
+                        End::Continue
+                    ));
+                }
+                // Speech begins before the window closes and continues beyond its deadline.
+                for _ in 0..150 {
+                    assert!(matches!(
+                        capture.accept(&frame, rate as u32, true),
+                        End::Continue
+                    ));
+                }
+                for _ in 0..59 {
+                    assert!(matches!(
+                        capture.accept(&frame, rate as u32, false),
+                        End::Continue
+                    ));
+                }
+                assert!(matches!(
+                    capture.accept(&frame, rate as u32, false),
+                    End::Submit
+                ));
+            }
+        }
+    }
+    #[test]
+    fn followup_capture_preserves_scoped_cancellation_and_validates_windows() {
+        let wake = isolated();
+        for seconds in [0, 2, 21, u32::MAX] {
+            assert!(wake.start_followup("invalid-window", seconds).is_err());
+        }
+        wake.start_followup("first-followup", 3).unwrap();
+        assert_eq!(wake.inner.lock().unwrap().manual_initial_silence, 3);
+        wake.cancel_capture("first-followup").unwrap();
+        assert!(wake.start_followup("first-followup", 8).is_err());
+        wake.start_followup("next-followup", 20).unwrap();
+        wake.cancel_capture("first-followup").unwrap();
+        assert_eq!(
+            wake.inner.lock().unwrap().manual_token.as_deref(),
+            Some("next-followup")
+        );
+        wake.configure(&Settings {
+            microphone_muted: true,
+            ..Settings::default()
+        });
+        assert!(wake.start_followup("muted", 8).is_err());
+    }
+    #[test]
     fn endpoint_requires_speech_then_silence_and_bounds_recording() {
         let mut capture = Capture::default();
         for _ in 0..100 {
@@ -2092,6 +2226,7 @@ mod tests {
                 status: Status::default(),
                 manual_token: None,
                 manual_limit: 60,
+                manual_initial_silence: 8,
                 finish_requested: false,
                 cancelled: Default::default(),
                 pending: Some((42, vec![1, 2, 3], Instant::now())),

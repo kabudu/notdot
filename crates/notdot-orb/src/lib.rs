@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 mod audio_meter;
+mod conversation;
 mod interaction;
 mod speech_queue;
 mod visual_state;
@@ -40,6 +41,9 @@ extern "C" {
     fn drag() -> js_sys::Promise;
     fn resize(w: f64, h: f64) -> js_sys::Promise;
 }
+fn default_followup_seconds() -> u32 {
+    8
+}
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Settings {
     name: String,
@@ -58,6 +62,10 @@ struct Settings {
     startup: String,
     open_desktop: bool,
     automatic_updates: bool,
+    #[serde(default)]
+    followup_enabled: bool,
+    #[serde(default = "default_followup_seconds")]
+    followup_seconds: u32,
     wake_enabled: bool,
     wake_name_only: bool,
     microphone_muted: bool,
@@ -119,6 +127,7 @@ struct EncodedAudio {
 #[derive(Default)]
 struct View {
     snapshot: Snapshot,
+    conversation: conversation::Conversation,
     recording: Option<web_sys::MediaRecorder>,
     stream: Option<web_sys::MediaStream>,
     audio: Option<web_sys::HtmlAudioElement>,
@@ -564,6 +573,15 @@ fn on(target: &web_sys::EventTarget, event: &str, f: impl FnMut(Event) + 'static
         .expect("event registration");
     c.forget();
 }
+fn render_followup_settings() {
+    let enabled = input("followup-enabled").checked();
+    let _ = element("followup-window").toggle_attribute_with_force("hidden", !enabled);
+    let seconds = input("followup-seconds").value();
+    element("followup-seconds-label")
+        .set_text_content(Some(&format!("Wait up to {seconds} seconds")));
+    let _ =
+        element("followup-seconds").set_attribute("aria-valuetext", &format!("{seconds} seconds"));
+}
 fn render_wake_phrase() {
     let name = input("name").value();
     let phrase = if select("wake-phrase").value() == "name" {
@@ -589,10 +607,60 @@ fn wake_hint(snapshot: &Snapshot) -> &str {
             .unwrap_or("Preparing wake listening…")
     }
 }
+fn conversation_now() -> f64 {
+    window()
+        .performance()
+        .expect("browser performance clock")
+        .now()
+}
+fn reflect_manual_capture_ready(view: &mut View, wake: &Value) -> bool {
+    if !matches!(wake["phase"].as_str(), Some("capturing" | "ready"))
+        || wake["manual"] != true
+        || !view.native_manual
+        || wake["capture_token"].as_str() != view.capture_token.as_deref()
+    {
+        return false;
+    }
+    if view.local_phase == Some("starting_capture") {
+        if wake["phase"] == "capturing" {
+            let _ = view.meter.wake_cue();
+        }
+        view.local_phase = Some("listening");
+        if view.conversation.starting() {
+            view.conversation.opened();
+        }
+    }
+    true
+}
+fn followup_allowed(view: &Shared, snapshot: &Snapshot) -> bool {
+    let v = view.borrow();
+    snapshot.settings.followup_enabled
+        && snapshot.phase == "idle"
+        && snapshot.window_visible
+        && snapshot.settings.onboarding_complete
+        && snapshot.key_configured
+        && snapshot.stt_ready
+        && !snapshot.key_checking
+        && !snapshot.settings.voice_id.is_empty()
+        && !snapshot.settings.microphone_muted
+        && !v.voice_pending
+        && !v.speech_worker
+        && v.recording.is_none()
+        && v.update_listening.is_none()
+        && v.memory_listening.is_none()
+        && !dialog("panel").open()
+        && !dialog("about").open()
+        && !matches!(
+            snapshot.updates.phase.as_str(),
+            "downloading" | "installing"
+        )
+        && v.audio.as_ref().is_none_or(|audio| audio.ended())
+}
 fn wake_ready(view: &Shared, snapshot: &Snapshot) -> bool {
     let v = view.borrow();
     snapshot.phase == "idle"
         && snapshot.window_visible
+        && (!v.conversation.active() || v.native_manual)
         && (snapshot.settings.wake_enabled || v.native_manual)
         && !snapshot.settings.microphone_muted
         && snapshot.settings.onboarding_complete
@@ -601,7 +669,8 @@ fn wake_ready(view: &Shared, snapshot: &Snapshot) -> bool {
         && !snapshot.key_checking
         && !snapshot.settings.voice_id.is_empty()
         && !v.voice_pending
-        && (v.local_phase.is_none() || (v.native_manual && v.local_phase == Some("listening")))
+        && (v.local_phase.is_none()
+            || (v.native_manual && matches!(v.local_phase, Some("starting_capture" | "listening"))))
         && v.recording.is_none()
         && ((v.update_listening.is_none() && v.memory_listening.is_none()) || v.native_manual)
         && !dialog("panel").open()
@@ -617,6 +686,12 @@ async fn wake_request(view: Shared, id: u64, generation: u64) -> Result<(), Stri
         .await?
         .as_string()
         .ok_or("Transcription returned no text")?;
+    if text.trim().is_empty() {
+        if view.borrow().generation == generation {
+            stop_audio(&view);
+        }
+        return Ok(());
+    }
     submit_transcript(view, text, generation).await
 }
 fn close_intelligence_picker() {
@@ -943,7 +1018,10 @@ fn refresh_models(view: &Shared, model: String, effort: String) {
     });
 }
 fn open_panel(view: &Shared) {
-    if view.borrow().capture_token.is_some() || view.borrow().memory_listening.is_some() {
+    if view.borrow().conversation.active()
+        || view.borrow().capture_token.is_some()
+        || view.borrow().memory_listening.is_some()
+    {
         stop_audio(view);
     }
     if !view.borrow().snapshot.settings.onboarding_complete {
@@ -965,6 +1043,9 @@ fn open_panel(view: &Shared) {
     show_stt_fields();
     render_voice_options(view, &s.voice_id, &s.voice_name);
     apply_theme(s.hue);
+    input("followup-enabled").set_checked(s.followup_enabled);
+    input("followup-seconds").set_value(&s.followup_seconds.to_string());
+    render_followup_settings();
     input("wake-enabled").set_checked(s.wake_enabled);
     input("microphone-muted").set_checked(s.microphone_muted);
     select("wake-phrase").set_value(if s.wake_name_only { "name" } else { "hey" });
@@ -1077,6 +1158,7 @@ fn stop_audio(view: &Shared) {
         });
     }
     v.native_manual = false;
+    v.conversation.close();
     if let Some(id) = v.memory_listening.take() {
         spawn_local(async move {
             let _ = call("cancel_memory", json!({"id":id})).await;
@@ -1272,6 +1354,11 @@ async fn submit_transcript(view: Shared, text: String, generation: u64) -> Resul
         call("answer_update", json!({"text":text,"version":version})).await?;
         return Ok(());
     }
+    if view.borrow().conversation.listening() && conversation::is_goodbye(&text) {
+        stop_audio(&view);
+        return Ok(());
+    }
+    view.borrow_mut().conversation.close();
     let request = format!("voice-{:.0}-{generation}", js_sys::Date::now());
     view.borrow_mut().request_id = Some(request.clone());
     let turn = call("send_message", json!({"text":text,"requestId":request}))
@@ -1291,6 +1378,13 @@ async fn submit_transcript(view: Shared, text: String, generation: u64) -> Resul
     Ok::<(), String>(())
 }
 async fn voice(view: Shared) -> Result<(), String> {
+    voice_inner(view, false).await
+}
+async fn voice_inner(view: Shared, followup: bool) -> Result<(), String> {
+    let expected_generation = view.borrow().generation;
+    if followup && !view.borrow().conversation.starting() {
+        return Ok(());
+    }
     if dialog("panel").open() || dialog("about").open() || !view.borrow().snapshot.window_visible {
         return Err("Close Settings before speaking.".into());
     }
@@ -1306,11 +1400,23 @@ async fn voice(view: Shared) -> Result<(), String> {
     let providers: Vec<Value> =
         serde_wasm_bindgen::from_value(call("voice_providers", json!({})).await?)
             .map_err(|e| e.to_string())?;
+    if view.borrow().generation != expected_generation {
+        return Ok(());
+    }
+    if followup
+        && (!view.borrow().conversation.starting()
+            || !followup_allowed(&view, &view.borrow().snapshot))
+    {
+        return Ok(());
+    }
     let selected = view.borrow().snapshot.settings.voice_provider.clone();
     if !providers
         .iter()
         .any(|p| p["id"] == selected && p["streaming_transcription"] == true)
     {
+        if followup {
+            return Err("Follow-up listening needs a streaming speech service.".into());
+        }
         return browser_voice(view).await;
     }
     if view.borrow().snapshot.settings.microphone_muted {
@@ -1350,15 +1456,23 @@ async fn voice(view: Shared) -> Result<(), String> {
     {
         let mut v = view.borrow_mut();
         v.native_manual = true;
+        if followup {
+            v.conversation.begin_capture();
+        }
         v.capture_token = Some(token.clone());
-        v.local_phase = Some("listening");
+        v.local_phase = Some("starting_capture");
     }
-    let result = call("start_capture", json!({"token":token,"limit":limit})).await;
+    let result = call(
+        "start_capture",
+        json!({"token":token,"limit":limit,"followup":followup}),
+    )
+    .await;
     if view.borrow().generation != generation {
         let _ = call("cancel_capture", json!({"token":token})).await;
         return Ok(());
     }
     if let Err(error) = result {
+        view.borrow_mut().conversation.close();
         view.borrow_mut().native_manual = false;
         view.borrow_mut().capture_token = None;
         view.borrow_mut().local_phase = None;
@@ -2119,6 +2233,8 @@ pub fn start() -> Result<(), JsValue> {
         };
         settings.open_desktop = input("open-desktop").checked();
         settings.automatic_updates = input("automatic-updates").checked();
+        settings.followup_enabled = input("followup-enabled").checked();
+        settings.followup_seconds = input("followup-seconds").value().parse().unwrap_or(8);
         settings.wake_enabled = input("wake-enabled").checked();
         settings.wake_name_only = select("wake-phrase").value() == "name";
         settings.microphone_muted = input("microphone-muted").checked();
@@ -2298,6 +2414,12 @@ pub fn start() -> Result<(), JsValue> {
             }
         });
     });
+    on(element("followup-enabled").as_ref(), "change", |_| {
+        render_followup_settings()
+    });
+    on(element("followup-seconds").as_ref(), "input", |_| {
+        render_followup_settings()
+    });
     on(element("name").as_ref(), "input", |_| render_wake_phrase());
     on(element("wake-phrase").as_ref(), "change", |_| {
         render_wake_phrase()
@@ -2360,6 +2482,9 @@ pub fn start() -> Result<(), JsValue> {
             };
             if wake["phase"] == "capturing" && ready {
                 let mut v = owner.borrow_mut();
+                if wake["manual"] == true && !reflect_manual_capture_ready(&mut v, &wake) {
+                    return;
+                }
                 if wake["manual"] != true && v.last_capture_cue != token {
                     let _ = v.meter.wake_cue();
                     v.last_capture_cue = token.into();
@@ -2384,12 +2509,13 @@ pub fn start() -> Result<(), JsValue> {
         {
             let mut v = target.borrow_mut();
             let now = js_sys::Date::now();
-            let fast = (v.snapshot.settings.wake_enabled || v.native_manual)
-                && v.snapshot.window_visible
-                && matches!(
-                    v.snapshot.wake["phase"].as_str(),
-                    Some("listening" | "capturing")
-                );
+            let fast = v.conversation.active()
+                || (v.snapshot.settings.wake_enabled || v.native_manual)
+                    && v.snapshot.window_visible
+                    && matches!(
+                        v.snapshot.wake["phase"].as_str(),
+                        Some("listening" | "capturing")
+                    );
             let interval = if fast { 200. } else { 500. };
             if v.polling || (now >= v.last_poll_at && now - v.last_poll_at < interval) {
                 return;
@@ -2404,6 +2530,31 @@ pub fn start() -> Result<(), JsValue> {
                 serde_wasm_bindgen::from_value::<Snapshot>(v).map_err(|e| e.to_string())
             }) {
                 Ok(mut snapshot) => {
+                    if target.borrow().conversation.active()
+                        && !followup_allowed(&target, &snapshot)
+                    {
+                        stop_audio(&target);
+                    }
+                    // Polling is a backstop if the capture-start event is lost.
+                    reflect_manual_capture_ready(&mut target.borrow_mut(), &snapshot.wake);
+                    let allowed = followup_allowed(&target, &snapshot);
+                    let start_followup = if target.borrow().conversation.listening() {
+                        false
+                    } else {
+                        target
+                            .borrow_mut()
+                            .conversation
+                            .poll(conversation_now(), allowed)
+                    };
+                    if start_followup {
+                        let companion = target.clone();
+                        spawn_local(async move {
+                            if let Err(error) = voice_inner(companion.clone(), true).await {
+                                stop_audio(&companion);
+                                message(error);
+                            }
+                        });
+                    }
                     if !snapshot.window_visible && target.borrow().memory_listening.is_some() {
                         stop_audio(&target);
                     }
@@ -2426,7 +2577,12 @@ pub fn start() -> Result<(), JsValue> {
                             let _ = v.meter.wake_cue();
                             v.last_capture_cue = token.clone();
                         }
-                        v.capture_token = Some(token);
+                        if snapshot.wake["manual"] != true
+                            || (v.native_manual
+                                && v.capture_token.as_deref() == Some(token.as_str()))
+                        {
+                            v.capture_token = Some(token);
+                        }
                     }
                     if target.borrow().native_manual && snapshot.wake["phase"] == "error" {
                         let error = snapshot.wake["message"]
@@ -2456,9 +2612,14 @@ pub fn start() -> Result<(), JsValue> {
                         },
                     );
                     let _ = orb.set_attribute("aria-label", if wake_mode { "notdot wake-word companion. Say your wake phrase to speak. Right-click or Command/Control plus comma opens Settings. Escape cancels." } else { "notdot voice companion. Enter or Space to speak. Command or Control plus comma opens Settings. Escape stops." });
+                    if target.borrow().conversation.listening() {
+                        let _ = orb.set_attribute("aria-label", "Listening for a follow-up. Say your request or That’s all to stop. Escape cancels.");
+                    }
                     let _ = element("orb").set_attribute(
                         "title",
-                        if snapshot.settings.microphone_muted {
+                        if target.borrow().conversation.listening() {
+                            "Listening for a follow-up · say That’s all to stop"
+                        } else if snapshot.settings.microphone_muted {
                             "Microphone muted"
                         } else if snapshot.wake["phase"] == "listening" {
                             snapshot.wake["phrase"].as_str().unwrap_or("Wake listening")
@@ -2556,6 +2717,7 @@ pub fn start() -> Result<(), JsValue> {
                             && snapshot.wake["phase"] != "capturing"
                             && snapshot.window_visible
                             && !speak
+                            && !v.conversation.active()
                             && !v.voice_pending
                             && v.local_phase.is_none()
                             && v.recording.is_none()
@@ -2576,6 +2738,7 @@ pub fn start() -> Result<(), JsValue> {
                             && snapshot.updates.prompt
                             && snapshot.phase == "idle"
                             && !speak
+                            && !v.conversation.active()
                             && !v.voice_pending
                             && v.local_phase.is_none()
                             && v.recording.is_none()
@@ -2591,6 +2754,7 @@ pub fn start() -> Result<(), JsValue> {
                             && snapshot.phase == "idle"
                             && snapshot.wake["phase"] != "capturing"
                             && !speak
+                            && !v.conversation.active()
                             && !v.voice_pending
                             && v.local_phase.is_none()
                             && v.recording.is_none()
@@ -2616,6 +2780,7 @@ pub fn start() -> Result<(), JsValue> {
                                 "downloading" | "installing"
                             )
                             && !snapshot.settings.microphone_muted
+                            && !v.conversation.active()
                             && !v.voice_pending
                             && v.local_phase.is_none()
                             && v.recording.is_none()
@@ -2790,6 +2955,10 @@ pub fn start() -> Result<(), JsValue> {
                                     v.speech_worker = false;
                                     v.request_id = None;
                                     v.local_phase = None;
+                                    let enabled = v.snapshot.settings.followup_enabled;
+                                    let ended = v.audio.as_ref().is_some_and(|audio| audio.ended());
+                                    v.conversation
+                                        .after_reply(conversation_now(), enabled, ended);
                                 }
                             }
                         });
@@ -2842,16 +3011,23 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                 .as_ref()
                 .is_some_and(|audio| !audio.paused() && !audio.ended());
             let mode = visual_state::Mode::resolve(
-                v.local_phase
-                    .unwrap_or(if v.snapshot.wake["phase"] == "capturing" {
-                        "listening"
-                    } else {
-                        v.snapshot.phase.as_str()
-                    }),
+                if v.conversation.listening() && v.local_phase == Some("listening") {
+                    "followup"
+                } else {
+                    v.local_phase
+                        .unwrap_or(if v.snapshot.wake["phase"] == "capturing" {
+                            "listening"
+                        } else {
+                            v.snapshot.phase.as_str()
+                        })
+                },
                 playing,
                 v.voice_pending,
             );
-            let mut level = v.meter.sample(mode == visual_state::Mode::Listening);
+            let mut level = v.meter.sample(matches!(
+                mode,
+                visual_state::Mode::Listening | visual_state::Mode::Followup
+            ));
             if v.snapshot.wake["phase"] == "capturing" && v.recording.is_none() {
                 level.rms = v.snapshot.wake["rms"].as_f64().unwrap_or(0.);
             }
@@ -2887,7 +3063,9 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
             let energy = (level.rms * 4.5).min(1.);
             let speech_target = if matches!(
                 mode,
-                visual_state::Mode::Speaking | visual_state::Mode::Listening
+                visual_state::Mode::Speaking
+                    | visual_state::Mode::Listening
+                    | visual_state::Mode::Followup
             ) {
                 if level.metered { energy } else { 0.25 }
             } else {
@@ -2898,7 +3076,9 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
             let target = match mode {
                 visual_state::Mode::Thinking => 0.65,
                 visual_state::Mode::Speaking => 0.22 + v.speech_energy * 0.78,
-                visual_state::Mode::Listening => 0.22 + v.speech_energy * 0.78,
+                visual_state::Mode::Listening | visual_state::Mode::Followup => {
+                    0.22 + v.speech_energy * 0.78
+                }
                 _ => 0.08,
             };
             v.amplitude += (target - v.amplitude) * 0.22;
@@ -2912,7 +3092,7 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                 visual_state::Mode::Speaking => {
                     1. + v.speech_energy * if reduced { 0.01 } else { 0.07 }
                 }
-                visual_state::Mode::Listening => {
+                visual_state::Mode::Listening | visual_state::Mode::Followup => {
                     1. + v.speech_energy * if reduced { 0.01 } else { 0.07 }
                 }
                 visual_state::Mode::Thinking => {
@@ -3017,7 +3197,10 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                 } else {
                     let _ = canvas.set_attribute(
                         "aria-pressed",
-                        if mode == visual_state::Mode::Listening {
+                        if matches!(
+                            mode,
+                            visual_state::Mode::Listening | visual_state::Mode::Followup
+                        ) {
                             "true"
                         } else {
                             "false"
@@ -3032,13 +3215,20 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                         "false"
                     },
                 );
+                let _ = canvas.set_attribute("data-state", mode.name());
                 element("orb-status").set_text_content(Some(match mode {
                     visual_state::Mode::Idle if v.snapshot.settings.wake_enabled => {
                         wake_hint(&v.snapshot)
                     }
                     visual_state::Mode::Idle => "Ready. Press Enter or Space to speak.",
+                    visual_state::Mode::Followup => {
+                        "Listening for a follow-up. Say your request or That’s all to stop."
+                    }
                     visual_state::Mode::Listening => {
                         "Listening. Speak, then pause to send. Escape cancels."
+                    }
+                    visual_state::Mode::Thinking if v.local_phase == Some("starting_capture") => {
+                        "Starting microphone. Wait for the listening cue. Escape cancels."
                     }
                     visual_state::Mode::Thinking => "Thinking.",
                     visual_state::Mode::Speaking => "Speaking. Press Escape to stop.",
@@ -3060,6 +3250,7 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                     visual_state::Mode::Thinking
                         | visual_state::Mode::Speaking
                         | visual_state::Mode::Listening
+                        | visual_state::Mode::Followup
                 ) && now - v.last_report >= 1000.)
             {
                 v.last_mode = mode;
@@ -3399,7 +3590,7 @@ fn draw_activity(c: &Context, frame: ActivityFrame) {
             let _ = c.arc(x, y, r * 2.02, a, a + 0.06);
             c.stroke();
         }
-    } else if matches!(mode, Mode::Speaking | Mode::Listening) {
+    } else if matches!(mode, Mode::Speaking | Mode::Listening | Mode::Followup) {
         let layers = if mode == Mode::Listening { 1 } else { 2 };
         for layer in 0..layers {
             c.set_line_width(if layer == 0 { 2.2 } else { 1.2 });

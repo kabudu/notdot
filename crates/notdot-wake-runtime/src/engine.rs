@@ -23,6 +23,24 @@ impl Default for DecodeLimits {
         }
     }
 }
+/// Prepare first-use inference before a decoder is advertised as ready. This
+/// uses synthetic silence, never microphone audio, and does not change the
+/// three-second budget used for actual wake requests.
+pub fn prepare(context: &WhisperContext, phrase: &str, threads: i32) -> Result<(), String> {
+    recognize(
+        context,
+        phrase,
+        &[0.; 16000],
+        16000,
+        Arc::new(AtomicU64::new(0)),
+        0,
+        DecodeLimits {
+            budget: Duration::from_secs(8),
+            threads,
+        },
+    )
+    .map(|_| ())
+}
 pub fn recognize(
     context: &WhisperContext,
     phrase: &str,
@@ -41,6 +59,9 @@ pub fn recognize(
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     params.set_n_threads(limits.threads);
     params.set_max_tokens(32);
+    // A wake address must begin the first speech segment. Do not decode later
+    // segments that cannot make an unrelated opening into an address.
+    params.set_single_segment(true);
     params.set_temperature_inc(0.);
     params.set_suppress_nst(true);
     params.set_language(Some("en"));
