@@ -30,14 +30,17 @@ jobs:
         include:
           - os: macos-15
             target: universal-apple-darwin
+            test_target: aarch64-apple-darwin
             platform: darwin-universal
             bundles: app
           - os: windows-2022
             target: x86_64-pc-windows-msvc
+            test_target: x86_64-pc-windows-msvc
             platform: windows-x86_64
             bundles: nsis
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            test_target: x86_64-unknown-linux-gnu
             platform: linux-x86_64
             bundles: appimage,deb
     runs-on: ${{ matrix.os }}
@@ -90,6 +93,11 @@ jobs:
       - name: Configure a consistent generic Linux CPU build
         if: runner.os == 'Linux'
         run: echo "GGML_NATIVE=OFF" >> "$GITHUB_ENV"
+      - name: Match native Mac tests to the universal build configuration
+        if: runner.os == 'macOS'
+        run: |
+          echo "GGML_NATIVE=OFF" >> "$GITHUB_ENV"
+          echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: release-${{ matrix.target }}-generic-v1
@@ -113,7 +121,8 @@ jobs:
           cargo clean -p whisper-rs-sys
           cargo clean -p whisper-rs-sys --target "${{ matrix.target }}"
       - run: cargo fmt --all --check
-      - run: cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-orb -p notdot --locked
+      - name: Test the shipping profile without concurrent inference tests
+        run: cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-orb -p notdot --release --target ${{ matrix.test_target }} --locked -- --test-threads=1
       - run: cargo clippy -p notdot -p notdot-wake-runtime --all-targets --locked -- -D warnings
       - run: cargo clippy -p notdot-orb --target wasm32-unknown-unknown --locked -- -D warnings
       - name: Install verified prebuilt release tools

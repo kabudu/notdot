@@ -2,11 +2,16 @@
 
 ## [Unreleased]
 
-- **Keep the conversation going.** Optionally listen for a follow-up after a spoken reply, with an adjustable window, clear orb feedback and “That’s all” to stop.
+## [0.2.0] - 2026-11-04
 
-- **Clearer voice feedback.** Wait for a short cue when the microphone is ready. Empty follow-ups close quietly.
+Keep a conversation going without repeating your wake phrase or clicking the orb.
 
-- **Complete Linux replies.** Preserve the ends of spoken sentences.
+- **Optional follow-ups.** Choose a listening window of 3–20 seconds after spoken replies, with two soft orb rings showing when you can answer.
+- **Easy stopping.** Say “That’s all”, press Escape or stay silent to end the conversation. The microphone pauses while notdot speaks.
+- **Clearer listening cues.** A short cue confirms the microphone is ready, helping avoid clipped opening words.
+- **Better voice handling.** Preserve sentence endings on Linux, close empty follow-ups quietly and improve local wake responsiveness.
+
+Follow-up listening is off by default. Enable **Keep the conversation going** under **Settings → Wake phrase and microphone**. Audio during that window goes to your selected speech-recognition service and may count towards usage.
 
 ## [0.1.0] - 2026-10-30
 

@@ -143,7 +143,7 @@ The wake decoder now asks Whisper for only the first speech segment, since a val
 - [x] A follow-up starting near the deadline continues to its natural endpoint (Mac and Windows); native boundary tests cover all configured durations.
 - [x] Active follow-up Escape on Windows; mute, hide, Settings and in-flight start cancellation covered by the production-WASM integration suite. This does not imply every timing boundary was physically repeated on every platform.
 - [x] Native acoustic checks on all three platforms. Linux cloud voice used click mode; local wake routing passed separately, and the maintainer's existing distro-specific wake waiver remains applicable.
-- [ ] Current-head hosted CI green, including the serial native suites and production Intel Mac corpus.
-- [ ] Final PR review, with the intermittent hosted timing failures and speech-recognition observations above retained as evidence.
+- [x] Hosted CI green: full platform run 41741376729 at `6c3d630`, followed by content-only run 41744674140 at `05d165b` with verified native reuse.
+- [x] Final PR review completed; PR #22 merged as `b28823b`. Earlier timing failures and speech-recognition observations remain recorded above.
 
 The existing 0.1.0 release and website claims are unchanged. The feature is not marked shipped before merge/release. Generated-speech checks do not replace a broader human assessment of accents, room noise or perceived sound quality.
