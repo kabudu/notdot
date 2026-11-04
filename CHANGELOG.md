@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **Other Codex chats.** Find and read relevant local chat history by voice without switching conversations.
+- **Wake recovery.** A backup-recognition failure no longer disables the independent primary wake detector.
+
 ## [0.2.0] - 2026-11-04
 
 Keep a conversation going without repeating your wake phrase or clicking the orb.

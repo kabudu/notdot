@@ -538,7 +538,13 @@ async fn connect(state: Arc<AppState>, allow_interrupt: bool) -> Result<(), Stri
         old.shutdown().await;
     }
     state.snapshot.lock().await.active_turn = None;
-    let bridge = Arc::new(Bridge::connect(&startup::runtime()).await?);
+    let bridge = Arc::new(
+        Bridge::connect_with_chat_tools(
+            &startup::runtime(),
+            &std::env::current_exe().map_err(|e| e.to_string())?,
+        )
+        .await?,
+    );
     let settings = state.snapshot.lock().await.settings.clone();
     let cwd = state.path.parent().ok_or("App data directory missing")?;
     let tid = bridge
@@ -1145,6 +1151,20 @@ async fn voice_smoke() -> Result<(), String> {
     Ok(())
 }
 fn main() {
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|a| a == "--codex-chat-tools")
+    {
+        let Some(runtime) = std::env::args_os().nth(2) else {
+            eprintln!("Chat lookup requires the Codex runtime path");
+            std::process::exit(2);
+        };
+        if let Err(error) = notdot_core::chat_tools::serve(std::path::Path::new(&runtime)) {
+            eprintln!("Chat lookup failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     #[cfg(debug_assertions)]
     if let Some(path) = std::env::args()
         .skip_while(|a| a != "--stt-evaluate")

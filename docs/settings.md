@@ -12,6 +12,12 @@ Open the single Intelligence card to choose a model, then its **thinking level**
 
 The choices come from your installed Codex tool and account. notdot checks them again before saving and sending a request. If a choice disappears, it asks you to choose another instead of switching silently. The same choice is used for replies and background memory checks.
 
+## Other Codex chats
+
+Ask something like **“Find my Codex chat about the website and remind me what we decided.”** notdot can find local chats by title and read their messages, including archived chats when requested. If several match, it can ask which one you mean. Search currently matches chat titles, not every message.
+
+Reading another chat does not take it over or send a message to it. Selected messages are shared with the Codex model to answer your question. This does not give notdot all the desktop app's tools or access to chats that are not stored in the local Codex runtime.
+
 ## Voice
 
 With wake listening on, say your wake phrase. Orb clicks and Enter/Space do not start a separate recording. Drag still moves the orb, right-click opens Settings, and Escape cancels.
@@ -85,3 +91,5 @@ When update checks are on, notdot checks every six hours. It asks before install
 **Reconnect companion** restarts the conversation service. It interrupts any reply in progress. **Remove voice key** removes the saved service key.
 
 Voice recordings go to the selected voice service. Words from your request and relevant saved notes go to the model through the Codex tool. Local memories are not separately encrypted by notdot; your computer’s account and backups matter. See [Security](../SECURITY.md) for the full boundaries.
+
+If backup wake recognition fails on a phrase, the primary detector keeps listening and the backup can retry on the next phrase. Settings shows a short warning while that backup failure remains unresolved. Initial model-loading or microphone errors still need attention; notdot does not silently grant microphone permission.

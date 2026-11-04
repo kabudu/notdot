@@ -25,6 +25,7 @@ https://github.com/user-attachments/assets/8279f3a2-af14-4c5b-8960-e69596ca5ad5
 
 - **Talk naturally.** Say your wake phrase or click once, speak, then pause to send. Press Escape to cancel.
 - **Follow up without starting again.** Turn on an optional listening window after replies. Keep talking, or say “That’s all” to stop.
+- **Ask about other chats.** Find and read relevant local Codex chats by voice. notdot does not send messages to them or take control of them.
 - **Pick up where you left off.** Continue the same chat after restarting notdot. You can view its history in Codex.
 - **Choose what it remembers.** Turn learning on or off, review and edit saved memories, forget individual notes or reset them all.
 - **Make it yours.** Choose its name, orb colour, voice and how much it can interrupt you.
@@ -55,7 +56,7 @@ Use notdot to send messages in its chat. Keep the Codex app for viewing that cha
 
 ## Privacy and memory
 
-Wake detection runs on your computer. Background listening is not sent to a speech service. After activation, your chosen services transcribe your request and generate the spoken reply. Codex receives your request and any relevant memories.
+Wake detection runs on your computer. Background listening is not sent to a speech service. After activation, your chosen services transcribe your request and generate the spoken reply. Codex receives your request and any relevant memories. If you ask about another local Codex chat, selected messages from that chat are also supplied to the model.
 
 Saved memories stay on your computer. Turning learning off stops saving and using those notes, while keeping existing notes and chat history. Resetting memory does not delete saved Codex chats or backups.
 

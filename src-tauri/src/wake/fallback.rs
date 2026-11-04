@@ -187,6 +187,7 @@ pub(super) struct Fallback {
     pause_ms: u32,
     speech: usize,
     pub(super) error: Option<String>,
+    pub(super) failures: u64,
 }
 impl Fallback {
     pub(super) fn new(path: &Path, phrase: &str) -> Result<Self, String> {
@@ -228,6 +229,7 @@ impl Fallback {
             pause_ms: 350,
             speech: 0,
             error: None,
+            failures: 0,
         })
     }
     pub(super) fn shutdown(&mut self) -> bool {
@@ -258,9 +260,16 @@ impl Fallback {
             self.busy = false;
             if epoch == self.epoch.load(Ordering::Relaxed) {
                 match result {
-                    Ok(true) => return true,
-                    Ok(false) => {}
-                    Err(e) => self.error = Some(e),
+                    Ok(heard) => {
+                        self.error = None;
+                        if heard {
+                            return true;
+                        }
+                    }
+                    Err(e) => {
+                        self.failures = self.failures.saturating_add(1);
+                        self.error = Some(e);
+                    }
                 }
             }
         }

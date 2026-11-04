@@ -4,6 +4,8 @@ Completed work and the next additions planned for notdot. Priorities may change 
 
 ## Implemented
 
+- **Read other Codex chats.** Ask notdot to find a relevant local chat by title and read its messages without taking control of it. [Settings guide](docs/settings.md).
+
 - **Conversation continuity.** Turn on an optional 3–20 second listening window after spoken replies. Two soft orb rings show when you can answer; say “That’s all”, press Escape or stay silent to stop. The microphone pauses while notdot speaks. [Implementation and tests](https://github.com/kabudu/notdot/pull/22) · [Settings guide](docs/settings.md).
 
 ## More voice choices

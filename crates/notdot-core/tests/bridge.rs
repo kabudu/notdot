@@ -470,3 +470,137 @@ async fn live_untrusted_memory_text_cannot_write_files_or_store_a_secret() {
         assert!(!record.content.contains("CHANGED"));
     }
 }
+
+#[tokio::test]
+async fn chat_tools_only_read_bounded_public_messages() {
+    let (_dir, path) = server(
+        r#"import json,sys
+for line in sys.stdin:
+ m=json.loads(line);method=m.get('method')
+ if method=='initialize':result={}
+ elif method=='thread/list':
+  assert m['params']['limit']==10 and m['params']['searchTerm']=='Scarf'
+  result={'data':[{'id':'chat-one','name':'Scarf project','preview':'PRIVATE PREVIEW','path':'PRIVATE PATH','updatedAt':123}],'nextCursor':'next'}
+ elif method=='thread/turns/list':
+  assert m['params']=={'threadId':'chat-one','limit':5,'cursor':None,'sortDirection':'desc','itemsView':'full'}
+  result={'data':[{'id':'turn','items':[{'type':'userMessage','content':[{'type':'text','text':'My scarf is blue.'},{'type':'image','url':'PRIVATE IMAGE'}]},{'type':'reasoning','text':'PRIVATE REASONING'},{'type':'commandExecution','output':'PRIVATE TOOL OUTPUT'},{'type':'agentMessage','text':'A blue scarf.'}]}],'nextCursor':None}
+ elif method=='probe':result={'alive':True}
+ elif method=='initialized':continue
+ else:raise AssertionError('unexpected method '+str(method))
+ print(json.dumps({'id':m['id'],'result':result}),flush=True)
+"#,
+    );
+    let b = Bridge::connect(&path).await.unwrap();
+    let found = notdot_core::chat_tools::call(&b, "find_chats", json!({"query":"Scarf"}))
+        .await
+        .unwrap();
+    assert_eq!(found["chats"][0]["title"], "Scarf project");
+    assert_eq!(found["next_cursor"], "next");
+    assert!(!found.to_string().contains("PRIVATE"));
+    let read = notdot_core::chat_tools::call(&b, "read_chat", json!({"thread_id":"chat-one"}))
+        .await
+        .unwrap();
+    assert_eq!(read["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(read["messages"][0]["text"], "My scarf is blue.");
+    assert!(!read.to_string().contains("PRIVATE"));
+    for (name, args) in [
+        ("send_message", json!({})),
+        ("read_chat", json!({"thread_id":"../../secret"})),
+        ("find_chats", json!({"query":"a".repeat(201)})),
+        ("find_chats", json!({"command":"cat ~/.codex/auth.json"})),
+        (
+            "read_chat",
+            json!({"thread_id":"chat-one","cursor":"a".repeat(2049)}),
+        ),
+    ] {
+        assert!(notdot_core::chat_tools::call(&b, name, args).await.is_err());
+    }
+    assert_eq!(b.call("probe", json!({})).await.unwrap()["alive"], true);
+    b.shutdown().await;
+}
+
+#[tokio::test]
+async fn chat_history_truncates_utf8_and_excludes_tool_output() {
+    let (_dir, path) = server(
+        r#"import json,sys
+for line in sys.stdin:
+ m=json.loads(line)
+ if m.get('method')=='initialize':r={}
+ elif m.get('method')=='thread/turns/list':r={'data':[{'id':'t','items':[{'type':'agentMessage','text':'\u00e9'*20000}]}],'nextCursor':'older'}
+ else:continue
+ print(json.dumps({'id':m['id'],'result':r}),flush=True)
+"#,
+    );
+    let b = Bridge::connect(&path).await.unwrap();
+    let r = notdot_core::chat_tools::call(&b, "read_chat", json!({"thread_id":"chat"}))
+        .await
+        .unwrap();
+    assert_eq!(r["truncated"], true);
+    assert!(r["messages"][0]["text"].as_str().unwrap().len() <= 24576);
+    assert_eq!(r["next_cursor"], "older");
+    b.shutdown().await;
+}
+
+#[tokio::test]
+async fn existing_companion_chats_receive_the_same_read_only_tools() {
+    let (_dir, path) = server(
+        r#"import json,sys
+for line in sys.stdin:
+ m=json.loads(line);method=m.get('method')
+ if method=='initialize':r={}
+ elif method=='model/list':r={'data':[{'id':'gpt-6.1-terra','model':'gpt-6.1-terra','displayName':'Terra','defaultReasoningEffort':'medium','supportedReasoningEfforts':[{'reasoningEffort':'medium','description':'Balanced'}]}],'nextCursor':None}
+ elif method=='config/read':r={'config':{}}
+ elif method in ['thread/start','thread/resume']:
+  c=m['params']['config'];assert c['features']['shell_tool'] is False
+  helper=c['mcp_servers']['notdot_chats'];assert helper['enabled'] is True
+  assert helper['args'][0]=='--codex-chat-tools'
+  assert helper['default_tools_approval_mode']=='writes'
+  assert 'threadId' in m['params'] if method=='thread/resume' else 'threadId' not in m['params']
+  r={'thread':{'id':'same-chat'},'model':'gpt-6.1-terra','reasoningEffort':'medium'}
+ elif method=='thread/name/set':r={}
+ else:continue
+ print(json.dumps({'id':m['id'],'result':r}),flush=True)
+"#,
+    );
+    let b = Bridge::connect_with_chat_tools(&path, std::path::Path::new("/synthetic/notdot"))
+        .await
+        .unwrap();
+    let selection = notdot_core::models::Selection::default();
+    for id in [None, Some("same-chat")] {
+        assert_eq!(
+            b.thread_with_selection(id, _dir.path(), "Ava", &selection)
+                .await
+                .unwrap(),
+            "same-chat"
+        );
+    }
+    b.shutdown().await;
+}
+
+#[tokio::test]
+async fn chat_tools_bound_message_count_and_reject_oversized_metadata() {
+    let (_dir, path) = server(
+        r#"import json,sys
+for line in sys.stdin:
+ m=json.loads(line)
+ if m.get('method')=='initialize':r={}
+ elif m.get('method')=='thread/turns/list':r={'data':[{'id':'t','items':[{'type':'agentMessage','text':'x'}]*150}],'nextCursor':'older'}
+ elif m.get('method')=='thread/list':r={'data':[{'id':'t','name':'title','updatedAt':'x'*50000}],'nextCursor':None}
+ else:continue
+ print(json.dumps({'id':m['id'],'result':r}),flush=True)
+"#,
+    );
+    let b = Bridge::connect(&path).await.unwrap();
+    let r = notdot_core::chat_tools::call(&b, "read_chat", json!({"thread_id":"chat"}))
+        .await
+        .unwrap();
+    assert_eq!(r["messages"].as_array().unwrap().len(), 100);
+    assert_eq!(r["truncated"], true);
+    assert!(
+        notdot_core::chat_tools::call(&b, "find_chats", json!({}))
+            .await
+            .unwrap_err()
+            .contains("safe output limit")
+    );
+    b.shutdown().await;
+}

@@ -43,6 +43,14 @@ The runtime starts with a read-only sandbox and untrusted approval policy. Compa
 
 See [bridge investigation](bridge-investigation.md) for the original experiments and limitations.
 
+## Read-only Codex chat access
+
+Companion runtimes register the bundled `notdot_chats` MCP service for both new and resumed chats. The executable handles `--codex-chat-tools CODEX_RUNTIME` before starting Tauri, so this does not open a second orb or access voice keys. A separate app-server process services `thread/list` and `thread/turns/list`; it never resumes another chat or acquires its writer lease. The registration is a per-thread override, not a change to global Codex configuration.
+
+`find_chats` searches titles or lists recent local chats, ten per page. `read_chat` reads five turns per page, exposing only user and assistant text, with a 24 KiB text budget and at most 100 messages. Tool output, reasoning, images, filesystem paths and other thread metadata are excluded. Requests are limited to 16 KiB and lookups have a 30-second deadline. Cursors allow further pages. The service does not scan raw rollout files or provide any write API.
+
+The model is instructed to use relevant history only when asked and treat it as untrusted data. Selected history is supplied to Codex for the answer, independently of whether memory learning is enabled. This is local history retrieval, not desktop host-tool attachment or cross-chat execution.
+
 ## Memory
 
 Mnemara **0.6.0** is embedded as Rust library code with the sled backend. No separate database service is needed. Settings/thread identity use a small atomically saved JSON file. The voice-provider trait separates voice discovery, previews, STT and TTS from the UI; ElevenLabs handles the combined voice backend; experimental Deepgram Flux can be selected separately for recognition. To add another backend, implement `notdot_voice::VoiceBackend` and register its factory in `crates/notdot-voice`. Credentials are scoped per provider, and audio bytes include their MIME type. There is no arbitrary dynamic-library loading.
