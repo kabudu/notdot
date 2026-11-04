@@ -25,7 +25,7 @@ https://github.com/user-attachments/assets/8279f3a2-af14-4c5b-8960-e69596ca5ad5
 
 - **Talk naturally.** Say your wake phrase or click once, speak, then pause to send. Press Escape to cancel.
 - **Follow up without starting again.** Turn on an optional listening window after replies. Keep talking, or say “That’s all” to stop.
-- **Ask about other chats.** Find and read relevant local Codex chats by voice. notdot does not send messages to them or take control of them.
+- **Use your other Codex chats.** Find and read relevant history by voice. Optional controls let you send work, add instructions and stop tasks notdot started, with your chosen confirmation setting.
 - **Pick up where you left off.** Continue the same chat after restarting notdot. You can view its history in Codex.
 - **Choose what it remembers.** Turn learning on or off, review and edit saved memories, forget individual notes or reset them all.
 - **Make it yours.** Choose its name, orb colour, voice and how much it can interrupt you.

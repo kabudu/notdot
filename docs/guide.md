@@ -43,13 +43,23 @@ The runtime starts with a read-only sandbox and untrusted approval policy. Compa
 
 See [bridge investigation](bridge-investigation.md) for the original experiments and limitations.
 
-## Read-only Codex chat access
+## Codex chat access and controls
 
 Companion runtimes register the bundled `notdot_chats` MCP service for both new and resumed chats. The executable handles `--codex-chat-tools CODEX_RUNTIME` before starting Tauri, so this does not open a second orb or access voice keys. A separate app-server process services `thread/list` and `thread/turns/list`; it never resumes another chat or acquires its writer lease. The registration is a per-thread override, not a change to global Codex configuration. An existing explicit disable or stricter approval policy for `mcp_servers.notdot_chats` is retained.
 
-`find_chats` searches titles or lists recent local chats, ten per page. `read_chat` reads five turns per page, exposing only user and assistant text, with a 24 KiB text budget and at most 100 messages. Tool output, reasoning, images, filesystem paths and other thread metadata are excluded. Requests are limited to 16 KiB and lookups have a 30-second deadline. Cursors allow further pages. The service does not scan raw rollout files or provide any write API.
+`find_chats` searches titles or lists recent local chats, ten per page. `read_chat` reads five turns per page, exposing only user and assistant text, with a 24 KiB text budget and at most 100 messages. Tool output, reasoning, images, filesystem paths and other thread metadata are excluded. Requests are limited to 16 KiB and lookups have a 30-second deadline. Cursors allow further pages. The service does not scan raw rollout files or perform writes. Its `prepare_chat_action` tool returns a validated proposal only; the desktop host separately applies its saved control mode and scoped approval before executing anything.
 
 The model is instructed to use relevant history only when asked and treat it as untrusted data. Selected history is supplied to Codex for the answer, independently of whether memory learning is enabled. This is local history retrieval, not desktop host-tool attachment or cross-chat execution.
+
+### Session control
+
+`session_control` defaults to `read_only`; the other settings values are `confirm` and `when_asked`. Only an actual `prepare_chat_action` completion from the expected MCP service, companion thread and current turn can stage a proposal. The returned destination, action and message must match the tool arguments. The companion cannot target its own chat. One action may be staged per spoken request.
+
+Confirmation reads the exact destination and message, accepts only the scoped phrase, expires after two minutes and cannot be replayed. Send-when-asked bypasses read-back only for an exact direct command whose destination is uniquely matched by the local search result. Missing or ambiguous matches, paraphrases, punctuation changes and quoted commands use confirmation. Unknown destination names include a short chat identifier in the read-back. Permission is represented by an immutable, single-use Rust value; cancellation or a newer request revokes it even while a resume is pending.
+
+A separate control runtime resumes only an available target, preserves its saved model/cwd/permission profile and starts the approved turn. It retains at most four running or releasing sessions and twenty completion summaries. Steering and stopping require an active turn already owned by that runtime and use its exact turn ID. Foreign writer errors never cause archiving, eviction or a forced takeover. The ordinary bridge continues rejecting unsupported target host-approval requests; this does not grant notdot desktop-only capabilities.
+
+After completion, notdot unsubscribes and waits for `thread/closed`, not merely an unsubscribe acknowledgement, before reusing the session. Its control process sets the documented `thread_unload_delay_secs=0` CLI override; global Codex configuration is unchanged. A bounded wait reports a still-releasing chat instead of forcing it closed. Background work may keep a session loaded. Stop interrupts a Codex turn, not every background process it launched. Lost lifecycle events block further control rather than reporting guessed progress. Operation acknowledgements are kept in RAM for the next companion request and are not treated as proof that the target's work succeeded.
 
 ## Memory
 

@@ -605,3 +605,263 @@ for line in sys.stdin:
     );
     b.shutdown().await;
 }
+
+fn session_authority(
+    action: notdot_core::session_control::Action,
+    id: &str,
+    message: &str,
+) -> (
+    notdot_core::session_control::Authorised,
+    notdot_core::session_control::Consent,
+) {
+    use notdot_core::session_control::*;
+    let mut consent = Consent::default();
+    consent.begin(Mode::Confirm, "synthetic direct request");
+    consent.bind("source-turn");
+    consent
+        .stage(
+            "source-turn",
+            Plan {
+                action,
+                thread_id: id.into(),
+                title: "Synthetic".into(),
+                unambiguous: true,
+                message: message.into(),
+            },
+        )
+        .unwrap();
+    let pending = consent.pending().unwrap();
+    let authority = match consent.question(&pending).unwrap() {
+        Decision::Execute(a) => a,
+        Decision::Ask(_) => consent
+            .answer(
+                &pending,
+                if action == Action::Stop {
+                    "yes stop it"
+                } else {
+                    "yes send it"
+                },
+            )
+            .unwrap()
+            .unwrap(),
+    };
+    (authority, consent)
+}
+#[tokio::test]
+async fn session_controls_preserve_target_permissions_and_bind_active_turns() {
+    use notdot_core::{session_control::Action, session_runtime::SessionRuntime};
+    let (_dir, path) = server(
+        r#"import json,sys
+interrupts=0
+for line in sys.stdin:
+ m=json.loads(line);method=m.get('method')
+ if method=='initialize':r={}
+ elif method=='thread/resume':
+  assert m['params']=={'threadId':'target','excludeTurns':True}
+  r={'thread':{'id':'target','name':'Synthetic','status':{'type':'idle'}}}
+ elif method=='turn/start':
+  assert m['params']=={'threadId':'target','input':[{'type':'text','text':'Do the staged task'}]}
+  r={'turn':{'id':'target-turn'}}
+ elif method=='turn/steer':
+  assert m['params']=={'threadId':'target','expectedTurnId':'target-turn','input':[{'type':'text','text':'Use short sentences'}]};r={'turnId':'target-turn'}
+ elif method=='turn/interrupt':
+  interrupts+=1
+  if interrupts==1:
+   print(json.dumps({'id':m['id'],'error':{'code':-32600,'message':'no active turn to interrupt'}}),flush=True);continue
+  assert m['params']=={'threadId':'target','turnId':'target-turn'};r={}
+  print(json.dumps({'id':m['id'],'result':r}),flush=True)
+  print(json.dumps({'method':'turn/completed','params':{'threadId':'target','turn':{'id':'target-turn','status':'interrupted'}}}),flush=True);continue
+ elif method=='thread/unsubscribe':
+  print(json.dumps({'id':m['id'],'result':{'status':'unsubscribed'}}),flush=True)
+  print(json.dumps({'method':'thread/closed','params':{'threadId':'target'}}),flush=True);continue
+ else:continue
+ print(json.dumps({'id':m['id'],'result':r}),flush=True)
+"#,
+    );
+    let session = SessionRuntime::connect(&path).await.unwrap();
+    let (request, _consent) = session_authority(Action::Send, "target", "Do the staged task");
+    assert!(
+        session
+            .execute(request)
+            .await
+            .unwrap()
+            .starts_with("Sent to")
+    );
+    let (request, _status) = session_authority(Action::Status, "target", "");
+    assert!(
+        session
+            .execute(request)
+            .await
+            .unwrap()
+            .contains("still running")
+    );
+    let (request, _instruction) = session_authority(Action::Steer, "target", "Use short sentences");
+    assert!(session.execute(request).await.unwrap().starts_with("Added"));
+    let (request, _stop) = session_authority(Action::Stop, "target", "");
+    assert!(
+        session
+            .execute(request)
+            .await
+            .unwrap()
+            .starts_with("Stop requested")
+    );
+    for _ in 0..100 {
+        let (request, _status) = session_authority(Action::Status, "target", "");
+        if session
+            .execute(request)
+            .await
+            .unwrap()
+            .contains("interrupted")
+        {
+            session.shutdown().await;
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("completed task was not released and recorded");
+}
+#[tokio::test]
+async fn session_controls_cannot_take_a_foreign_writer_or_use_cancelled_authority() {
+    use notdot_core::{session_control::Action, session_runtime::SessionRuntime};
+    let (_dir, path) = server(
+        r#"import json,sys
+for line in sys.stdin:
+ m=json.loads(line);method=m.get('method')
+ if method=='initialize':print(json.dumps({'id':m['id'],'result':{}}),flush=True)
+ elif method=='thread/resume':print(json.dumps({'id':m['id'],'error':{'code':-32600,'message':'thread already has an active writer'}}),flush=True)
+ elif method in ['turn/start','turn/steer','turn/interrupt','thread/archive']:raise AssertionError('unauthorized side effect')
+"#,
+    );
+    let session = SessionRuntime::connect(&path).await.unwrap();
+    let (request, mut consent) = session_authority(Action::Send, "target", "Task");
+    consent.cancel();
+    assert!(
+        session
+            .execute(request)
+            .await
+            .unwrap_err()
+            .contains("cancelled")
+    );
+    let (request, _consent) = session_authority(Action::Send, "target", "Task");
+    assert!(
+        session
+            .execute(request)
+            .await
+            .unwrap_err()
+            .contains("owns that chat")
+    );
+    let (request, _consent) = session_authority(Action::Steer, "target", "Task");
+    assert!(
+        session
+            .execute(request)
+            .await
+            .unwrap_err()
+            .contains("does not own")
+    );
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancelling_during_resume_prevents_the_later_send() {
+    use notdot_core::{session_control::Action, session_runtime::SessionRuntime};
+    let gate = tempfile::tempdir().unwrap();
+    let ready = gate.path().join("ready");
+    let release = gate.path().join("release");
+    let wrote = gate.path().join("sent");
+    let script = r#"import json,sys,time,pathlib
+ready=pathlib.Path(READY_PATH);release=pathlib.Path(RELEASE_PATH);wrote=pathlib.Path(SENT_PATH)
+for line in sys.stdin:
+ m=json.loads(line);method=m.get('method')
+ if method=='initialize':r={}
+ elif method=='thread/resume':
+  ready.write_text('ready');deadline=time.monotonic()+5
+  while not release.exists() and time.monotonic()<deadline:time.sleep(.01)
+  r={'thread':{'id':'target','name':'Synthetic','status':{'type':'idle'}}}
+ elif method=='turn/start':wrote.write_text('unexpected');r={'turn':{'id':'unexpected'}}
+ elif method=='thread/unsubscribe':r={}
+ else:continue
+ print(json.dumps({'id':m['id'],'result':r}),flush=True)
+"#
+    .replace("READY_PATH", &serde_json::to_string(&ready).unwrap())
+    .replace("RELEASE_PATH", &serde_json::to_string(&release).unwrap())
+    .replace("SENT_PATH", &serde_json::to_string(&wrote).unwrap());
+    let (_dir, path) = server(&script);
+    let session = SessionRuntime::connect(&path).await.unwrap();
+    let (authority, mut consent) = session_authority(Action::Send, "target", "Task");
+    let owner = session.clone();
+    let task = tokio::spawn(async move { owner.execute(authority).await });
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while !ready.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    consent.cancel();
+    std::fs::write(&release, "continue").unwrap();
+    assert!(
+        task.await
+            .unwrap()
+            .unwrap_err()
+            .contains("cancelled before sending")
+    );
+    assert!(!wrote.exists());
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn preparing_control_only_reads_metadata_and_marks_ambiguous_destinations() {
+    let (_dir, path) = server(
+        r#"import json,sys
+for line in sys.stdin:
+ m=json.loads(line);method=m.get('method')
+ if method=='initialize':r={}
+ elif method=='thread/read':
+  tid=m['params']['threadId'];name={'unique':'Unique','ambiguous':'Duplicate'}.get(tid)
+  r={'thread':{'id':tid,'name':name,'preview':'An untitled synthetic task'}}
+ elif method=='thread/list':
+  title=m['params']['searchTerm']
+  if title=='Unique':data=[{'id':'unique','name':'Unique'}]
+  elif title=='Duplicate':data=[{'id':'ambiguous','name':'Duplicate'},{'id':'other','name':'Duplicate'}]
+  else:data=[]
+  r={'data':data,'nextCursor':None}
+ elif method=='initialized':continue
+ else:raise AssertionError('preparation must not mutate: '+str(method))
+ print(json.dumps({'id':m['id'],'result':r}),flush=True)
+"#,
+    );
+    let b = Bridge::connect(&path).await.unwrap();
+    for (id, unique) in [("unique", true), ("ambiguous", false), ("untitled", false)] {
+        let r = notdot_core::chat_tools::call(
+            &b,
+            "prepare_chat_action",
+            json!({"action":"send","thread_id":id,"message":"Synthetic instruction"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r["status"], "prepared_only_not_executed");
+        assert_eq!(r["prepared_action"]["unambiguous"], unique);
+        if id == "untitled" {
+            assert_eq!(r["prepared_action"]["title"], "An untitled synthetic task");
+        }
+    }
+    assert!(
+        notdot_core::chat_tools::call(
+            &b,
+            "prepare_chat_action",
+            json!({"action":"stop","thread_id":"unique","message":"an extra instruction"})
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        notdot_core::chat_tools::call(
+            &b,
+            "prepare_chat_action",
+            json!({"action":"send","thread_id":"unique","message":"hi","unambiguous":true})
+        )
+        .await
+        .is_err()
+    );
+    b.shutdown().await;
+}

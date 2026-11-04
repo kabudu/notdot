@@ -25,14 +25,18 @@ pub struct Bridge {
 }
 impl Bridge {
     pub async fn connect(binary: &Path) -> Result<Self, String> {
-        Self::connect_inner(binary, None).await
+        Self::connect_inner(binary, None, false).await
     }
     pub async fn connect_with_chat_tools(binary: &Path, executable: &Path) -> Result<Self, String> {
-        Self::connect_inner(binary, Some(executable.to_owned())).await
+        Self::connect_inner(binary, Some(executable.to_owned()), false).await
+    }
+    pub async fn connect_for_session_control(binary: &Path) -> Result<Self, String> {
+        Self::connect_inner(binary, None, true).await
     }
     async fn connect_inner(
         binary: &Path,
         chat_executable: Option<PathBuf>,
+        unload_immediately: bool,
     ) -> Result<Self, String> {
         // Some emulated Linux hosts report a successful spawn even when exec
         // cannot find the program, leaving only a misleading broken-pipe error.
@@ -41,8 +45,11 @@ impl Bridge {
         let mut command = Command::new(binary);
         #[cfg(windows)]
         command.creation_flags(0x08000000);
+        command.args(["app-server", "--stdio"]);
+        if unload_immediately {
+            command.args(["-c", "thread_unload_delay_secs=0"]);
+        }
         let mut child = command
-            .args(["app-server", "--stdio"])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())

@@ -1,4 +1,4 @@
-# Local Codex chat access and wake recovery
+# Local Codex chat access, session controls and wake recovery
 
 ## Scope
 
@@ -7,10 +7,22 @@ Changes on `codex/chat-access-wake-reliability`, following the 0.2.0 release. Te
 ## Chat access
 
 - The locally built release-mode executable's helper entry point passed live initialization, tool discovery, chat lookup/read and rejection of an attempted write method, without starting another orb or accessing voice keys.
-- Live MCP protocol checks initialized the bundled service, listed its two tools, found ten local chats and successfully read a page of messages. Private message content was not printed or committed.
+- Live MCP protocol checks initialized the bundled service, listed its initial read-only tools, found ten local chats and successfully read a page of messages. Private message content was not printed or committed.
 - A separate model test created a synthetic named source chat containing a random marker. An ephemeral Terra Medium chat received the lookup service and a prompt that contained the title but neither the marker nor the source chat ID. It invoked both `find_chats` and `read_chat`, then returned the correct marker. The synthetic source chat was archived afterwards; the ephemeral chat was unloaded.
 - Fake-runtime integration tests check filtering of reasoning, images, tool output and filesystem metadata; invalid IDs, oversized arguments, unknown tools, UTF-8 truncation, pagination and both new/resumed companion registration. These are protocol tests, not voice tests.
-- The service uses only `thread/list` and `thread/turns/list`. It does not resume, interrupt, write to, archive or take ownership of target chats. The source-chat archive above is test cleanup performed by the test driver, not a service capability.
+- The read-only service uses `thread/list` and `thread/turns/list` for retrieval and `thread/read` for action metadata. Its third tool prepares a proposal only. The host, not this service, executes approved controls. The source-chat archive above is test cleanup performed by the test driver, not a service capability.
+
+## Session controls
+
+The Settings modes are Read only (the default), Confirm before sending and Send when asked. Unit/protocol checks cover scoped one-time consent, expiry, cancellation before/during resume, newer-request invalidation, exact instruction preservation, ambiguous destinations, wrong tool/source-turn events, unknown modes, foreign writers and preservation of the target permission/model/cwd settings.
+
+An authenticated synthetic end-to-end test exercised the real built helper and Codex runtime with Terra Medium. The model found the target and prepared its message, the target history remained unchanged before confirmation, the confirmed send received the correct marker reply, steering succeeded and stopping produced an interrupted target turn. Target and controller test chats were archived afterwards. No speech keys, microphone or speaker were used in this test.
+
+A separate direct runtime diagnostic reproduced an early-stop race without steering: the first interrupt returned “no active turn”, and the same turn’s stop was accepted about 103 ms after start. Control cancellation now retries only that transient response, with a bounded backoff, the same owned turn ID and a still-valid user grant. Sends are never retried. Completion/release tracking waits for `thread/closed`; an unsubscribe acknowledgement alone is not proof of writer release.
+
+The real WASM UI passed twenty silent integration cases with synthetic IPC/STT/TTS adapters. Added checks cover spoken session confirmation, direct actions without a confirmation capture, Escape cancelling consent, and persistence of the chosen Settings mode. Existing continuity, echo-gap, mute, hide and silence checks also passed. The final 450-pixel panel preview was also inspected for spacing, text wrapping and arrow-key selection; its heading reflects the chosen mode, and control limits are collapsed by default. These adapters never request a physical microphone or contact a voice provider. This is UI integration evidence, not a new acoustic test of the changed app.
+
+The earlier read-only/wake revision passed Mac, Windows and Linux CI (run 41803286376). Session-control changes require a new cross-platform run; the PR records that result. A physical microphone-to-reply check of the final changed build remains a release validation item.
 
 ## Wake recovery
 
@@ -22,4 +34,4 @@ These tests do not establish the cause of the single missed acoustic activation 
 
 ## Checks
 
-`scripts/ci-local.sh` passed: release-mode workspace tests, native and WASM Clippy (including the debug-only UI feature), format checks, gesture/visual/speech-queue checks and 99 Python checks. Live chat checks used the authenticated runtime without API-key exports or Keychain access. See the PR checks for Windows and Linux build results.
+`scripts/ci-local.sh` passed: release-mode workspace tests, native and WASM Clippy (including the debug-only UI feature), format checks, gesture/visual/speech-queue checks and 99 Python checks. Live chat checks used the authenticated runtime without API-key exports or requests for saved voice keys. See the PR checks for Windows and Linux build results.

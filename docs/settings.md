@@ -14,9 +14,23 @@ The choices come from your installed Codex tool and account. notdot checks them 
 
 ## Other Codex chats
 
-Ask something like **“Find my Codex chat about the website and remind me what we decided.”** notdot can find local chats by title and read their messages, including archived chats when requested. If several match, it can ask which one you mean. Search currently matches chat titles, not every message.
+Ask something like **“Find my Codex chat about the website and remind me what we decided.”** notdot can find saved local chats by title and read relevant messages. If several match, it can ask which one you mean.
 
-Reading another chat does not take it over or send a message to it. Selected messages are shared with the Codex model to answer your question. This does not give notdot all the desktop app's tools or access to chats that are not stored in the local Codex runtime.
+Choose what it may do under **Other Codex chats**:
+
+| Mode | What happens |
+| --- | --- |
+| **Read only** | Find chats and read messages. This is the default. |
+| **Confirm before sending** | Read back the destination and instruction before each change. Say **“yes, send it”**, or **“yes, stop it”** for stopping a task. A bare “yes” does not approve it. |
+| **Send when asked** | Act directly on an exact request such as **“Tell Website to make the button clearer”**, using the chat's saved name and your original words. Different or ambiguous wording is read back for confirmation. |
+
+Each spoken request controls one chat action. With control enabled, notdot can send work to an available chat, add an instruction to a task it started, stop that task, and check its progress. A send acknowledgement means Codex accepted the request, not that the work finished. Ask notdot to check progress or read the chat for the answer.
+
+Sending can start work using the target chat's existing model, working directory and permissions. notdot does not grant extra permissions. It cannot take over a chat held by the desktop app or another runtime, and it cannot steer or stop their active tasks. It explains that a handoff is needed instead of forcing one. Desktop-only tools and approval flows may still require the desktop app.
+
+Approval is for one action only and expires after two minutes. Escape, muting, opening Settings, hiding notdot or a new request cancels pending approval. An action already accepted by Codex cannot be unsent. Changing to Read only prevents new actions; it does not stop work already running. Keep notdot open while tasks it started are running. Stopping cancels the current Codex turn; background processes may continue.
+
+Selected chat messages go to the Codex model to answer your request. These controls do not provide access to chats that are not stored in the local Codex runtime. Empty, unsaved chats may not appear in its history index.
 
 ## Voice
 
