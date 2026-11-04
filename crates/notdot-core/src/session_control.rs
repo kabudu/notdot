@@ -215,13 +215,38 @@ impl Consent {
             self.turn = Some(turn.into());
         }
     }
-    pub fn stage(&mut self, turn: &str, plan: Plan) -> Result<(), String> {
+    pub fn stage(&mut self, turn: &str, mut plan: Plan) -> Result<(), String> {
         plan.validate()?;
         if self.turn.as_deref() != Some(turn)
             || self.proposed
             || (self.mode == Mode::ReadOnly && plan.action != Action::Status)
         {
             return Err("Chat control is disabled or this request is no longer current".into());
+        }
+        // Some model calls include the routing command in their message. Strip
+        // only a literal, current command addressed to the verified unique chat.
+        // Never rewrite a paraphrase, negation, quotation or command punctuation.
+        if matches!(plan.action, Action::Send | Action::Steer)
+            && plan.unambiguous
+            && plan.message.trim() == self.transcript.trim()
+        {
+            let text = self.transcript.trim();
+            for prefix in [
+                format!("Tell {} to ", plan.title),
+                format!("Tell the {} chat to ", plan.title),
+                format!("Send to {} ", plan.title),
+                format!("Send to the {} chat ", plan.title),
+            ] {
+                if text
+                    .get(..prefix.len())
+                    .is_some_and(|head| head.eq_ignore_ascii_case(&prefix))
+                    && let Some(message) = text.get(prefix.len()..).map(str::trim)
+                    && !message.is_empty()
+                {
+                    plan.message = message.into();
+                    break;
+                }
+            }
         }
         let automatic = plan.action == Action::Status
             || (self.mode == Mode::WhenAsked && directly_requested(&self.transcript, &plan));
@@ -414,6 +439,35 @@ mod tests {
         assert!(matches!(c.question(&id).unwrap(), Decision::Ask(_)));
         assert!(c.answer(&id, "yes").unwrap().is_none());
     }
+    #[test]
+    fn routing_words_are_removed_only_from_an_exact_current_direct_command() {
+        let mut c = Consent::default();
+        let text = "Tell the Website chat to run rm -r ./cache.";
+        c.begin(Mode::WhenAsked, text);
+        c.bind("t");
+        let mut p = plan();
+        p.message = text.into();
+        c.stage("t", p).unwrap();
+        let id = c.pending().unwrap();
+        let Decision::Execute(authority) = c.question(&id).unwrap() else {
+            panic!("an exact routed instruction should not need a second approval")
+        };
+        assert_eq!(authority.plan().message, "run rm -r ./cache.");
+        for transcript in [
+            "Don't tell the Website chat to run rm -r ./cache.",
+            "Tell the Website chat to run rm r ./cache.",
+            "\"Tell the Website chat to run rm -r ./cache.\"",
+        ] {
+            c.begin(Mode::WhenAsked, transcript);
+            c.bind("t");
+            let mut p = plan();
+            p.message = text.into();
+            c.stage("t", p).unwrap();
+            let id = c.pending().unwrap();
+            assert!(matches!(c.question(&id).unwrap(), Decision::Ask(_)));
+        }
+    }
+
     #[test]
     fn changing_command_punctuation_never_bypasses_confirmation() {
         let mut p = plan();
