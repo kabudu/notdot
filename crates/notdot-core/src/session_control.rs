@@ -145,24 +145,26 @@ pub fn directly_requested(text: &str, plan: &Plan) -> bool {
     if !plan.unambiguous {
         return false;
     }
-    let literal = |s: &str| {
-        s.split_whitespace()
-            .map(str::to_lowercase)
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
-    let text = literal(text);
-    let title = literal(&plan.title);
-    let message = literal(&plan.message);
+    let text = text.trim();
+    let title = plan.title.trim();
+    let message = plan.message.trim();
     match plan.action {
         Action::Send | Action::Steer => [
-            format!("tell {title} to {message}"),
-            format!("tell the {title} chat to {message}"),
-            format!("send to {title} {message}"),
-            format!("send to the {title} chat {message}"),
+            format!("tell {title} to "),
+            format!("tell the {title} chat to "),
+            format!("send to {title} "),
+            format!("send to the {title} chat "),
         ]
-        .contains(&text),
-        Action::Stop => text == format!("stop {title}") || text == format!("stop the {title} chat"),
+        .iter()
+        .any(|prefix| {
+            text.get(..prefix.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+                && text.get(prefix.len()..) == Some(message)
+        }),
+        Action::Stop => {
+            text.eq_ignore_ascii_case(&format!("stop {title}"))
+                || text.eq_ignore_ascii_case(&format!("stop the {title} chat"))
+        }
         Action::Status => true,
     }
 }
@@ -468,6 +470,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn instruction_case_is_preserved_even_when_destination_case_differs() {
+        let mut p = plan();
+        p.message = "rename Cache to Archive".into();
+        assert!(directly_requested(
+            "tell WEBSITE to rename Cache to Archive",
+            &p
+        ));
+        assert!(!directly_requested(
+            "Tell Website to rename cache to archive",
+            &p
+        ));
+        p.message = "read \"two  spaces.txt\"".into();
+        assert!(!directly_requested(
+            "Tell Website to read \"two spaces.txt\"",
+            &p
+        ));
+        assert!(directly_requested(
+            "Tell Website to read \"two  spaces.txt\"",
+            &p
+        ));
+    }
     #[test]
     fn changing_command_punctuation_never_bypasses_confirmation() {
         let mut p = plan();
