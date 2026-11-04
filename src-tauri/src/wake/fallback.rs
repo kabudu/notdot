@@ -29,6 +29,7 @@ struct AcceleratedDecoder {
     resource_root: std::path::PathBuf,
     model: std::path::PathBuf,
     retry_after: Option<Instant>,
+    cleanup_blocked: bool,
 }
 enum Decoder {
     Generic(WhisperContext),
@@ -52,11 +53,14 @@ impl Decoder {
                 .enable_all()
                 .build()
             {
-                let client = runtime
-                    .block_on(notdot_wake_runtime::client::Client::start(
-                        &helper, model, phrase,
-                    ))
-                    .ok();
+                let started = runtime.block_on(notdot_wake_runtime::client::Client::start(
+                    &helper, model, phrase,
+                ));
+                let (client, cleanup_blocked) = match started {
+                    Ok(client) => (Some(client), false),
+                    Err(notdot_wake_runtime::client::Failure::CleanupUnconfirmed) => (None, true),
+                    Err(_) => (None, false),
+                };
                 let retry_after = client
                     .is_none()
                     .then(|| Instant::now() + Duration::from_secs(30));
@@ -66,6 +70,7 @@ impl Decoder {
                     resource_root: root.to_owned(),
                     model: model.to_owned(),
                     retry_after,
+                    cleanup_blocked,
                 })));
             }
         }
@@ -132,7 +137,10 @@ impl Decoder {
             #[cfg(windows)]
             Self::Accelerated(accelerated) => {
                 let AcceleratedDecoder {
-                    runtime, client, ..
+                    runtime,
+                    client,
+                    cleanup_blocked,
+                    ..
                 } = accelerated.as_mut();
                 let audio = notdot_wake_runtime::engine::normalize(samples, rate)?;
                 if client.is_none() {
@@ -156,6 +164,11 @@ impl Decoder {
                     Err(notdot_wake_runtime::client::Failure::Unavailable) => {
                         *client = None;
                         Err("Backup wake recognition was interrupted. It is restarting.".into())
+                    }
+                    Err(notdot_wake_runtime::client::Failure::CleanupUnconfirmed) => {
+                        *client = None;
+                        *cleanup_blocked = true;
+                        Err("Wake recognition could not stop safely. Restart notdot before trying again.".into())
                     }
                 }
             }
@@ -190,6 +203,9 @@ impl Decoder {
         }
         #[cfg(windows)]
         if let Self::Accelerated(a) = self {
+            if a.cleanup_blocked {
+                return Some(Err("Wake recognition cleanup was not confirmed. Restart notdot before trying again.".into()));
+            }
             if a.client.is_some() || a.retry_after.is_some_and(|at| Instant::now() < at) {
                 return None;
             }
@@ -218,6 +234,10 @@ impl Decoder {
                     None
                 }
                 Err(notdot_wake_runtime::client::Failure::Unavailable) => Some(Err("Backup wake recognition could not restart. Check whether your security software blocked notdot.".into())),
+                Err(notdot_wake_runtime::client::Failure::CleanupUnconfirmed) => {
+                    a.cleanup_blocked = true;
+                    Some(Err("Wake recognition cleanup was not confirmed. Restart notdot before trying again.".into()))
+                }
             };
         }
         #[cfg(not(windows))]
@@ -553,6 +573,7 @@ mod tests {
         let Decoder::Accelerated(a) = &mut decoder else {
             unreachable!()
         };
+        let original_root = a.resource_root.clone();
         assert!(a.runtime.block_on(a.client.as_mut().unwrap().shutdown()));
         a.client = None;
         a.resource_root = directory.path().to_owned();
@@ -563,6 +584,16 @@ mod tests {
         assert!(
             decoder.recover("Hey Ava", epoch, 0).is_none(),
             "a failed recovery must back off"
+        );
+        let Decoder::Accelerated(a) = &mut decoder else {
+            unreachable!()
+        };
+        a.resource_root = original_root;
+        a.retry_after = None;
+        a.cleanup_blocked = true;
+        assert!(
+            matches!(decoder.recover("Hey Ava", Arc::new(AtomicU64::new(0)), 0), Some(Err(error)) if error.contains("cleanup")),
+            "unconfirmed old-child cleanup must block a replacement even with valid resources"
         );
         assert!(decoder.shutdown());
         assert!(notdot_wake_runtime::client::all_helpers_reaped());
