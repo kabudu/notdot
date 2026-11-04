@@ -10,7 +10,7 @@
     "e562a2ddfaf8280537795ac5ecd34e3012b6582a147ef69ba6a6a5c08c84757d",
     "f0510d3b9d1223c45e8fdd2b49270ec8734fff491c7f7d1b948ee70162e1ceff"
   ],
-  "cargo_lock_sha256": "40011c8b0852df85ed6b8eaefacaab7effbef89afa27c72dcc18b9ba72e62469",
+  "cargo_lock_sha256": "1c138a8d7144b7f591a07379aaa7ce59db242a42857ecb5e19b128b31c1f6375",
   "first_party_license": "Apache-2.0",
   "native_source_components": [
     {
@@ -79,7 +79,7 @@
   ],
   "packages": [
     {
-      "id": "workspace:notdot-core@0.1.0",
+      "id": "workspace:notdot-core@0.2.0",
       "license_expression": "Apache-2.0",
       "name": "notdot-core",
       "original_notices": [
@@ -95,10 +95,10 @@
       "standard_terms": {
         "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
       },
-      "version": "0.1.0"
+      "version": "0.2.0"
     },
     {
-      "id": "workspace:notdot-orb@0.1.0",
+      "id": "workspace:notdot-orb@0.2.0",
       "license_expression": "Apache-2.0",
       "name": "notdot-orb",
       "original_notices": [
@@ -114,10 +114,10 @@
       "standard_terms": {
         "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
       },
-      "version": "0.1.0"
+      "version": "0.2.0"
     },
     {
-      "id": "workspace:notdot-voice@0.1.0",
+      "id": "workspace:notdot-voice@0.2.0",
       "license_expression": "Apache-2.0",
       "name": "notdot-voice",
       "original_notices": [
@@ -133,10 +133,10 @@
       "standard_terms": {
         "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
       },
-      "version": "0.1.0"
+      "version": "0.2.0"
     },
     {
-      "id": "workspace:notdot-wake-runtime@0.1.0",
+      "id": "workspace:notdot-wake-runtime@0.2.0",
       "license_expression": "Apache-2.0",
       "name": "notdot-wake-runtime",
       "original_notices": [
@@ -152,10 +152,10 @@
       "standard_terms": {
         "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
       },
-      "version": "0.1.0"
+      "version": "0.2.0"
     },
     {
-      "id": "workspace:notdot@0.1.0",
+      "id": "workspace:notdot@0.2.0",
       "license_expression": "Apache-2.0",
       "name": "notdot",
       "original_notices": [
@@ -172,7 +172,7 @@
       "standard_terms": {
         "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
       },
-      "version": "0.1.0"
+      "version": "0.2.0"
     },
     {
       "id": "vendored:glib@0.18.5",
@@ -12216,10 +12216,10 @@
   "targets": {
     "aarch64-apple-darwin": {
       "packages": [
-        "workspace:notdot-core@0.1.0",
-        "workspace:notdot-voice@0.1.0",
-        "workspace:notdot-wake-runtime@0.1.0",
-        "workspace:notdot@0.1.0",
+        "workspace:notdot-core@0.2.0",
+        "workspace:notdot-voice@0.2.0",
+        "workspace:notdot-wake-runtime@0.2.0",
+        "workspace:notdot@0.2.0",
         "registry+https://github.com/rust-lang/crates.io-index#adler2@2.0.1",
         "registry+https://github.com/rust-lang/crates.io-index#aho-corasick@1.1.5",
         "registry+https://github.com/rust-lang/crates.io-index#alloc-no-stdlib@3.0.0",
@@ -12571,7 +12571,7 @@
     },
     "wasm32-unknown-unknown": {
       "packages": [
-        "workspace:notdot-orb@0.1.0",
+        "workspace:notdot-orb@0.2.0",
         "registry+https://github.com/rust-lang/crates.io-index#bumpalo@3.20.3",
         "registry+https://github.com/rust-lang/crates.io-index#cfg-if@1.0.5",
         "registry+https://github.com/rust-lang/crates.io-index#futures-core@0.3.34",
@@ -12607,10 +12607,10 @@
     },
     "x86_64-pc-windows-msvc": {
       "packages": [
-        "workspace:notdot-core@0.1.0",
-        "workspace:notdot-voice@0.1.0",
-        "workspace:notdot-wake-runtime@0.1.0",
-        "workspace:notdot@0.1.0",
+        "workspace:notdot-core@0.2.0",
+        "workspace:notdot-voice@0.2.0",
+        "workspace:notdot-wake-runtime@0.2.0",
+        "workspace:notdot@0.2.0",
         "registry+https://github.com/rust-lang/crates.io-index#adler2@2.0.1",
         "registry+https://github.com/rust-lang/crates.io-index#aho-corasick@1.1.5",
         "registry+https://github.com/rust-lang/crates.io-index#alloc-no-stdlib@3.0.0",
@@ -12943,10 +12943,10 @@
     },
     "x86_64-unknown-linux-gnu": {
       "packages": [
-        "workspace:notdot-core@0.1.0",
-        "workspace:notdot-voice@0.1.0",
-        "workspace:notdot-wake-runtime@0.1.0",
-        "workspace:notdot@0.1.0",
+        "workspace:notdot-core@0.2.0",
+        "workspace:notdot-voice@0.2.0",
+        "workspace:notdot-wake-runtime@0.2.0",
+        "workspace:notdot@0.2.0",
         "vendored:glib@0.18.5",
         "registry+https://github.com/rust-lang/crates.io-index#adler2@2.0.1",
         "registry+https://github.com/rust-lang/crates.io-index#aho-corasick@1.1.5",
@@ -18007,7 +18007,7 @@
       "origins": [
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot-core@0.1.0",
+          "package": "workspace:notdot-core@0.2.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",
@@ -18017,7 +18017,7 @@
         },
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot-orb@0.1.0",
+          "package": "workspace:notdot-orb@0.2.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",
@@ -18027,7 +18027,7 @@
         },
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot-voice@0.1.0",
+          "package": "workspace:notdot-voice@0.2.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",
@@ -18037,7 +18037,7 @@
         },
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot-wake-runtime@0.1.0",
+          "package": "workspace:notdot-wake-runtime@0.2.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",
@@ -18047,7 +18047,7 @@
         },
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot@0.1.0",
+          "package": "workspace:notdot@0.2.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",
@@ -26772,7 +26772,7 @@
       "origins": [
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot-core@0.1.0",
+          "package": "workspace:notdot-core@0.2.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",
@@ -26782,7 +26782,7 @@
         },
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot-orb@0.1.0",
+          "package": "workspace:notdot-orb@0.2.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",
@@ -26792,7 +26792,7 @@
         },
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot-voice@0.1.0",
+          "package": "workspace:notdot-voice@0.2.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",
@@ -26802,7 +26802,7 @@
         },
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot-wake-runtime@0.1.0",
+          "package": "workspace:notdot-wake-runtime@0.2.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",
@@ -26812,7 +26812,7 @@
         },
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot@0.1.0",
+          "package": "workspace:notdot@0.2.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",
@@ -26822,7 +26822,7 @@
         },
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot@0.1.0",
+          "package": "workspace:notdot@0.2.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",
@@ -27160,7 +27160,7 @@
       "origins": [
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot@0.1.0",
+          "package": "workspace:notdot@0.2.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",
