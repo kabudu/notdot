@@ -2,7 +2,7 @@
 
 ## Scope
 
-Changes on `codex/chat-access-wake-reliability`, following the 0.2.0 release. Testing used the Mac host, its authenticated local Codex runtime, Terra Medium, the bundled wake models and synthetic fixtures. The installed 0.2.0 app and its saved voice keys were not replaced or modified during implementation. No new QA app was installed.
+Changes on `codex/chat-access-wake-reliability`, following the 0.2.0 release. Testing used the Mac host, its authenticated local Codex runtime, Terra Medium, the bundled wake models and synthetic fixtures. The installed 0.2.0 app and its saved voice keys were initially untouched; the follow-up installed-app checks below used a locally built, Developer ID-signed universal replacement at the user’s request. No new QA app was installed.
 
 ## Chat access
 
@@ -35,3 +35,11 @@ These tests do not establish the cause of the single missed acoustic activation 
 ## Checks
 
 `scripts/ci-local.sh` passed: release-mode workspace tests, native and WASM Clippy (including the debug-only UI feature), format checks, gesture/visual/speech-queue checks and 99 Python checks. Live chat checks used the authenticated runtime without API-key exports or requests for saved voice keys. See the PR checks for Windows and Linux build results.
+
+## Installed-app follow-up
+
+The source build replaced `/Applications/notdot.app`, using the production bundle identifier and existing Developer ID requirement. The previous official bundle is retained as an ignored rollback ZIP, not a second installed app. Both Intel and Apple Silicon slices and the signature were verified. These local builds are signed but not notarised; public release notarisation remains in GitHub Actions. Settings and keys were preserved, with Read only added as the default setting. No new saved-key prompt was needed.
+
+Speaker-to-microphone checks exercised Deepgram, Terra Medium, ElevenLabs playback and the real orb. A spoken lookup recovered the synthetic chat’s amber marker; the follow-up window accepted “That’s all”. A separate confirmed send left the synthetic target unchanged before “Yes, send it”, then created exactly one target turn and received the expected reply. These are generated-speaker acoustic tests, not a new human-listening assessment.
+
+Further tests exposed two transcription errors in synthetic proper names; neither caused an unconfirmed send. They also reproduced a real lookup defect: Codex’s `searchTerm` returned no match for `shopping list` but found `Shopping list`. The adapter now pages bounded metadata and filters titles without case sensitivity. A regression test failed before the fix and passed afterwards; duplicate case variants across pages and exhausted scan budgets are also covered. Requests still return at most ten matching titles, and cursors continue the bounded search. The direct-control uniqueness check examines at most 1,000 titles and asks for confirmation if the budget is exhausted. The action tool description now explicitly excludes routing words from the message while preserving the target instruction verbatim.

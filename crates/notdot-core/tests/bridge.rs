@@ -472,6 +472,83 @@ async fn live_untrusted_memory_text_cannot_write_files_or_store_a_secret() {
 }
 
 #[tokio::test]
+async fn chat_search_and_uniqueness_stop_at_their_scan_budgets() {
+    let (_dir, path) = server(
+        r#"import json,sys
+for line in sys.stdin:
+ m=json.loads(line);method=m.get('method')
+ if method=='initialize':r={}
+ elif method=='thread/read':r={'thread':{'id':'one','name':'Unique'}}
+ elif method=='thread/list':
+  p=m['params'];page=int(p.get('cursor') or '0')
+  assert page<10
+  r={'data':[{'id':'one','name':'Unique'}] if page==0 else [],'nextCursor':str(page+1)}
+ elif method=='initialized':continue
+ else:raise AssertionError('unexpected method '+str(method))
+ print(json.dumps({'id':m['id'],'result':r}),flush=True)
+"#,
+    );
+    let b = Bridge::connect(&path).await.unwrap();
+    let found = notdot_core::chat_tools::call(&b, "find_chats", json!({"query":"absent"}))
+        .await
+        .unwrap();
+    assert_eq!(found["chats"], json!([]));
+    assert_eq!(found["next_cursor"], "10");
+    let prepared = notdot_core::chat_tools::call(
+        &b,
+        "prepare_chat_action",
+        json!({"action":"send","thread_id":"one","message":"Reply ready."}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(prepared["prepared_action"]["unambiguous"], false);
+    b.shutdown().await;
+}
+
+#[tokio::test]
+async fn chat_lookup_ignores_title_case_and_checks_duplicates_across_pages() {
+    let (_dir, path) = server(
+        r#"import json,sys
+for line in sys.stdin:
+ m=json.loads(line);method=m.get('method')
+ if method=='initialize':r={}
+ elif method=='thread/read':r={'thread':{'id':'one','name':'Shopping list'}}
+ elif method=='thread/list':
+  p=m['params']
+  if p.get('searchTerm'):r={'data':[],'nextCursor':None}
+  elif p.get('cursor')=='second':r={'data':[{'id':'two','name':'SHOPPING LIST'}],'nextCursor':None}
+  else:r={'data':[{'id':'one','name':'Shopping list'}],'nextCursor':'second'}
+ elif method=='initialized':continue
+ else:raise AssertionError('unexpected method '+str(method))
+ print(json.dumps({'id':m['id'],'result':r}),flush=True)
+"#,
+    );
+    let b = Bridge::connect(&path).await.unwrap();
+    let found = notdot_core::chat_tools::call(&b, "find_chats", json!({"query":"shopping list"}))
+        .await
+        .unwrap();
+    assert_eq!(found["chats"][0]["id"], "one");
+    assert_eq!(found["next_cursor"], "second");
+    let second = notdot_core::chat_tools::call(
+        &b,
+        "find_chats",
+        json!({"query":"shopping list","cursor":"second"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(second["chats"][0]["id"], "two");
+    let prepared = notdot_core::chat_tools::call(
+        &b,
+        "prepare_chat_action",
+        json!({"action":"send","thread_id":"one","message":"Reply ready."}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(prepared["prepared_action"]["unambiguous"], false);
+    b.shutdown().await;
+}
+
+#[tokio::test]
 async fn chat_tools_only_read_bounded_public_messages() {
     let (_dir, path) = server(
         r#"import json,sys
@@ -479,7 +556,7 @@ for line in sys.stdin:
  m=json.loads(line);method=m.get('method')
  if method=='initialize':result={}
  elif method=='thread/list':
-  assert m['params']['limit']==10 and m['params']['searchTerm']=='Scarf'
+  assert m['params']['limit']==10 and 'searchTerm' not in m['params']
   result={'data':[{'id':'chat-one','name':'Scarf project','preview':'PRIVATE PREVIEW','path':'PRIVATE PATH','updatedAt':123}],'nextCursor':'next'}
  elif method=='thread/turns/list':
   assert m['params']=={'threadId':'chat-one','limit':5,'cursor':None,'sortDirection':'desc','itemsView':'full'}
@@ -820,10 +897,8 @@ for line in sys.stdin:
   tid=m['params']['threadId'];name={'unique':'Unique','ambiguous':'Duplicate'}.get(tid)
   r={'thread':{'id':tid,'name':name,'preview':'An untitled synthetic task'}}
  elif method=='thread/list':
-  title=m['params']['searchTerm']
-  if title=='Unique':data=[{'id':'unique','name':'Unique'}]
-  elif title=='Duplicate':data=[{'id':'ambiguous','name':'Duplicate'},{'id':'other','name':'Duplicate'}]
-  else:data=[]
+  assert 'searchTerm' not in m['params']
+  data=[{'id':'unique','name':'Unique'},{'id':'ambiguous','name':'Duplicate'},{'id':'other','name':'DUPLICATE'}]
   r={'data':data,'nextCursor':None}
  elif method=='initialized':continue
  else:raise AssertionError('preparation must not mutate: '+str(method))
