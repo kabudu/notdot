@@ -321,7 +321,10 @@ pub async fn announce_followup(
             }
         }
     };
-    let result = tokio::select! {r=super::system_speech::speak(&message)=>r,_=interrupt=>Err("Follow-up permission was withdrawn".into())};
+    let result = tokio::select! {
+        r = super::system_speech::speak(&message) => r,
+        _ = interrupt => return Err("Follow-up cancelled".into()),
+    };
     if let Err(ref e) = result {
         *state.initiative.error.lock().await =
             Some(format!("Spoken follow-up failed; read it in Settings: {e}"));

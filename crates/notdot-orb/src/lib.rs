@@ -2964,7 +2964,9 @@ pub fn start() -> Result<(), JsValue> {
                             let spoken = match call("announce_followup", json!({"id":id})).await {
                                 Ok(_) => true,
                                 Err(e) => {
-                                    message(e);
+                                    if companion.borrow().generation == generation {
+                                        message(e);
+                                    }
                                     false
                                 }
                             };

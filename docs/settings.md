@@ -34,7 +34,7 @@ Reports wait until you are idle, with Settings closed and the microphone unmuted
 
 The orb shows a pending follow-up dot. Review or dismiss reports in **Follow-ups**. If follow-up listening is enabled, you can answer after a report without another wake phrase. Listening starts only after speech ends and the echo guard has passed. Say **“That’s all”**, press Escape or stay silent to stop. Escape and opening Settings also cancel a spoken report.
 
-Completed reports are saved locally for up to seven days. A claimed report is marked delivered before playback to avoid duplicate announcements after a crash; interrupted or failed audio remains available for review. Keep notdot open while tasks run: it cannot resume tracking a running task after restarting. Turning off Report task results affects future requests; dismiss already requested reports in Follow-ups to cancel them.
+Completed reports remain available locally for seven days. A claimed report is marked delivered before playback to avoid duplicate announcements after a crash; interrupted or failed audio remains available for review. Keep notdot open while tasks run: it cannot resume tracking a running task after restarting. Turning off Report task results affects future requests; dismiss already requested reports in Follow-ups to cancel them.
 
 Each spoken request controls one chat action. With control enabled, notdot can send work to an available chat, add an instruction to a task it started, stop that task, and check its progress. A send acknowledgement means Codex accepted the request, not that the work finished. Ask notdot to check progress or read the chat for the answer.
 
