@@ -13,11 +13,56 @@ use std::{
     },
 };
 use tokio::sync::{Mutex, Notify};
+#[derive(Clone, Debug)]
+pub struct Completion {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub title: String,
+    pub status: String,
+    pub summary: String,
+}
+impl Completion {
+    pub fn key(&self) -> String {
+        format!("task:{}:{}", self.thread_id, self.turn_id)
+    }
+    pub fn message(&self) -> String {
+        let title: String = self.title.chars().take(64).collect();
+        let summary: String = self.summary.chars().take(180).collect();
+        match self.status.as_str() {
+            "completed" if !summary.is_empty() => {
+                format!("Codex finished its reply in {title}. It said: {summary}")
+            }
+            "completed" => format!(
+                "Codex finished its reply in {title}. Ask me to read that chat for the result."
+            ),
+            "interrupted" => format!(
+                "The Codex turn in {title} was interrupted. Some background work may continue."
+            ),
+            "failed" => {
+                format!("The Codex turn in {title} failed. Ask me to read that chat for details.")
+            }
+            "approval_required" => format!(
+                "{title} needs attention in Codex. notdot could not handle an approval request; no approval was granted."
+            ),
+            _ => format!(
+                "I lost track of the task in {title}. Check that chat before sending it again. Nothing was retried."
+            ),
+        }
+    }
+}
+struct Running {
+    turn: Option<String>,
+    title: String,
+    notify: bool,
+    summary: String,
+    approval_blocked: bool,
+}
 pub struct SessionRuntime {
     bridge: Arc<Bridge>,
     healthy: AtomicBool,
     gate: Mutex<()>,
-    active: Mutex<HashMap<String, Option<String>>>,
+    active: Mutex<HashMap<String, Running>>,
+    completions: Mutex<VecDeque<Completion>>,
     finished: Mutex<VecDeque<(String, String)>>,
     releasing: Mutex<HashMap<String, Arc<Notify>>>,
 }
@@ -30,6 +75,7 @@ impl SessionRuntime {
             healthy: AtomicBool::new(true),
             gate: Mutex::new(()),
             active: Mutex::new(HashMap::new()),
+            completions: Mutex::new(VecDeque::new()),
             finished: Mutex::new(VecDeque::new()),
             releasing: Mutex::new(HashMap::new()),
         });
@@ -39,7 +85,7 @@ impl SessionRuntime {
                 let event = events.recv().await;
                 let Some(session) = weak.upgrade() else { break };
                 let Ok(event) = event else {
-                    session.healthy.store(false, Ordering::SeqCst);
+                    session.lost_state().await;
                     break;
                 };
                 let tid = event["params"]["threadId"].as_str().unwrap_or("");
@@ -48,21 +94,44 @@ impl SessionRuntime {
                         if let Some(turn) = event["params"]["turn"]["id"].as_str() {
                             let mut active = session.active.lock().await;
                             if let Some(slot) = active.get_mut(tid) {
-                                *slot = Some(turn.into());
+                                slot.turn = Some(turn.into());
                             }
                         }
                     }
                     Some("turn/completed") => {
                         let turn = event["params"]["turn"]["id"].as_str();
                         let mut active = session.active.lock().await;
-                        if active.get(tid).is_some_and(|t| t.as_deref() == turn) {
+                        if let Some(turn) = turn
+                            && active
+                                .get(tid)
+                                .is_some_and(|t| t.turn.as_deref() == Some(turn))
+                        {
                             let notify = Arc::new(Notify::new());
                             session
                                 .releasing
                                 .lock()
                                 .await
                                 .insert(tid.into(), notify.clone());
-                            active.remove(tid);
+                            let task = active.remove(tid).expect("matched owned task");
+                            if task.notify {
+                                let status = if task.approval_blocked {
+                                    "approval_required"
+                                } else {
+                                    event["params"]["turn"]["status"]
+                                        .as_str()
+                                        .unwrap_or("unknown")
+                                };
+                                session.completions.lock().await.push_back(Completion {
+                                    thread_id: tid.into(),
+                                    turn_id: turn.into(),
+                                    title: task.title,
+                                    status: status.into(),
+                                    summary: task.summary,
+                                });
+                            }
+                            // Admission reads active before completions. Publish
+                            // the receipt before releasing active so that a
+                            // concurrent send cannot undercount pending work.
                             drop(active);
                             let mut finished = session.finished.lock().await;
                             finished.retain(|(id, _)| id != tid);
@@ -104,16 +173,40 @@ impl SessionRuntime {
                             });
                         }
                     }
+                    Some("item/completed") => {
+                        let item = &event["params"]["item"];
+                        let mut active = session.active.lock().await;
+                        if let Some(task) = active.get_mut(tid)
+                            && task
+                                .turn
+                                .as_deref()
+                                .is_some_and(|turn| event["params"]["turnId"] == turn)
+                            && item["type"] == "agentMessage"
+                            && (item["phase"].is_null() || item["phase"] == "final_answer")
+                            && let Some(text) = item["text"].as_str()
+                        {
+                            task.summary = text
+                                .chars()
+                                .map(|c| if c.is_control() { ' ' } else { c })
+                                .take(300)
+                                .collect();
+                        }
+                    }
+                    Some("notdot/unsupportedRequest") => {
+                        if let Some(task) = session.active.lock().await.get_mut(tid) {
+                            task.approval_blocked = true;
+                        }
+                    }
                     Some("thread/closed") => {
-                        if let Some(notify) = session.releasing.lock().await.remove(tid) {
+                        let notify = session.releasing.lock().await.remove(tid);
+                        if let Some(notify) = notify {
                             notify.notify_one();
                         } else if session.active.lock().await.contains_key(tid) {
-                            session.healthy.store(false, Ordering::SeqCst);
+                            session.lost_state().await;
                         }
                     }
                     Some("notdot/disconnected") => {
-                        session.healthy.store(false, Ordering::SeqCst);
-                        session.active.lock().await.clear();
+                        session.lost_state().await;
                         break;
                     }
                     _ => {}
@@ -122,11 +215,46 @@ impl SessionRuntime {
         });
         Ok(session)
     }
+    async fn lost_state(&self) {
+        self.healthy.store(false, Ordering::SeqCst);
+        let mut active = self.active.lock().await;
+        let mut completions = self.completions.lock().await;
+        for (thread_id, task) in active.drain() {
+            if task.notify {
+                completions.push_back(Completion {
+                    thread_id,
+                    turn_id: task.turn.unwrap_or_else(|| "unconfirmed".into()),
+                    title: task.title,
+                    status: "unknown".into(),
+                    summary: String::new(),
+                });
+            }
+        }
+    }
+    /// Peek until the host durably saves the notice, then acknowledge it. This
+    /// prevents a transient disk error from silently dropping a completion.
+    pub async fn completion(&self) -> Option<Completion> {
+        self.completions.lock().await.front().cloned()
+    }
+    pub async fn acknowledge_completion(&self, key: &str) {
+        let mut queue = self.completions.lock().await;
+        if queue.front().is_some_and(|notice| notice.key() == key) {
+            queue.pop_front();
+        }
+    }
     /// Runtime events for host progress reporting. Callers must filter by their owned chat IDs.
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<serde_json::Value> {
         self.bridge.subscribe()
     }
     pub async fn execute(&self, authority: Authorised) -> Result<String, String> {
+        self.execute_with_notifications(authority, false).await
+    }
+    pub async fn execute_with_notifications(
+        &self,
+        authority: Authorised,
+        notify_default: bool,
+    ) -> Result<String, String> {
+        let notify = notify_default || authority.notify_on_completion();
         let plan = authority.plan();
         plan.validate()?;
         if !self.healthy.load(Ordering::SeqCst) {
@@ -204,6 +332,9 @@ impl SessionRuntime {
             if releasing.contains_key(&plan.thread_id) {
                 return Err("That chat is releasing its previous turn. Nothing was sent; ask again once it closes.".into());
             }
+            if count + self.completions.lock().await.len() >= 24 {
+                return Err("Task reports are waiting to be saved. Review follow-ups before starting more work.".into());
+            }
             if count + releasing.len() >= 4 {
                 return Err("Four chats are already running. Wait for one to finish.".into());
             }
@@ -237,10 +368,16 @@ impl SessionRuntime {
                     .await;
                 return Err("Chat action cancelled before sending. Nothing was sent.".into());
             }
-            self.active
-                .lock()
-                .await
-                .insert(plan.thread_id.clone(), None);
+            self.active.lock().await.insert(
+                plan.thread_id.clone(),
+                Running {
+                    turn: None,
+                    title: plan.title.clone(),
+                    notify,
+                    summary: String::new(),
+                    approval_blocked: false,
+                },
+            );
             // Preserve the target's model, working directory and permission profile.
             let started=self.bridge.call("turn/start",json!({"threadId":plan.thread_id,"input":[{"type":"text","text":plan.message}]})).await;
             match started {
@@ -249,9 +386,17 @@ impl SessionRuntime {
                         "The target did not confirm a turn. Check that chat before sending again.",
                     )?;
                     if let Some(slot) = self.active.lock().await.get_mut(&plan.thread_id) {
-                        *slot = Some(turn.into());
+                        slot.turn = Some(turn.into());
                     }
-                    Ok(format!("Sent to {}. Codex accepted the task.", plan.title))
+                    Ok(format!(
+                        "Sent to {}. Codex accepted the task.{}",
+                        plan.title,
+                        if notify {
+                            " I'll report when its reply ends, respecting quiet hours."
+                        } else {
+                            ""
+                        }
+                    ))
                 }
                 Err(error) => {
                     if error.contains("timed out") {
@@ -266,12 +411,16 @@ impl SessionRuntime {
                 }
             }
         } else {
-            let turn=self.active.lock().await.get(&plan.thread_id).and_then(Clone::clone).ok_or("Notdot does not own a running task in that chat. It cannot steer or stop a desktop-owned session.")?;
+            let turn=self.active.lock().await.get(&plan.thread_id).and_then(|task| task.turn.clone()).ok_or("Notdot does not own a running task in that chat. It cannot steer or stop a desktop-owned session.")?;
             if !authority.is_valid() {
                 return Err("Chat action cancelled or expired".into());
             }
             match plan.action {
                 Action::Steer => {
+                    if notify && let Some(task) = self.active.lock().await.get_mut(&plan.thread_id)
+                    {
+                        task.notify = true;
+                    }
                     self.bridge.call("turn/steer",json!({"threadId":plan.thread_id,"expectedTurnId":turn,"input":[{"type":"text","text":plan.message}]})).await?;
                     Ok(format!("Added the instruction to {}.", plan.title))
                 }
@@ -287,7 +436,7 @@ impl SessionRuntime {
                             .lock()
                             .await
                             .get(&plan.thread_id)
-                            .and_then(|t| t.as_deref())
+                            .and_then(|t| t.turn.as_deref())
                             != Some(turn.as_str())
                         {
                             return Ok(format!(

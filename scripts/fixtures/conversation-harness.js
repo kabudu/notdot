@@ -4,10 +4,10 @@
   'use strict';
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const copy = x => JSON.parse(JSON.stringify(x));
-  const settings = {name:'Ava',model:'gpt-6.1-terra',effort:'medium',hue:192,voice_id:'synthetic',voice_provider:'elevenlabs',speech_language:'en',stt_provider:'voice',voice_name:'Synthetic',memory_enabled:false,session_control:'read_only',initiative:{behaviour:'reactive',quiet_start:1320,quiet_end:480,daily_limit:3,gap_minutes:60},onboarding_complete:true,thread_id:'synthetic-thread',startup:'manual',open_desktop:false,automatic_updates:false,followup_enabled:false,followup_seconds:3,wake_enabled:false,wake_name_only:false,microphone_muted:false};
+  const settings = {name:'Ava',model:'gpt-6.1-terra',effort:'medium',hue:192,voice_id:'synthetic',voice_provider:'elevenlabs',speech_language:'en',stt_provider:'voice',voice_name:'Synthetic',memory_enabled:false,session_control:'read_only',task_notifications:false,initiative:{behaviour:'reactive',quiet_start:1320,quiet_end:480,daily_limit:3,gap_minutes:60},onboarding_complete:true,thread_id:'synthetic-thread',startup:'manual',open_desktop:false,automatic_updates:false,followup_enabled:false,followup_seconds:3,wake_enabled:false,wake_name_only:false,microphone_muted:false};
   const state = {settings,phase:'idle',reply:'',speech:{turn:'',text:'',done:false,failed:false},request_id:null,error:null,key_configured:true,key_checking:false,key_authorized:true,stt_ready:true,window_visible:true,version:'test',desktop_launch_supported:false,updates:{phase:'idle',version:null,message:'',received:0,total:null,prompt:false},quota:{},wake:{phase:'paused'},learning:{},initiative:{}};
   const log = [], callbacks = [], timers = new Set(), cancelled = new Set();
-  let active = 0, lastEnd = -Infinity, turn = 0, capture = 0, transcript = '', delayedStart = false;
+  let active = 0, lastEnd = -Infinity, turn = 0, capture = 0, transcript = '', delayedStart = false, noticeGeneration = 0;
   function later(ms, fn) { const id = setTimeout(() => {timers.delete(id);fn();},ms);timers.add(id);return id; }
   function record(event, detail={}) {log.push({event,at:performance.now(),...detail});}
   function emit(phase,token) {for (const cb of callbacks) cb({payload:{phase,token}});}
@@ -52,6 +52,13 @@
     if(cmd==='session_question'){record('session-question',{id:args.id});state.session_pending=null;return args.id.includes('automatic')?{outcome:'Sent to Synthetic.'}:{question:'Send the staged instruction to Synthetic? Say yes, send it.'};}
     if(cmd==='answer_session'){record('session-answer',{text:args.text});return args.text==='yes, send it'?'Sent to Synthetic.':'Cancelled. Nothing was sent.';}
     if(cmd==='cancel_session'){if(state.session_pending || args.id){record('session-cancel');state.session_pending=null;}return null;}
+    if(cmd==='cancel_followup_speech'){noticeGeneration++;record('notice-cancel');return null;}
+    if(cmd==='announce_followup'){
+      const generation=noticeGeneration;state.initiative={};active++;record('notice-start',{id:args.id});
+      await sleep(800);active--;lastEnd=performance.now();
+      if(generation!==noticeGeneration){record('notice-interrupted');throw Error('Follow-up cancelled');}
+      record('notice-end');return null;
+    }
     if(cmd==='speak'){record('synthesize');return audio;}
     if(cmd==='save_settings'){Object.assign(settings,args.settings);record('saved');return null;}
     if(cmd==='set_microphone_muted'){settings.microphone_muted=args.muted;return null;}
@@ -65,7 +72,7 @@
   function submit(text){transcript=text;state.wake.phase='ready';state.wake.request_id=++capture;emit('ready',state.wake.capture_token);}
   async function initial(){const n=count('capture');orbClick();await until(()=>count('capture')===n+1);submit('Help me plan tomorrow.');}
   async function nextWindow(){const n=count('capture');await until(()=>count('capture')===n+1);await until(()=>document.getElementById('orb').dataset.state==='followup');}
-  async function clean(){pressEscape();for(const id of timers)clearTimeout(id);timers.clear();active=0;Object.assign(settings,{followup_enabled:true,followup_seconds:3,wake_enabled:false,microphone_muted:false});state.session_pending=null;state.window_visible=true;state.phase='idle';state.wake={phase:'paused'};state.speech={turn:'',text:'',done:false,failed:false};document.getElementById('panel').close();await sleep(650);}
+  async function clean(){pressEscape();for(const id of timers)clearTimeout(id);timers.clear();active=0;Object.assign(settings,{followup_enabled:true,followup_seconds:3,wake_enabled:false,microphone_muted:false});state.session_pending=null;state.initiative={};state.window_visible=true;state.phase='idle';state.wake={phase:'paused'};state.speech={turn:'',text:'',done:false,failed:false};document.getElementById('panel').close();await sleep(650);}
   async function run(){
     const output=document.getElementById('harness-results'),passed=[];
     function ok(name,condition){if(!condition)throw Error(name);passed.push(name);output.textContent=JSON.stringify({status:'running',passed},null,2);}
@@ -91,7 +98,11 @@
       await clean();settings.followup_enabled=false;await sleep(600);let changes=count('session-answer');n=count('capture');state.session_pending='session-confirm';await until(()=>count('capture')===n+1);submit('yes, send it');await until(()=>count('session-answer')===changes+1);await sleep(600);ok('session action uses scoped spoken confirmation',count('session-answer')===changes+1);
       await clean();settings.followup_enabled=false;await sleep(600);n=count('capture');let questions=count('session-question');state.session_pending='session-automatic';await until(()=>count('session-question')===questions+1);await sleep(800);ok('authorised direct action does not open confirmation capture',count('capture')===n);
       await clean();settings.followup_enabled=false;await sleep(600);n=count('capture');changes=count('session-answer');let sessionCancels=count('session-cancel');state.session_pending='session-cancel';await until(()=>count('capture')===n+1);pressEscape();await until(()=>count('session-cancel')>sessionCancels);ok('Escape cancels session consent without sending an answer',count('session-answer')===changes);
-      await clean();document.getElementById('orb').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));await until(()=>!document.getElementById('model').disabled);document.getElementById('session-direct').checked=true;let savedMode=count('saved');document.getElementById('save-settings').click();await until(()=>count('saved')>savedMode);ok('session control mode persists through Settings',settings.session_control==='when_asked');
+      await clean();document.getElementById('orb').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));await until(()=>!document.getElementById('model').disabled);document.getElementById('session-direct').checked=true;document.getElementById('task-notifications').checked=true;let savedMode=count('saved');document.getElementById('save-settings').click();await until(()=>count('saved')>savedMode);ok('session control and task reporting preferences persist through Settings',settings.session_control==='when_asked' && settings.task_notifications===true);
+      await clean();settings.followup_enabled=false;await sleep(600);n=count('capture');let notices=count('notice-end');state.initiative={announce:'task-off',task_report:true};await until(()=>count('notice-end')===notices+1);await sleep(1300);ok('task result is spoken once without opening capture when follow-ups are off',count('capture')===n && count('notice-end')===notices+1);
+      await clean();await sleep(600);n=count('capture');m=count('message');state.initiative={announce:'task-on',task_report:true};await nextWindow();ok('completed task opens one opt-in follow-up after the audio echo guard',count('capture')===n+1);submit("That's all");await sleep(1000);ok('spoken stop after a task result does not send another request',count('message')===m);
+      await clean();settings.followup_enabled=false;settings.microphone_muted=true;await sleep(600);notices=count('notice-start');state.initiative={announce:'task-muted',task_report:true};await sleep(800);ok('muting defers task announcements',count('notice-start')===notices);settings.microphone_muted=false;await until(()=>count('notice-start')===notices+1);await until(()=>count('notice-end')>=notices+1);
+      await clean();await sleep(600);n=count('capture');notices=count('notice-start');let interrupted=count('notice-interrupted');state.initiative={announce:'task-cancel',task_report:true};await until(()=>count('notice-start')===notices+1);pressEscape();await until(()=>count('notice-interrupted')===interrupted+1);await sleep(1300);ok('Escape cancels task speech without resurrecting follow-up capture',count('capture')===n);
       await clean();const auto=log.filter(x=>x.event==='capture'&&x.followup);ok('no capture during playback or inter-sentence gaps',auto.length>=5 && auto.every(x=>x.gap>=590));
       output.textContent=JSON.stringify({status:'passed',passed,modelMessages:count('message'),automaticCaptures:auto.length,minimumEchoGapMs:Math.min(...auto.map(x=>x.gap)),adapters:'synthetic IPC, model, STT and audio; no real microphone, speaker, credentials or provider calls'},null,2);
     }catch(error){pressEscape();output.textContent=JSON.stringify({status:'failed',error:String(error),passed,lastEvents:log.filter(x=>x.event!=='lease').slice(-24)},null,2);}

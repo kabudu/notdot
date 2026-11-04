@@ -20,6 +20,7 @@ fn now() -> u64 {
 pub struct Status {
     pub available: usize,
     pub announce: Option<String>,
+    pub task_report: bool,
     pub error: Option<String>,
 }
 pub struct Initiative {
@@ -93,16 +94,16 @@ impl Initiative {
     pub async fn status(&self, policy: &notdot_core::initiative::Policy) -> Status {
         let j = self.journal.lock().await;
         let date = Local::now();
+        let next = j.next(
+            policy,
+            now(),
+            &date.format("%Y-%m-%d").to_string(),
+            (date.hour() * 60 + date.minute()) as u16,
+        );
         Status {
             available: j.available(policy, now()).len(),
-            announce: j
-                .next(
-                    policy,
-                    now(),
-                    &date.format("%Y-%m-%d").to_string(),
-                    (date.hour() * 60 + date.minute()) as u16,
-                )
-                .map(|e| e.id.clone()),
+            announce: next.map(|e| e.id.clone()),
+            task_report: next.is_some_and(|e| e.task_report()),
             error: self.error.lock().await.clone(),
         }
     }
@@ -115,6 +116,19 @@ impl Initiative {
             *j = updated;
         }
         Ok(())
+    }
+    pub async fn task_completed(
+        &self,
+        completion: &notdot_core::session_runtime::Completion,
+    ) -> Result<(), String> {
+        let time = now();
+        self.add(Entry {
+            id: uuid::Uuid::new_v4().to_string(), key: completion.key(),
+            message: completion.message(), source: completion.key(),
+            evidence: "Status from the exact Codex turn started by notdot. A completed turn does not independently verify external work.".into(),
+            created: time, due: time, expires: time + 7 * 86400,
+            permitted: true, delivered: false, dismissed: false,
+        }).await
     }
     pub async fn command(&self, text: &str, behaviour: Behaviour) -> Option<String> {
         if [
@@ -182,6 +196,10 @@ pub async fn followups(state: State<'_, Arc<AppState>>) -> Result<Vec<Entry>, St
         .collect())
 }
 #[tauri::command]
+pub fn cancel_followup_speech(state: State<'_, Arc<AppState>>) {
+    state.initiative.cancel();
+}
+#[tauri::command]
 pub async fn followup_action(
     state: State<'_, Arc<AppState>>,
     id: String,
@@ -195,7 +213,15 @@ pub async fn followup_action(
     Ok(())
 }
 #[tauri::command]
-pub async fn announce_followup(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+pub async fn announce_followup(
+    window: tauri::WebviewWindow,
+    state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<(), String> {
+    let generation = state.initiative.cancellation.load(Ordering::Relaxed);
+    if !window.is_visible().unwrap_or(false) || window.is_minimized().unwrap_or(true) {
+        return Err("Show notdot to hear a follow-up".into());
+    }
     let _turn = state
         .send_gate
         .try_lock()
@@ -206,7 +232,11 @@ pub async fn announce_followup(state: State<'_, Arc<AppState>>, id: String) -> R
         .map_err(|_| "Wait for voice processing")?;
     let policy = {
         let s = state.snapshot.lock().await;
-        if s.phase != "idle" || s.active_turn.is_some() || state.wake.status().phase == "capturing"
+        if s.phase != "idle"
+            || s.active_turn.is_some()
+            || s.settings.microphone_muted
+            || !s.window_visible
+            || state.wake.status().phase == "capturing"
         {
             return Err("Wait for the current turn".into());
         }
@@ -253,18 +283,34 @@ pub async fn announce_followup(state: State<'_, Arc<AppState>>, id: String) -> R
         message
     };
     state.wake.ready(false);
-    let generation = state.initiative.cancellation.load(Ordering::Relaxed);
+    if state.initiative.cancellation.load(Ordering::Relaxed) != generation {
+        return Err("Follow-up cancelled".into());
+    }
+    let task_report = source.is_none()
+        && state
+            .initiative
+            .journal
+            .lock()
+            .await
+            .entries
+            .iter()
+            .any(|entry| entry.id == id && entry.task_report());
     let interrupt = async {
         let mut ticks = tokio::time::interval(std::time::Duration::from_millis(100));
         loop {
             ticks.tick().await;
-            if (source.is_some() && state.memory.learning_ticket() != memory_ticket)
+            if !window.is_visible().unwrap_or(false)
+                || window.is_minimized().unwrap_or(true)
+                || (source.is_some() && state.memory.learning_ticket() != memory_ticket)
                 || state.initiative.cancellation.load(Ordering::Relaxed) != generation
             {
                 break;
             }
             let s = state.snapshot.lock().await;
-            if s.settings.initiative.behaviour != Behaviour::Proactive {
+            if s.settings.microphone_muted
+                || !s.window_visible
+                || (!task_report && s.settings.initiative.behaviour != Behaviour::Proactive)
+            {
                 break;
             }
             let j = state.initiative.journal.lock().await;
@@ -281,6 +327,42 @@ pub async fn announce_followup(state: State<'_, Arc<AppState>>, id: String) -> R
             Some(format!("Spoken follow-up failed; read it in Settings: {e}"));
     }
     result
+}
+/// Bounded, event-driven runtime queue; polling only moves completed receipts to
+/// the existing durable journal. It never polls Codex or starts another turn.
+pub fn spawn_task_reports(state: Arc<AppState>) {
+    tauri::async_runtime::spawn(async move {
+        let mut ticks = tokio::time::interval(std::time::Duration::from_millis(500));
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticks.tick().await;
+            let runtime = state.session_runtime.lock().await.clone();
+            let Some(runtime) = runtime else { continue };
+            let Some(completion) = runtime.completion().await else {
+                continue;
+            };
+            match state.initiative.task_completed(&completion).await {
+                Ok(()) => {
+                    let mut outcomes = state.session_outcomes.lock().await;
+                    outcomes.push_back(format!(
+                        "Task report for chat {}: {}",
+                        completion.thread_id,
+                        completion.message()
+                    ));
+                    while outcomes.len() > 8 {
+                        outcomes.pop_front();
+                    }
+                    drop(outcomes);
+                    runtime.acknowledge_completion(&completion.key()).await;
+                }
+                Err(error) => {
+                    *state.initiative.error.lock().await =
+                        Some(format!("Could not save a task report: {error}"));
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            }
+        }
+    });
 }
 /// Discover only source-grounded ongoing goals/projects. Discovery grants no
 /// interruption permission; each inferred check-in requires an explicit Allow.
@@ -475,5 +557,48 @@ mod tests {
             .unwrap();
         assert!(response.contains("Save follow-ups"));
         assert!(service.journal.lock().await.entries.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod task_completion_tests {
+    use super::*;
+    #[tokio::test]
+    async fn completed_report_survives_restart_and_duplicate_events_without_redelivery() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("followups.json");
+        let initiative = Initiative::open(path.clone()).unwrap();
+        let completion = notdot_core::session_runtime::Completion {
+            thread_id: "synthetic".into(),
+            turn_id: "owned-turn".into(),
+            title: "Synthetic task".into(),
+            status: "completed".into(),
+            summary: "The synthetic result is ready.".into(),
+        };
+        initiative.task_completed(&completion).await.unwrap();
+        initiative.task_completed(&completion).await.unwrap();
+        let restored = Initiative::open(path.clone()).unwrap();
+        let mut journal = restored.journal.lock().await;
+        assert_eq!(journal.entries.len(), 1);
+        let id = journal.entries[0].id.clone();
+        let policy = notdot_core::initiative::Policy {
+            quiet_start: 0,
+            quiet_end: 0,
+            ..Default::default()
+        };
+        let time = now();
+        assert!(
+            journal
+                .claim(&id, &policy, time, "today", 720)
+                .unwrap()
+                .contains("synthetic result")
+        );
+        restored.save(&journal).await.unwrap();
+        drop(journal);
+        let restarted = Initiative::open(path).unwrap();
+        restarted.task_completed(&completion).await.unwrap();
+        let journal = restarted.journal.lock().await;
+        assert_eq!(journal.entries.len(), 1);
+        assert!(journal.next(&policy, time + 10, "today", 720).is_none());
     }
 }

@@ -24,6 +24,18 @@ Choose what it may do under **Other Codex chats**:
 | **Confirm before sending** | Read back the destination and instruction before each change. Say **“yes, send it”**, or **“yes, stop it”** for stopping a task. A bare “yes” does not approve it. |
 | **Send when asked** | Act directly on an exact request such as **“Tell Website to make the button clearer”**, using the chat's saved name and your original words. Different or ambiguous wording is read back for confirmation. |
 
+### Hear task results
+
+Add **“and let me know when it’s done”** to a request, for example **“Tell Website to make the button clearer, and let me know when it’s done.”** Or turn on **Report task results** to receive reports for tasks notdot starts from then on. This does not change your chat-control permissions.
+
+notdot reports when the exact Codex turn ends, using a short excerpt of its final reply. A finished reply does not independently prove that a deployment, background process or other external work succeeded. Failures, interruptions and lost connections have different messages; notdot never retries a send automatically.
+
+Reports wait until you are idle, with Settings closed and the microphone unmuted. They respect your quiet hours. Requested results work even in Reactive mode and do not use the daily allowance for unsolicited check-ins; simultaneous reports are spaced at least five seconds apart. Reports use your computer’s voice, so they do not need another paid voice request.
+
+The orb shows a pending follow-up dot. Review or dismiss reports in **Follow-ups**. If follow-up listening is enabled, you can answer after a report without another wake phrase. Listening starts only after speech ends and the echo guard has passed. Say **“That’s all”**, press Escape or stay silent to stop. Escape and opening Settings also cancel a spoken report.
+
+Completed reports are saved locally for up to seven days. A claimed report is marked delivered before playback to avoid duplicate announcements after a crash; interrupted or failed audio remains available for review. Keep notdot open while tasks run: it cannot resume tracking a running task after restarting. Turning off Report task results affects future requests; dismiss already requested reports in Follow-ups to cancel them.
+
 Each spoken request controls one chat action. With control enabled, notdot can send work to an available chat, add an instruction to a task it started, stop that task, and check its progress. A send acknowledgement means Codex accepted the request, not that the work finished. Ask notdot to check progress or read the chat for the answer.
 
 Sending can start work using the target chat's existing model, working directory and permissions. notdot does not grant extra permissions. It cannot take over a chat held by the desktop app or another runtime, and it cannot steer or stop their active tasks. It explains that a handoff is needed instead of forcing one. Desktop-only tools and approval flows may still require the desktop app.

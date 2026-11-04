@@ -940,3 +940,181 @@ for line in sys.stdin:
     );
     b.shutdown().await;
 }
+
+#[tokio::test]
+async fn requested_task_report_is_exact_once_even_before_send_acknowledgement() {
+    use notdot_core::{session_control::Action, session_runtime::SessionRuntime};
+    let (_dir, path) = server(
+        r#"import json,sys
+for line in sys.stdin:
+ m=json.loads(line); method=m.get('method')
+ if method=='initialize':r={}
+ elif method=='thread/resume':r={'thread':{'id':'target','name':'Synthetic','status':{'type':'idle'}}}
+ elif method=='turn/start':
+  print(json.dumps({'method':'turn/started','params':{'threadId':'target','turn':{'id':'owned'}}}),flush=True)
+  for tid,turn,text,kind in [('foreign','owned','NEVER READ FOREIGN','agentMessage'),('target','stale','NEVER READ STALE','agentMessage'),('target','owned','NEVER READ TOOL','commandExecution'),('target','owned','The synthetic task is ready.','agentMessage')]:
+   print(json.dumps({'method':'item/completed','params':{'threadId':tid,'turnId':turn,'item':{'type':kind,'phase':'final_answer','text':text}}}),flush=True)
+  for tid,turn in [('foreign','owned'),('target','stale'),('target','owned'),('target','owned')]:
+   print(json.dumps({'method':'turn/completed','params':{'threadId':tid,'turn':{'id':turn,'status':'completed'}}}),flush=True)
+  r={'turn':{'id':'owned'}}
+ elif method=='thread/unsubscribe':r={'status':'notLoaded'}
+ else:continue
+ print(json.dumps({'id':m['id'],'result':r}),flush=True)
+"#,
+    );
+    let session = SessionRuntime::connect(&path).await.unwrap();
+    let (authority, _consent) = session_authority(Action::Send, "target", "synthetic work");
+    session
+        .execute_with_notifications(authority, true)
+        .await
+        .unwrap();
+    let report = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if let Some(r) = session.completion().await {
+                break r;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(report.turn_id, "owned");
+    assert_eq!(report.status, "completed");
+    assert!(report.message().contains("The synthetic task is ready."));
+    assert!(!report.message().contains("NEVER READ"));
+    assert_eq!(session.completion().await.unwrap().key(), report.key());
+    session.acknowledge_completion("wrong key").await;
+    assert!(session.completion().await.is_some());
+    session.acknowledge_completion(&report.key()).await;
+    session.shutdown().await;
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    assert!(session.completion().await.is_none());
+}
+
+#[tokio::test]
+async fn disconnected_task_never_reports_success_or_retries_and_opt_out_is_silent() {
+    use notdot_core::{session_control::Action, session_runtime::SessionRuntime};
+    for notify in [false, true] {
+        let (_dir, path) = server(
+            r#"import json,sys
+for line in sys.stdin:
+ m=json.loads(line);method=m.get('method')
+ if method=='initialize':r={}
+ elif method=='thread/resume':r={'thread':{'id':'target','name':'Synthetic','status':{'type':'idle'}}}
+ elif method=='turn/start':
+  print(json.dumps({'id':m['id'],'result':{'turn':{'id':'owned'}}}),flush=True)
+  sys.exit(0)
+ else:continue
+ print(json.dumps({'id':m['id'],'result':r}),flush=True)
+"#,
+        );
+        let session = SessionRuntime::connect(&path).await.unwrap();
+        let (a, _c) = session_authority(Action::Send, "target", "synthetic work");
+        session.execute_with_notifications(a, notify).await.unwrap();
+        let mut events = session.subscribe();
+        // Health is observed through the public status operation, never internal storage.
+        tokio::time::timeout(std::time::Duration::from_secs(3),async {
+            loop {
+                let (a,_c)=session_authority(Action::Status,"target","");
+                if session.execute(a).await.is_err(){break}
+                tokio::select!{_ = events.recv()=>{},_ = tokio::time::sleep(std::time::Duration::from_millis(10))=>{}}
+            }
+        }).await.unwrap();
+        if notify {
+            let report = session.completion().await.unwrap();
+            assert_eq!(report.status, "unknown");
+            assert!(report.message().contains("Nothing was retried"));
+        } else {
+            assert!(session.completion().await.is_none());
+        }
+        let (a, _c) = session_authority(Action::Send, "target", "never retry");
+        assert!(session.execute(a).await.is_err());
+        session.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn failed_interrupted_and_blocked_approval_have_honest_reports() {
+    use notdot_core::{session_control::Action, session_runtime::SessionRuntime};
+    for status in ["failed", "interrupted", "approval_required"] {
+        let script = format!(
+            r#"import json,sys
+status={status:?}
+for line in sys.stdin:
+ m=json.loads(line);method=m.get('method')
+ if method=='initialize':r={{}}
+ elif method=='thread/resume':r={{'thread':{{'id':'target','name':'Synthetic','status':{{'type':'idle'}}}}}}
+ elif method=='turn/start':
+  print(json.dumps({{'method':'turn/started','params':{{'threadId':'target','turn':{{'id':'owned'}}}}}}),flush=True)
+  if status=='approval_required':
+   print(json.dumps({{'id':777,'method':'item/commandExecution/requestApproval','params':{{'threadId':'target'}}}}),flush=True)
+   rejection=json.loads(sys.stdin.readline());assert 'error' in rejection
+  print(json.dumps({{'method':'turn/completed','params':{{'threadId':'target','turn':{{'id':'owned','status':'failed' if status=='approval_required' else status}}}}}}),flush=True)
+  r={{'turn':{{'id':'owned'}}}}
+ elif method=='thread/unsubscribe':r={{'status':'notLoaded'}}
+ else:continue
+ print(json.dumps({{'id':m['id'],'result':r}}),flush=True)
+"#
+        );
+        let (_dir, path) = server(&script);
+        let runtime = SessionRuntime::connect(&path).await.unwrap();
+        let (a, _c) = session_authority(Action::Send, "target", "synthetic work");
+        runtime.execute_with_notifications(a, true).await.unwrap();
+        let notice = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if let Some(n) = runtime.completion().await {
+                    break n;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(notice.status, status);
+        assert!(!notice.message().contains("finished its reply"));
+        if status == "approval_required" {
+            assert!(notice.message().contains("no approval was granted"));
+        }
+        runtime.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn task_report_backpressure_is_bounded_and_acknowledgement_restores_capacity() {
+    use notdot_core::{session_control::Action, session_runtime::SessionRuntime};
+    let (_dir, path) = server(
+        r#"import json,sys
+n=0
+for line in sys.stdin:
+ m=json.loads(line);method=m.get('method')
+ if method=='initialize':r={}
+ elif method=='thread/resume':r={'thread':{'id':'target','name':'Synthetic','status':{'type':'idle'}}}
+ elif method=='turn/start':
+  n+=1;turn='turn-'+str(n)
+  print(json.dumps({'method':'turn/started','params':{'threadId':'target','turn':{'id':turn}}}),flush=True)
+  print(json.dumps({'method':'turn/completed','params':{'threadId':'target','turn':{'id':turn,'status':'completed'}}}),flush=True)
+  r={'turn':{'id':turn}}
+ elif method=='thread/unsubscribe':r={'status':'notLoaded'}
+ else:continue
+ print(json.dumps({'id':m['id'],'result':r}),flush=True)
+"#,
+    );
+    let runtime = SessionRuntime::connect(&path).await.unwrap();
+    for _ in 0..24 {
+        let (a, _c) = session_authority(Action::Send, "target", "synthetic work");
+        runtime.execute_with_notifications(a, true).await.unwrap();
+    }
+    let (a, _c) = session_authority(Action::Send, "target", "must not send");
+    assert!(
+        runtime
+            .execute_with_notifications(a, true)
+            .await
+            .unwrap_err()
+            .contains("waiting to be saved")
+    );
+    let first = runtime.completion().await.unwrap();
+    runtime.acknowledge_completion(&first.key()).await;
+    let (a, _c) = session_authority(Action::Send, "target", "capacity restored");
+    runtime.execute_with_notifications(a, true).await.unwrap();
+    runtime.shutdown().await;
+}

@@ -22,6 +22,7 @@ pub struct Settings {
     pub voice_name: String,
     pub memory_enabled: bool,
     pub session_control: crate::session_control::Mode,
+    pub task_notifications: bool,
     pub initiative: crate::initiative::Policy,
     pub onboarding_complete: bool,
     pub thread_id: Option<String>,
@@ -48,6 +49,7 @@ impl Default for Settings {
             voice_name: String::new(),
             memory_enabled: false,
             session_control: crate::session_control::Mode::ReadOnly,
+            task_notifications: false,
             initiative: crate::initiative::Policy::default(),
             onboarding_complete: false,
             thread_id: None,
@@ -156,8 +158,11 @@ mod tests {
             name: "Aster".into(),
             ..Settings::default()
         };
+        assert!(!s.task_notifications);
+        s.task_notifications = true;
         s.save(&p).unwrap();
         assert_eq!(Settings::load(&p).unwrap().name, "Aster");
+        assert!(Settings::load(&p).unwrap().task_notifications);
         s.startup = Startup::WithCodex;
         s.open_desktop = true;
         s.automatic_updates = false;

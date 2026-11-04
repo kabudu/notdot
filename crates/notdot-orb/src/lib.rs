@@ -58,6 +58,8 @@ struct Settings {
     memory_enabled: bool,
     #[serde(default)]
     session_control: String,
+    #[serde(default)]
+    task_notifications: bool,
     initiative: Value,
     onboarding_complete: bool,
     thread_id: Option<String>,
@@ -1039,6 +1041,7 @@ fn open_panel(view: &Shared) {
     if view.borrow().conversation.active()
         || view.borrow().capture_token.is_some()
         || view.borrow().confirmation_listening.is_some()
+        || view.borrow().local_phase == Some("announcing")
     {
         stop_audio(view);
     }
@@ -1082,6 +1085,7 @@ fn open_panel(view: &Shared) {
         );
     }
     render_session_mode();
+    input("task-notifications").set_checked(s.task_notifications);
     select("behaviour").set_value(s.initiative["behaviour"].as_str().unwrap_or("reactive"));
     for (id, key) in [("quiet-start", "quiet_start"), ("quiet-end", "quiet_end")] {
         let minutes = s.initiative[key].as_u64().unwrap_or(0);
@@ -1177,6 +1181,7 @@ fn mute_capture(view: &Shared) {
 }
 fn stop_audio(view: &Shared) {
     spawn_local(async {
+        let _ = call("cancel_followup_speech", json!({})).await;
         let _ = call("wake_activity", json!({"ready":false})).await;
     });
     let mut v = view.borrow_mut();
@@ -1232,9 +1237,12 @@ fn stop_audio(view: &Shared) {
     }
 }
 async fn speech_tick() -> Result<(), String> {
+    speech_delay(80).await
+}
+async fn speech_delay(milliseconds: i32) -> Result<(), String> {
     let promise = js_sys::Promise::new(&mut |resolve, reject| {
         if let Err(error) =
-            window().set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 80)
+            window().set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, milliseconds)
         {
             let _ = reject.call1(&JsValue::NULL, &error);
         }
@@ -2279,6 +2287,7 @@ pub fn start() -> Result<(), JsValue> {
             let (h, m) = value.split_once(':').unwrap_or(("0", "0"));
             h.parse::<u16>().unwrap_or(0) * 60 + m.parse::<u16>().unwrap_or(0)
         };
+        settings.task_notifications = input("task-notifications").checked();
         settings.initiative = json!({"behaviour":select("behaviour").value(),"quiet_start":minutes("quiet-start"),"quiet_end":minutes("quiet-end"),"daily_limit":input("daily-limit").value().parse::<u8>().unwrap_or(3),"gap_minutes":input("followup-gap").value().parse::<u16>().unwrap_or(60)});
         settings.startup = if input("start-at-login").checked() {
             select("startup").value()
@@ -2818,6 +2827,10 @@ pub fn start() -> Result<(), JsValue> {
                         if usage_notice.is_none()
                             && !announce
                             && snapshot.phase == "idle"
+                            && snapshot.window_visible
+                            && !snapshot.settings.microphone_muted
+                            && snapshot.session_pending.is_none()
+                            && snapshot.learning["confirmation"].is_null()
                             && snapshot.wake["phase"] != "capturing"
                             && !speak
                             && !v.conversation.active()
@@ -2945,12 +2958,23 @@ pub fn start() -> Result<(), JsValue> {
                         target.borrow_mut().local_phase = Some("announcing");
                         let companion = target.clone();
                         let generation = companion.borrow().generation;
+                        let task_report =
+                            companion.borrow().snapshot.initiative["task_report"] == true;
                         spawn_local(async move {
-                            if let Err(e) = call("announce_followup", json!({"id":id})).await {
-                                message(e);
-                            }
+                            let spoken = match call("announce_followup", json!({"id":id})).await {
+                                Ok(_) => true,
+                                Err(e) => {
+                                    message(e);
+                                    false
+                                }
+                            };
+                            let ended_at = conversation_now();
+                            let _ = speech_delay(conversation::ECHO_GUARD_MS as i32).await;
                             if companion.borrow().generation == generation {
-                                companion.borrow_mut().local_phase = None;
+                                let mut v = companion.borrow_mut();
+                                v.local_phase = None;
+                                let enabled = task_report && v.snapshot.settings.followup_enabled;
+                                v.conversation.after_reply(ended_at, enabled, spoken);
                             }
                         });
                     }

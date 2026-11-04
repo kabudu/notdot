@@ -1,6 +1,6 @@
 //! Bounded follow-up scheduling. The capture worker owns the speech/silence timeout.
 //! No timers survive cancellation, and only completed reply playback can arm a window.
-const ECHO_GUARD_MS: f64 = 600.;
+pub(crate) const ECHO_GUARD_MS: f64 = 600.;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 enum Phase {
     #[default]

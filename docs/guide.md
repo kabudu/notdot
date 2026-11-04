@@ -257,3 +257,19 @@ On a Windows developer machine with `clang-cl`, prepare the optional resource wi
 The release workflow prepares the helper separately and keeps the normal Windows build generic. The helper and package selection still need installed Windows acceptance after changes; an accelerated decoder benchmark alone is not a complete wake or voice test.
 
 Before an in-app update, notdot stops capture and waits for the wake helper to exit. New listening stays blocked during installation. If installation fails, only a fresh listening request can resume it; old recordings are never restarted. If the operating system cannot confirm helper cleanup, close and reopen notdot before trying the update again.
+
+## Task completion reports
+
+The session writer tracks only turns it owns. A current request with a recognised completion suffix, or the saved `task_notifications` option (off by default), permits a local completion report. This permission never grants a send, steer or stop. The existing single-use consent path still applies.
+
+Completed-turn events must match both the chat and owned turn ID. Only final assistant messages provide an excerpt (at most 300 characters); tool output and reasoning are excluded. Reports distinguish completed, failed, interrupted, unsupported approval and unknown/disconnected outcomes. A duplicate or foreign event cannot produce a second report.
+
+The runtime retains at most 24 pending reports and at most four active/releasing chats. Further sends fail with an actionable message when unsaved reports exhaust capacity. The host peeks and acknowledges only after saving into the existing bounded follow-up journal; disk errors retain the report and retry saving after five seconds. This never retries the original Codex action or makes polling model calls.
+
+The persisted journal deduplicates by chat and turn, expires reports after seven days and claims before audio for at-most-once automatic delivery. User-requested reports respect quiet hours and a five-second spacing interval, separately from unsolicited check-in limits. The renderer waits for idle, visible, unmuted state with no recording, conversation, approval or settings dialog. Native speech holds the voice-processing gate and pauses wake listening. Cancellation stops speech and an echo guard precedes any optional follow-up capture.
+
+The in-memory running-task association does not survive application exit. Already persisted reports survive restart; tasks still running must be checked in Codex. A completed turn is evidence that Codex ended its reply, not proof of independent external success.
+
+## Voice release scorecard
+
+Use [release measures](release-measures.md) and `scripts/evaluate_release_measures.py` before voice acceptance. Record exact revision, platform, providers, hardware and human/generated evidence. Missing acoustic results remain unverified; deterministic tests are not a substitute.

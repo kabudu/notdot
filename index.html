@@ -234,6 +234,12 @@
       <label><input type="radio" name="session-control" id="session-direct" value="when_asked"/><span><strong>Send when asked</strong><small>Send clear requests. Confirm anything uncertain.</small></span></label>
      </fieldset>
      <p class="hint session-permissions">Uses each chat’s existing permissions.</p>
+     <label class="switch-row">
+      <span class="switch-copy">Report task results<span class="switch-description">Tell me when tasks notdot starts end. Wait until I’m idle and respect quiet hours.</span></span>
+      <input id="task-notifications" role="switch" type="checkbox"/>
+      <span aria-hidden="true" class="switch-track"></span>
+     </label>
+     <p class="hint">Or add “and let me know when it’s done” to one request. Reports use your computer’s voice and appear in Follow-ups.</p>
      <details class="settings-help session-help">
       <summary>Control limits</summary>
       <p>notdot can add instructions to or stop tasks it started. It can’t take a chat away from the desktop app. Some background work may continue after stopping.</p>
