@@ -549,12 +549,13 @@ for line in sys.stdin:
  m=json.loads(line);method=m.get('method')
  if method=='initialize':r={}
  elif method=='model/list':r={'data':[{'id':'gpt-6.1-terra','model':'gpt-6.1-terra','displayName':'Terra','defaultReasoningEffort':'medium','supportedReasoningEfforts':[{'reasoningEffort':'medium','description':'Balanced'}]}],'nextCursor':None}
- elif method=='config/read':r={'config':{}}
+ elif method=='config/read':r={'config':{'mcp_servers':{'notdot_chats':{'enabled':False,'default_tools_approval_mode':'prompt','tools':{'read_chat':{'approval_mode':'prompt'}}}}}}
  elif method in ['thread/start','thread/resume']:
   c=m['params']['config'];assert c['features']['shell_tool'] is False
-  helper=c['mcp_servers']['notdot_chats'];assert helper['enabled'] is True
+  helper=c['mcp_servers']['notdot_chats'];assert helper['enabled'] is False
   assert helper['args'][0]=='--codex-chat-tools'
-  assert helper['default_tools_approval_mode']=='writes'
+  assert helper['default_tools_approval_mode']=='prompt'
+  assert helper['tools']['read_chat']['approval_mode']=='prompt'
   assert 'threadId' in m['params'] if method=='thread/resume' else 'threadId' not in m['params']
   r={'thread':{'id':'same-chat'},'model':'gpt-6.1-terra','reasoningEffort':'medium'}
  elif method=='thread/name/set':r={}

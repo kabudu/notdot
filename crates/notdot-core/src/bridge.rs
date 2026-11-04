@@ -218,8 +218,18 @@ impl Bridge {
             .await?;
         let mut config = crate::runtime_policy::companion(&effective["config"], &selection.effort);
         if let Some((executable, runtime)) = &self.chat_tools {
-            config["mcp_servers"]["notdot_chats"] =
-                crate::chat_tools::configuration(executable, runtime);
+            let inherited = &config["mcp_servers"]["notdot_chats"];
+            let mut service = crate::chat_tools::configuration(executable, runtime);
+            if inherited["default_tools_approval_mode"] == "prompt" {
+                service["default_tools_approval_mode"] = "prompt".into();
+            }
+            if inherited["tools"].is_object() {
+                service["tools"] = inherited["tools"].clone();
+            }
+            if effective["config"]["mcp_servers"]["notdot_chats"]["enabled"] == false {
+                service["enabled"] = false.into();
+            }
+            config["mcp_servers"]["notdot_chats"] = service;
         }
         let mut params = json!({"model":selection.model,"cwd":cwd,"config":config,"sandbox":"read-only","approvalPolicy":"untrusted"});
         if let Some(id) = id {

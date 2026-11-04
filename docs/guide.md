@@ -45,7 +45,7 @@ See [bridge investigation](bridge-investigation.md) for the original experiments
 
 ## Read-only Codex chat access
 
-Companion runtimes register the bundled `notdot_chats` MCP service for both new and resumed chats. The executable handles `--codex-chat-tools CODEX_RUNTIME` before starting Tauri, so this does not open a second orb or access voice keys. A separate app-server process services `thread/list` and `thread/turns/list`; it never resumes another chat or acquires its writer lease. The registration is a per-thread override, not a change to global Codex configuration.
+Companion runtimes register the bundled `notdot_chats` MCP service for both new and resumed chats. The executable handles `--codex-chat-tools CODEX_RUNTIME` before starting Tauri, so this does not open a second orb or access voice keys. A separate app-server process services `thread/list` and `thread/turns/list`; it never resumes another chat or acquires its writer lease. The registration is a per-thread override, not a change to global Codex configuration. An existing explicit disable or stricter approval policy for `mcp_servers.notdot_chats` is retained.
 
 `find_chats` searches titles or lists recent local chats, ten per page. `read_chat` reads five turns per page, exposing only user and assistant text, with a 24 KiB text budget and at most 100 messages. Tool output, reasoning, images, filesystem paths and other thread metadata are excluded. Requests are limited to 16 KiB and lookups have a 30-second deadline. Cursors allow further pages. The service does not scan raw rollout files or provide any write API.
 

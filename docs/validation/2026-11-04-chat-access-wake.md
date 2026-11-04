@@ -6,7 +6,7 @@ Changes on `codex/chat-access-wake-reliability`, following the 0.2.0 release. Te
 
 ## Chat access
 
-- The built release executable's helper entry point passed live initialization, tool discovery, chat lookup/read and rejection of an attempted write method, without starting another orb or accessing voice keys.
+- The locally built release-mode executable's helper entry point passed live initialization, tool discovery, chat lookup/read and rejection of an attempted write method, without starting another orb or accessing voice keys.
 - Live MCP protocol checks initialized the bundled service, listed its two tools, found ten local chats and successfully read a page of messages. Private message content was not printed or committed.
 - A separate model test created a synthetic named source chat containing a random marker. An ephemeral Terra Medium chat received the lookup service and a prompt that contained the title but neither the marker nor the source chat ID. It invoked both `find_chats` and `read_chat`, then returned the correct marker. The synthetic source chat was archived afterwards; the ephemeral chat was unloaded.
 - Fake-runtime integration tests check filtering of reasoning, images, tool output and filesystem metadata; invalid IDs, oversized arguments, unknown tools, UTF-8 truncation, pagination and both new/resumed companion registration. These are protocol tests, not voice tests.
