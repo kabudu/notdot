@@ -4,6 +4,8 @@ Completed work and the next additions planned for notdot. Priorities may change 
 
 ## Implemented
 
+- **Use other Codex chats.** Find and read local chats, with optional controls to send work, add instructions and stop tasks notdot started. Choose Read only, Confirm before sending or Send when asked. Desktop-owned chats still require a handoff. [Settings guide](docs/settings.md).
+
 - **Conversation continuity.** Turn on an optional 3–20 second listening window after spoken replies. Two soft orb rings show when you can answer; say “That’s all”, press Escape or stay silent to stop. The microphone pauses while notdot speaks. [Implementation and tests](https://github.com/kabudu/notdot/pull/22) · [Settings guide](docs/settings.md).
 
 ## More voice choices

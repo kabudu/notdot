@@ -1,8 +1,8 @@
-Keep a conversation going without repeating your wake phrase or clicking the orb.
+Work with your other local Codex chats by voice, with control over when notdot may act.
 
-- **Optional follow-ups.** Choose a listening window of 3–20 seconds after spoken replies, with two soft orb rings showing when you can answer.
-- **Easy stopping.** Say “That’s all”, press Escape or stay silent to end the conversation. The microphone pauses while notdot speaks.
-- **Clearer listening cues.** A short cue confirms the microphone is ready, helping avoid clipped opening words.
-- **Better voice handling.** Preserve sentence endings on Linux, close empty follow-ups quietly and improve local wake responsiveness.
+- **Find context.** Read relevant messages from other Codex chats.
+- **Choose control.** Keep access read-only, require spoken confirmation, or allow clear requests to be sent directly.
+- **Manage work.** Send instructions, add follow-ups and stop tasks that notdot started.
+- **Recover wake listening.** Restart interrupted Windows wake helpers safely and show recognition problems in Settings.
 
-Follow-up listening is off by default. Enable **Keep the conversation going** under **Settings → Wake phrase and microphone**. Audio during that window goes to your selected speech-recognition service and may count towards usage.
+Other-chat access is read-only by default. Chats already in use by the Codex desktop app need a handoff before notdot can control them.

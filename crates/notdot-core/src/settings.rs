@@ -21,6 +21,7 @@ pub struct Settings {
     pub stt_provider: String,
     pub voice_name: String,
     pub memory_enabled: bool,
+    pub session_control: crate::session_control::Mode,
     pub initiative: crate::initiative::Policy,
     pub onboarding_complete: bool,
     pub thread_id: Option<String>,
@@ -46,6 +47,7 @@ impl Default for Settings {
             stt_provider: "voice".into(),
             voice_name: String::new(),
             memory_enabled: false,
+            session_control: crate::session_control::Mode::ReadOnly,
             initiative: crate::initiative::Policy::default(),
             onboarding_complete: false,
             thread_id: None,
@@ -125,6 +127,27 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn session_control_defaults_to_read_only_and_all_modes_persist() {
+        use crate::session_control::Mode;
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("settings.json");
+        std::fs::write(&path, "{}").unwrap();
+        assert_eq!(
+            Settings::load(&path).unwrap().session_control,
+            Mode::ReadOnly
+        );
+        for mode in [Mode::ReadOnly, Mode::Confirm, Mode::WhenAsked] {
+            let s = Settings {
+                session_control: mode,
+                ..Settings::default()
+            };
+            s.save(&path).unwrap();
+            assert_eq!(Settings::load(&path).unwrap().session_control, mode);
+        }
+        std::fs::write(&path, r#"{"session_control":"allow_everything"}"#).unwrap();
+        assert!(Settings::load(&path).is_err());
+    }
     #[test]
     fn settings_survive_restart_and_reject_invalid() {
         let d = tempfile::tempdir().unwrap();

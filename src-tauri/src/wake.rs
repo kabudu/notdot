@@ -82,6 +82,8 @@ pub struct Status {
     pub rejected_energy: u64,
     pub rejected_prefix: u64,
     pub fallback_decoder: String,
+    pub fallback_failures: u64,
+    pub fallback_warning: Option<String>,
 }
 struct Inner {
     config: Config,
@@ -519,6 +521,9 @@ impl Detector {
                     self.rejected_prefix = self.rejected_prefix.saturating_add(1);
                 }
                 if supported && prefix {
+                    if matches!(self.fallback.backend(), "generic" | "accelerated") {
+                        self.fallback.error = None;
+                    }
                     return true;
                 }
             }
@@ -1175,14 +1180,9 @@ impl Worker {
                 return true;
             }
         }
-        if let Some(error) = self
-            .detector
-            .as_ref()
-            .and_then(|d| d.fallback.error.clone())
-        {
-            self.error(inner, error);
-            return true;
-        }
+        // The primary spotter is independent of the per-utterance backup.
+        // A timed-out backup decode must not disable all future wake listening.
+        // Backup recognition retries only when a new speech segment arrives.
         let rms = energy(samples);
         if self.capture.is_some() {
             self.stream_audio(samples, rate);
@@ -1294,6 +1294,8 @@ impl Worker {
             i.status.rejected_energy = detector.rejected_energy;
             i.status.rejected_prefix = detector.rejected_prefix;
             i.status.fallback_decoder = detector.fallback.backend().into();
+            i.status.fallback_failures = detector.fallback.failures;
+            i.status.fallback_warning = detector.fallback.error.clone();
         }
         false
     }
@@ -1650,8 +1652,12 @@ mod tests {
         if *detected {
             detector.fallback.reset();
         }
-        for _ in 0..350 {
-            if !detector.fallback.is_busy() {
+        // Fixture teardown can include a cancelled decode (three seconds) and
+        // an audio-free replacement warm-up (ten seconds). Neither wait extends
+        // the production utterance deadline or replays its audio.
+        let deadline = Instant::now() + Duration::from_secs(14);
+        while Instant::now() < deadline {
+            if !detector.fallback.is_busy() && detector.fallback.backend() != "recovering" {
                 return;
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -1661,9 +1667,11 @@ mod tests {
             }
         }
         assert!(
-            !detector.fallback.is_busy(),
-            "{stage} did not settle: elapsed={:?} rate={rate} detected={detected} error={:?}",
+            !detector.fallback.is_busy() && detector.fallback.backend() != "recovering",
+            "{stage} did not settle: elapsed={:?} rate={rate} detected={detected} backend={} failures={} error={:?}",
             start.elapsed(),
+            detector.fallback.backend(),
+            detector.fallback.failures,
             detector.fallback.error
         );
     }
@@ -1866,6 +1874,116 @@ mod tests {
         }
     }
     #[test]
+    fn unavailable_backup_does_not_stop_primary_processing() {
+        let _models = model_fixture_guard();
+        let directory = tempfile::tempdir().unwrap();
+        let mut detector = Detector::new(&models(), "Hey Ava").unwrap();
+        detector.fallback =
+            fallback::Fallback::new(&directory.path().join("missing.bin"), "Hey Ava").unwrap();
+        assert_eq!(detector.fallback.backend(), "unavailable");
+        let mut samples = vec![0.; 8000];
+        samples.extend(audio("hey-ava-uk.wav"));
+        samples.extend(vec![0.; 16000]);
+        for frame in samples.chunks(320) {
+            let _ = detector.accept(16000, frame);
+        }
+        assert!(
+            detector.elapsed > 0.,
+            "primary inference must continue after unavailable backup setup"
+        );
+        assert!(
+            detector.fallback.error.is_some(),
+            "a primary match must not hide a real backup outage"
+        );
+    }
+    #[test]
+    fn a_fallback_decode_failure_does_not_disable_primary_wake_detection() {
+        let _models = model_fixture_guard();
+        let wake = isolated();
+        wake.inner.lock().unwrap().pending = None;
+        let mut detector = Detector::new(&models(), "Hey Ava").unwrap();
+        detector.fallback.error = Some("Local wake recognition exceeded its time limit".into());
+        let mut worker = Worker {
+            detector: Some(detector),
+            speech_gate: Some(speech::SpeechGate::new(&models()).unwrap()),
+            ..Default::default()
+        };
+        let mut samples = vec![0.; 8000];
+        samples.extend(audio("hey-ava.wav"));
+        samples.extend(vec![0.; 16000]);
+        for samples in samples.chunks(320) {
+            wake.ready(true);
+            worker.frame(&wake.inner, samples, 16000, 1, 0);
+            assert!(
+                !worker.failed,
+                "one fallback failure must not disable the independent primary detector"
+            );
+        }
+        for _ in 0..300 {
+            if worker.capture.is_some() {
+                break;
+            }
+            wake.ready(true);
+            worker.frame(&wake.inner, &[0.; 320], 16000, 1, 0);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            worker.capture.is_some(),
+            "wake recognition must still activate after a backup failure"
+        );
+        assert!(worker.detector.as_ref().unwrap().fallback.error.is_none());
+    }
+    #[test]
+    fn quiet_wake_phrases_and_confusable_speech() {
+        let _models = model_fixture_guard();
+        for name in [
+            "hey-ava.wav",
+            "hey-ava-uk.wav",
+            "hey-ava-us.wav",
+            "ava.wav",
+            "negative.wav",
+        ] {
+            for gain in [0.02, 0.05, 0.2] {
+                let samples: Vec<_> = audio(name).iter().map(|s| s * gain).collect();
+                let mut detector = Detector::new(&models(), "Hey Ava").unwrap();
+                assert_eq!(
+                    detects(&mut detector, &samples),
+                    name.starts_with("hey-"),
+                    "fixture={name} gain={gain}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn wake_with_input_bias_and_low_frequency_rumble() {
+        let _models = model_fixture_guard();
+        for name in [
+            "hey-ava.wav",
+            "hey-ava-uk.wav",
+            "hey-ava-us.wav",
+            "ava.wav",
+            "negative.wav",
+        ] {
+            for bias in [0., 0.025] {
+                let samples: Vec<_> = audio(name)
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| {
+                        s * 0.35
+                            + bias
+                            + 0.012 * (std::f32::consts::TAU * 40. * i as f32 / 16000.).sin()
+                    })
+                    .collect();
+                let mut detector = Detector::new(&models(), "Hey Ava").unwrap();
+                assert_eq!(
+                    detects(&mut detector, &samples),
+                    name.starts_with("hey-"),
+                    "fixture={name} bias={bias}"
+                );
+            }
+        }
+    }
+    #[test]
     fn quiet_idle_rebases_the_primary_stream_before_sherpas_internal_reset() {
         let _models = model_fixture_guard();
         let mut detector = Detector::new(&models(), "Hey Ava").unwrap();
@@ -1887,6 +2005,7 @@ mod tests {
         let _models = model_fixture_guard();
         for idle in [2, 5, 25, 65] {
             let mut d = Detector::new(&models(), "Hey Ava").unwrap();
+            let initial_backend = d.fallback.backend();
             for _ in 0..idle * 50 {
                 assert!(!d.accept(16000, &[0.; 320]));
             }
@@ -1898,23 +2017,29 @@ mod tests {
                 for _ in 0..60 {
                     detected |= d.accept(16000, &[0.; 320]);
                 }
-                for _ in 0..400 {
-                    if !d.fallback.is_busy() {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
-                    detected |= d.accept(16000, &[0.; 320]);
-                }
+                drain_fixture_fallback(&mut d, 16000, &mut detected, "after idle fixture");
                 assert_eq!(
                     detected,
                     name == "hey-ava.wav",
-                    "{name} after {idle}s idle: backend={} busy={} error={:?}",
+                    "{name} after {idle}s idle: initial_backend={initial_backend} backend={} busy={} failures={} error={:?}",
                     d.fallback.backend(),
                     d.fallback.is_busy(),
+                    d.fallback.failures,
                     d.fallback.error
                 );
                 if detected {
                     d.reset();
+                    let mut cancelled_match = false;
+                    drain_fixture_fallback(
+                        &mut d,
+                        16000,
+                        &mut cancelled_match,
+                        "cancelled idle fixture",
+                    );
+                    assert!(
+                        !cancelled_match,
+                        "a cancelled fixture must not activate later"
+                    );
                 }
             }
         }

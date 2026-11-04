@@ -4,7 +4,7 @@
   'use strict';
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const copy = x => JSON.parse(JSON.stringify(x));
-  const settings = {name:'Ava',model:'gpt-6.1-terra',effort:'medium',hue:192,voice_id:'synthetic',voice_provider:'elevenlabs',speech_language:'en',stt_provider:'voice',voice_name:'Synthetic',memory_enabled:false,initiative:{behaviour:'reactive',quiet_start:1320,quiet_end:480,daily_limit:3,gap_minutes:60},onboarding_complete:true,thread_id:'synthetic-thread',startup:'manual',open_desktop:false,automatic_updates:false,followup_enabled:false,followup_seconds:3,wake_enabled:false,wake_name_only:false,microphone_muted:false};
+  const settings = {name:'Ava',model:'gpt-6.1-terra',effort:'medium',hue:192,voice_id:'synthetic',voice_provider:'elevenlabs',speech_language:'en',stt_provider:'voice',voice_name:'Synthetic',memory_enabled:false,session_control:'read_only',initiative:{behaviour:'reactive',quiet_start:1320,quiet_end:480,daily_limit:3,gap_minutes:60},onboarding_complete:true,thread_id:'synthetic-thread',startup:'manual',open_desktop:false,automatic_updates:false,followup_enabled:false,followup_seconds:3,wake_enabled:false,wake_name_only:false,microphone_muted:false};
   const state = {settings,phase:'idle',reply:'',speech:{turn:'',text:'',done:false,failed:false},request_id:null,error:null,key_configured:true,key_checking:false,key_authorized:true,stt_ready:true,window_visible:true,version:'test',desktop_launch_supported:false,updates:{phase:'idle',version:null,message:'',received:0,total:null,prompt:false},quota:{},wake:{phase:'paused'},learning:{},initiative:{}};
   const log = [], callbacks = [], timers = new Set(), cancelled = new Set();
   let active = 0, lastEnd = -Infinity, turn = 0, capture = 0, transcript = '', delayedStart = false;
@@ -26,7 +26,7 @@
   window.__TAURI__={event:{listen:async(name,cb)=>{if(name==='voice-capture')callbacks.push(cb);return()=>{};}},window:{getCurrentWindow:()=>windowApi,currentMonitor:async()=>null},dpi:{LogicalSize:class{},PhysicalSize:class{},PhysicalPosition:class{}},core:{invoke:async(cmd,args={})=>{
     if(cmd==='snapshot') return copy(state);
     if(cmd==='capture_status') return copy(state.wake);
-    if(cmd==='voice_providers') return [{id:'elevenlabs',streaming_transcription:true}];
+    if(cmd==='voice_providers') return [{id:'elevenlabs',name:'ElevenLabs',streaming_transcription:true}];
     if(cmd==='report_visual'){record('visual',{mode:args.report.mode});return null;}
     if(cmd==='wake_activity'){record('lease',{ready:args.ready});return null;}
     if(cmd==='model_catalog')return [{model:'gpt-6.1-terra',displayName:'Terra',supportedReasoningEfforts:[{reasoningEffort:'medium',description:'Medium'}]}];
@@ -49,6 +49,9 @@
       later(1200,()=>{if(state.speech.turn===id){state.speech={turn:id,text:'The first sentence. The second sentence.',done:true,failed:false};state.phase='idle';record('model-done');}});
       return id;
     }
+    if(cmd==='session_question'){record('session-question',{id:args.id});state.session_pending=null;return args.id.includes('automatic')?{outcome:'Sent to Synthetic.'}:{question:'Send the staged instruction to Synthetic? Say yes, send it.'};}
+    if(cmd==='answer_session'){record('session-answer',{text:args.text});return args.text==='yes, send it'?'Sent to Synthetic.':'Cancelled. Nothing was sent.';}
+    if(cmd==='cancel_session'){if(state.session_pending || args.id){record('session-cancel');state.session_pending=null;}return null;}
     if(cmd==='speak'){record('synthesize');return audio;}
     if(cmd==='save_settings'){Object.assign(settings,args.settings);record('saved');return null;}
     if(cmd==='set_microphone_muted'){settings.microphone_muted=args.muted;return null;}
@@ -62,7 +65,7 @@
   function submit(text){transcript=text;state.wake.phase='ready';state.wake.request_id=++capture;emit('ready',state.wake.capture_token);}
   async function initial(){const n=count('capture');orbClick();await until(()=>count('capture')===n+1);submit('Help me plan tomorrow.');}
   async function nextWindow(){const n=count('capture');await until(()=>count('capture')===n+1);await until(()=>document.getElementById('orb').dataset.state==='followup');}
-  async function clean(){pressEscape();for(const id of timers)clearTimeout(id);timers.clear();active=0;Object.assign(settings,{followup_enabled:true,followup_seconds:3,wake_enabled:false,microphone_muted:false});state.window_visible=true;state.phase='idle';state.wake={phase:'paused'};state.speech={turn:'',text:'',done:false,failed:false};document.getElementById('panel').close();await sleep(650);}
+  async function clean(){pressEscape();for(const id of timers)clearTimeout(id);timers.clear();active=0;Object.assign(settings,{followup_enabled:true,followup_seconds:3,wake_enabled:false,microphone_muted:false});state.session_pending=null;state.window_visible=true;state.phase='idle';state.wake={phase:'paused'};state.speech={turn:'',text:'',done:false,failed:false};document.getElementById('panel').close();await sleep(650);}
   async function run(){
     const output=document.getElementById('harness-results'),passed=[];
     function ok(name,condition){if(!condition)throw Error(name);passed.push(name);output.textContent=JSON.stringify({status:'running',passed},null,2);}
@@ -85,6 +88,10 @@
       await clean();settings.wake_enabled=true;await sleep(600);m=count('message');const token='synthetic-wake';state.wake={phase:'ready',capture_token:token,request_id:++capture,manual:false};transcript='A wake-initiated request.';await until(()=>count('message')===m+1);await nextWindow();submit("That's all");await sleep(1000);ok('wake-initiated turn continues and stops',count('message')===m+1);
       await clean();n=count('capture');let pending=count('pending-capture');await initial();pending=count('pending-capture');delayedStart=true;await until(()=>count('pending-capture')>pending);await sleep(100);ok('follow-up waits for actual microphone readiness',count('capture')===n+1 && document.getElementById('orb').dataset.state==='thinking' && document.getElementById('orb-status').textContent.includes('Starting microphone'));pressEscape();await sleep(1100);delayedStart=false;ok('Escape cancels an in-flight start without resurrecting capture',count('capture')===n+1);
       await clean();document.getElementById('orb').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));await until(()=>!document.getElementById('model').disabled);const toggle=document.getElementById('followup-enabled');toggle.checked=true;toggle.dispatchEvent(new Event('change'));const range=document.getElementById('followup-seconds');range.value='12';range.dispatchEvent(new Event('input'));const saved=count('saved');document.getElementById('save-settings').click();await until(()=>count('saved')>saved);ok('settings control saves the chosen follow-up duration',settings.followup_enabled && settings.followup_seconds===12);
+      await clean();settings.followup_enabled=false;await sleep(600);let changes=count('session-answer');n=count('capture');state.session_pending='session-confirm';await until(()=>count('capture')===n+1);submit('yes, send it');await until(()=>count('session-answer')===changes+1);await sleep(600);ok('session action uses scoped spoken confirmation',count('session-answer')===changes+1);
+      await clean();settings.followup_enabled=false;await sleep(600);n=count('capture');let questions=count('session-question');state.session_pending='session-automatic';await until(()=>count('session-question')===questions+1);await sleep(800);ok('authorised direct action does not open confirmation capture',count('capture')===n);
+      await clean();settings.followup_enabled=false;await sleep(600);n=count('capture');changes=count('session-answer');let sessionCancels=count('session-cancel');state.session_pending='session-cancel';await until(()=>count('capture')===n+1);pressEscape();await until(()=>count('session-cancel')>sessionCancels);ok('Escape cancels session consent without sending an answer',count('session-answer')===changes);
+      await clean();document.getElementById('orb').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));await until(()=>!document.getElementById('model').disabled);document.getElementById('session-direct').checked=true;let savedMode=count('saved');document.getElementById('save-settings').click();await until(()=>count('saved')>savedMode);ok('session control mode persists through Settings',settings.session_control==='when_asked');
       await clean();const auto=log.filter(x=>x.event==='capture'&&x.followup);ok('no capture during playback or inter-sentence gaps',auto.length>=5 && auto.every(x=>x.gap>=590));
       output.textContent=JSON.stringify({status:'passed',passed,modelMessages:count('message'),automaticCaptures:auto.length,minimumEchoGapMs:Math.min(...auto.map(x=>x.gap)),adapters:'synthetic IPC, model, STT and audio; no real microphone, speaker, credentials or provider calls'},null,2);
     }catch(error){pressEscape();output.textContent=JSON.stringify({status:'failed',error:String(error),passed,lastEvents:log.filter(x=>x.event!=='lease').slice(-24)},null,2);}

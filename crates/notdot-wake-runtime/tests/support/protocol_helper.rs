@@ -14,7 +14,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // tests. This process tests the real Client/pipe/OS lifecycle alone.
     let mut input = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
-    protocol::read_hello(&mut input)?;
+    let phrase = protocol::read_hello(&mut input)?;
+    if phrase == "Recovery wait" {
+        std::thread::sleep(std::time::Duration::from_secs(10));
+    }
     output.write_all(protocol::READY)?;
     output.flush()?;
     if protocol::read_request(&mut input)?.is_some() {

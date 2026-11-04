@@ -56,6 +56,8 @@ struct Settings {
     stt_provider: String,
     voice_name: String,
     memory_enabled: bool,
+    #[serde(default)]
+    session_control: String,
     initiative: Value,
     onboarding_complete: bool,
     thread_id: Option<String>,
@@ -73,6 +75,8 @@ struct Settings {
 #[derive(Clone, Default, Deserialize)]
 struct Snapshot {
     settings: Settings,
+    #[serde(default)]
+    session_pending: Option<String>,
     phase: String,
     reply: String,
     #[serde(default)]
@@ -168,7 +172,7 @@ struct View {
     peak_speaking_rms: f64,
     update_announced: Option<String>,
     update_listening: Option<String>,
-    memory_listening: Option<String>,
+    confirmation_listening: Option<String>,
     consent_heard_voice: bool,
     quota_display: Option<Value>,
     quota_retry_at: f64,
@@ -582,6 +586,16 @@ fn render_followup_settings() {
     let _ =
         element("followup-seconds").set_attribute("aria-valuetext", &format!("{seconds} seconds"));
 }
+fn render_session_mode() {
+    let label = if input("session-direct").checked() {
+        "Send when asked"
+    } else if input("session-confirm").checked() {
+        "Confirm before sending"
+    } else {
+        "Read only"
+    };
+    element("session-mode-label").set_text_content(Some(label));
+}
 fn render_wake_phrase() {
     let name = input("name").value();
     let phrase = if select("wake-phrase").value() == "name" {
@@ -635,6 +649,7 @@ fn reflect_manual_capture_ready(view: &mut View, wake: &Value) -> bool {
 fn followup_allowed(view: &Shared, snapshot: &Snapshot) -> bool {
     let v = view.borrow();
     snapshot.settings.followup_enabled
+        && snapshot.session_pending.is_none()
         && snapshot.phase == "idle"
         && snapshot.window_visible
         && snapshot.settings.onboarding_complete
@@ -647,7 +662,7 @@ fn followup_allowed(view: &Shared, snapshot: &Snapshot) -> bool {
         && !v.speech_worker
         && v.recording.is_none()
         && v.update_listening.is_none()
-        && v.memory_listening.is_none()
+        && v.confirmation_listening.is_none()
         && !dialog("panel").open()
         && !dialog("about").open()
         && !matches!(
@@ -672,7 +687,7 @@ fn wake_ready(view: &Shared, snapshot: &Snapshot) -> bool {
         && (v.local_phase.is_none()
             || (v.native_manual && matches!(v.local_phase, Some("starting_capture" | "listening"))))
         && v.recording.is_none()
-        && ((v.update_listening.is_none() && v.memory_listening.is_none()) || v.native_manual)
+        && ((v.update_listening.is_none() && v.confirmation_listening.is_none()) || v.native_manual)
         && !dialog("panel").open()
         && !dialog("about").open()
         && !matches!(
@@ -1018,9 +1033,12 @@ fn refresh_models(view: &Shared, model: String, effort: String) {
     });
 }
 fn open_panel(view: &Shared) {
+    spawn_local(async {
+        let _ = call("cancel_session", json!({})).await;
+    });
     if view.borrow().conversation.active()
         || view.borrow().capture_token.is_some()
-        || view.borrow().memory_listening.is_some()
+        || view.borrow().confirmation_listening.is_some()
     {
         stop_audio(view);
     }
@@ -1054,6 +1072,16 @@ fn open_panel(view: &Shared) {
         let _ = call("wake_activity", json!({"ready":false})).await;
     });
     input("memory").set_checked(s.memory_enabled);
+    for (id, mode) in [
+        ("session-read", "read_only"),
+        ("session-confirm", "confirm"),
+        ("session-direct", "when_asked"),
+    ] {
+        input(id).set_checked(
+            s.session_control == mode || (s.session_control.is_empty() && mode == "read_only"),
+        );
+    }
+    render_session_mode();
     select("behaviour").set_value(s.initiative["behaviour"].as_str().unwrap_or("reactive"));
     for (id, key) in [("quiet-start", "quiet_start"), ("quiet-end", "quiet_end")] {
         let minutes = s.initiative[key].as_u64().unwrap_or(0);
@@ -1159,9 +1187,17 @@ fn stop_audio(view: &Shared) {
     }
     v.native_manual = false;
     v.conversation.close();
-    if let Some(id) = v.memory_listening.take() {
+    if let Some(id) = v.confirmation_listening.take() {
         spawn_local(async move {
-            let _ = call("cancel_memory", json!({"id":id})).await;
+            let _ = call(
+                if id.starts_with("session-") {
+                    "cancel_session"
+                } else {
+                    "cancel_memory"
+                },
+                json!({"id":id}),
+            )
+            .await;
         });
     }
     if let Some(request) = v.request_id.take() {
@@ -1326,16 +1362,24 @@ async fn submit_transcript(view: Shared, text: String, generation: u64) -> Resul
     }
     view.borrow_mut().capture_token = None;
     view.borrow_mut().native_manual = false;
-    let memory_confirmation = view.borrow_mut().memory_listening.take();
-    if let Some(id) = memory_confirmation {
+    let pending_confirmation = view.borrow_mut().confirmation_listening.take();
+    if let Some(id) = pending_confirmation {
         view.borrow_mut().local_phase = Some("synthesizing");
-        let result = call("answer_memory", json!({"id":id,"text":text})).await?;
+        let result = call(
+            if id.starts_with("session-") {
+                "answer_session"
+            } else {
+                "answer_memory"
+            },
+            json!({"id":id,"text":text}),
+        )
+        .await?;
         if view.borrow().generation != generation {
             return Ok(());
         }
         let answer = result
             .as_string()
-            .ok_or("Memory check returned no answer")?;
+            .ok_or("Confirmation returned no answer")?;
         let audio = call("speak", json!({"text":answer})).await?;
         if view.borrow().generation != generation {
             return Ok(());
@@ -1442,17 +1486,18 @@ async fn voice_inner(view: Shared, followup: bool) -> Result<(), String> {
         let request_id = view.borrow().snapshot.request_id.clone();
         call("stop", json!({"requestId":request_id})).await?;
     }
-    let memory_confirmation = view.borrow_mut().memory_listening.take();
+    let pending_confirmation = view.borrow_mut().confirmation_listening.take();
     stop_audio(&view);
-    view.borrow_mut().memory_listening = memory_confirmation;
+    view.borrow_mut().confirmation_listening = pending_confirmation;
     let generation = view.borrow().generation;
     let token = format!("capture-{:.0}-{generation}", js_sys::Date::now());
-    let limit =
-        if view.borrow().update_listening.is_some() || view.borrow().memory_listening.is_some() {
-            12
-        } else {
-            60
-        };
+    let limit = if view.borrow().update_listening.is_some()
+        || view.borrow().confirmation_listening.is_some()
+    {
+        12
+    } else {
+        60
+    };
     {
         let mut v = view.borrow_mut();
         v.native_manual = true;
@@ -1503,17 +1548,17 @@ async fn browser_voice(view: Shared) -> Result<(), String> {
         return Ok(());
     }
     if view.borrow().local_phase.is_some() {
-        let memory_confirmation = view.borrow_mut().memory_listening.take();
+        let pending_confirmation = view.borrow_mut().confirmation_listening.take();
         stop_audio(&view);
-        view.borrow_mut().memory_listening = memory_confirmation;
+        view.borrow_mut().confirmation_listening = pending_confirmation;
     }
     if view.borrow().snapshot.phase == "thinking" {
         let request_id = view.borrow().snapshot.request_id.clone();
         call("stop", json!({"requestId":request_id})).await?;
     }
-    let memory_confirmation = view.borrow_mut().memory_listening.take();
+    let pending_confirmation = view.borrow_mut().confirmation_listening.take();
     stop_audio(&view);
-    view.borrow_mut().memory_listening = memory_confirmation;
+    view.borrow_mut().confirmation_listening = pending_confirmation;
     if view.borrow().snapshot.key_checking {
         return Err(
             "Waiting for OS keychain access. Check for a system permission prompt, then try again."
@@ -1610,7 +1655,7 @@ async fn browser_voice(view: Shared) -> Result<(), String> {
             v.stream = None;
             v.meter.clear_microphone();
             let discard = v.discard_capture
-                || ((v.update_listening.is_none() && v.memory_listening.is_none())
+                || ((v.update_listening.is_none() && v.confirmation_listening.is_none())
                     && v.speech_end
                         .as_ref()
                         .is_some_and(|capture| !capture.heard_speech()));
@@ -1669,12 +1714,13 @@ async fn browser_voice(view: Shared) -> Result<(), String> {
         v.stream = Some(stream);
         v.snapshot.phase = "listening".into();
     }
-    let recording_limit =
-        if view.borrow().update_listening.is_some() || view.borrow().memory_listening.is_some() {
-            12_000
-        } else {
-            60_000
-        };
+    let recording_limit = if view.borrow().update_listening.is_some()
+        || view.borrow().confirmation_listening.is_some()
+    {
+        12_000
+    } else {
+        60_000
+    };
     let deadline = Closure::once(move || {
         if recorder.state() == web_sys::RecordingState::Recording {
             let _ = recorder.stop();
@@ -2220,6 +2266,14 @@ pub fn start() -> Result<(), JsValue> {
         settings.speech_language = select("speech-language").value();
         settings.stt_provider = select("stt-provider").value();
         settings.memory_enabled = input("memory").checked();
+        settings.session_control = if input("session-direct").checked() {
+            "when_asked"
+        } else if input("session-confirm").checked() {
+            "confirm"
+        } else {
+            "read_only"
+        }
+        .into();
         let minutes = |id: &str| {
             let value = input(id).value();
             let (h, m) = value.split_once(':').unwrap_or(("0", "0"));
@@ -2414,6 +2468,9 @@ pub fn start() -> Result<(), JsValue> {
             }
         });
     });
+    for id in ["session-read", "session-confirm", "session-direct"] {
+        on(element(id).as_ref(), "change", |_| render_session_mode());
+    }
     on(element("followup-enabled").as_ref(), "change", |_| {
         render_followup_settings()
     });
@@ -2555,7 +2612,8 @@ pub fn start() -> Result<(), JsValue> {
                             }
                         });
                     }
-                    if !snapshot.window_visible && target.borrow().memory_listening.is_some() {
+                    if !snapshot.window_visible && target.borrow().confirmation_listening.is_some()
+                    {
                         stop_audio(&target);
                     }
                     if snapshot.settings.microphone_muted
@@ -2600,6 +2658,14 @@ pub fn start() -> Result<(), JsValue> {
                         None
                     };
                     element("wake-status").set_text_content(Some(wake_hint(&snapshot)));
+                    let health = if snapshot.wake["phase"] == "listening"
+                        && let Some(warning) = snapshot.wake["fallback_warning"].as_str()
+                    {
+                        format!("Wake listening is active. {warning}")
+                    } else {
+                        String::new()
+                    };
+                    element("wake-health").set_text_content(Some(&health));
                     let orb = element("orb");
                     let wake_mode = snapshot.settings.wake_enabled;
                     let _ = orb.set_attribute("role", if wake_mode { "img" } else { "button" });
@@ -2785,15 +2851,17 @@ pub fn start() -> Result<(), JsValue> {
                             && v.local_phase.is_none()
                             && v.recording.is_none()
                             && !v.native_manual
-                            && v.memory_listening.is_none()
+                            && v.confirmation_listening.is_none()
                             && snapshot.wake["phase"] != "capturing"
                             && !dialog("panel").open()
                             && !dialog("about").open()
                             && v.audio.as_ref().is_none_or(|a| a.paused() || a.ended())
                         {
-                            snapshot.learning["confirmation"]
-                                .as_str()
-                                .map(str::to_owned)
+                            snapshot.session_pending.clone().or_else(|| {
+                                snapshot.learning["confirmation"]
+                                    .as_str()
+                                    .map(str::to_owned)
+                            })
                         } else {
                             None
                         }
@@ -2824,17 +2892,29 @@ pub fn start() -> Result<(), JsValue> {
                         let generation = companion.borrow().generation;
                         {
                             let mut v = companion.borrow_mut();
-                            v.memory_listening = Some(id.clone());
+                            v.confirmation_listening = Some(id.clone());
                             v.consent_heard_voice = false;
                             v.consent_silence = None;
                             v.local_phase = Some("announcing");
                         }
                         spawn_local(async move {
                             let result = async {
-                                let question = call("memory_question", json!({"id":id}))
-                                    .await?
-                                    .as_string()
-                                    .ok_or("Memory check expired")?;
+                                let mut automatic = false;
+                                let question = if id.starts_with("session-") {
+                                    let result = call("session_question", json!({"id":id})).await?;
+                                    let result: Value = serde_wasm_bindgen::from_value(result)
+                                        .map_err(|_| "Chat action returned an invalid result")?;
+                                    automatic = result["outcome"].is_string();
+                                    result[if automatic { "outcome" } else { "question" }]
+                                        .as_str()
+                                        .ok_or("Chat action expired")?
+                                        .to_owned()
+                                } else {
+                                    call("memory_question", json!({"id":id}))
+                                        .await?
+                                        .as_string()
+                                        .ok_or("Memory check expired")?
+                                };
                                 let audio = call("speak", json!({"text":question})).await?;
                                 if companion.borrow().generation != generation {
                                     return Ok(());
@@ -2848,6 +2928,10 @@ pub fn start() -> Result<(), JsValue> {
                                     return Ok(());
                                 }
                                 companion.borrow_mut().local_phase = None;
+                                if automatic {
+                                    companion.borrow_mut().confirmation_listening = None;
+                                    return Ok(());
+                                }
                                 voice(companion.clone()).await
                             }
                             .await;
@@ -2955,7 +3039,8 @@ pub fn start() -> Result<(), JsValue> {
                                     v.speech_worker = false;
                                     v.request_id = None;
                                     v.local_phase = None;
-                                    let enabled = v.snapshot.settings.followup_enabled;
+                                    let enabled = v.snapshot.settings.followup_enabled
+                                        && v.snapshot.session_pending.is_none();
                                     let ended = v.audio.as_ref().is_some_and(|audio| audio.ended());
                                     v.conversation
                                         .after_reply(conversation_now(), enabled, ended);
@@ -3031,7 +3116,7 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
             if v.snapshot.wake["phase"] == "capturing" && v.recording.is_none() {
                 level.rms = v.snapshot.wake["rms"].as_f64().unwrap_or(0.);
             }
-            if (v.update_listening.is_none() && v.memory_listening.is_none())
+            if (v.update_listening.is_none() && v.confirmation_listening.is_none())
                 && v.recording.is_some()
                 && let Some(capture) = &mut v.speech_end
             {
@@ -3045,7 +3130,7 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                     }
                 }
             }
-            if (v.update_listening.is_some() || v.memory_listening.is_some())
+            if (v.update_listening.is_some() || v.confirmation_listening.is_some())
                 && v.recording.is_some()
             {
                 if level.rms > 0.025 {

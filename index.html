@@ -224,6 +224,22 @@
       </p>
      </div>
     </details>
+    <details class="settings-section" id="session-section">
+     <summary><span><strong>Other Codex chats</strong><small id="session-mode-label">Read only</small></span></summary>
+     <div class="settings-body">
+     <fieldset class="session-modes">
+      <legend class="sr-only">How notdot may use other Codex chats</legend>
+      <label><input type="radio" name="session-control" id="session-read" value="read_only" checked/><span><strong>Read only</strong><small>Find chats and read their messages.</small></span></label>
+      <label><input type="radio" name="session-control" id="session-confirm" value="confirm"/><span><strong>Confirm before sending</strong><small>Read back each change before acting.</small></span></label>
+      <label><input type="radio" name="session-control" id="session-direct" value="when_asked"/><span><strong>Send when asked</strong><small>Send clear requests. Confirm anything uncertain.</small></span></label>
+     </fieldset>
+     <p class="hint session-permissions">Uses each chat’s existing permissions.</p>
+     <details class="settings-help session-help">
+      <summary>Control limits</summary>
+      <p>notdot can add instructions to or stop tasks it started. It can’t take a chat away from the desktop app. Some background work may continue after stopping.</p>
+     </details>
+     </div>
+    </details>
     <details class="settings-section" id="wake-section">
      <summary>
       <span>
@@ -286,6 +302,7 @@
        <span aria-hidden="true" class="switch-track">
        </span>
       </label>
+      <p class="hint" id="wake-health"></p>
       <p class="hint" id="wake-status" role="status">
       </p>
       <p class="hint">

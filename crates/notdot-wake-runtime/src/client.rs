@@ -18,6 +18,7 @@ use tokio::{
 pub enum Failure {
     Cancelled,
     Unavailable,
+    CleanupUnconfirmed,
 }
 // A lost OS wait must not become an apparent successful release merely because
 // its Client was dropped during cancellation, failed startup, or generic fallback.
@@ -71,6 +72,24 @@ impl Client {
     ) -> Result<Self, Failure> {
         // Restarts inside an utterance retain its existing three-second bound.
         Self::start_with_timeout(helper, model, phrase, cancel, Duration::from_secs(3)).await
+    }
+    /// Warm a replacement while idle, independently of any utterance deadline.
+    /// Cancellation still kills and reaps the replacement before returning.
+    pub async fn recover(
+        helper: &Path,
+        model: &Path,
+        phrase: &str,
+        epoch: Arc<AtomicU64>,
+        expected: u64,
+    ) -> Result<Self, Failure> {
+        Self::start_with_timeout(
+            helper,
+            model,
+            phrase,
+            Some((epoch, expected)),
+            Duration::from_secs(10),
+        )
+        .await
     }
     async fn start_with_timeout(
         helper: &Path,
@@ -135,8 +154,19 @@ impl Client {
         _=async {loop {cancellation.tick().await;if cancel.as_ref().is_some_and(|(epoch,expected)|epoch.load(Ordering::Relaxed)!=*expected) {break;}}}=>Err(Failure::Cancelled)
         };
         if let Err(error) = ready {
-            client.shutdown().await;
+            if !client.shutdown().await {
+                return Err(Failure::CleanupUnconfirmed);
+            }
             return Err(error);
+        }
+        if cancel
+            .as_ref()
+            .is_some_and(|(epoch, expected)| epoch.load(Ordering::Relaxed) != *expected)
+        {
+            if !client.shutdown().await {
+                return Err(Failure::CleanupUnconfirmed);
+            }
+            return Err(Failure::Cancelled);
         }
         Ok(client)
     }
@@ -148,19 +178,25 @@ impl Client {
         budget: Duration,
     ) -> Result<bool, Failure> {
         if epoch.load(Ordering::Relaxed) != expected {
-            self.shutdown().await;
+            if !self.shutdown().await {
+                return Err(Failure::CleanupUnconfirmed);
+            }
             return Err(Failure::Cancelled);
         }
         let id = self.next;
         let Some(next) = self.next.checked_add(1) else {
-            self.shutdown().await;
+            if !self.shutdown().await {
+                return Err(Failure::CleanupUnconfirmed);
+            }
             return Err(Failure::Unavailable);
         };
         self.next = next;
         let packet = match protocol::encode_request(id, samples) {
             Ok(packet) => packet,
             Err(_) => {
-                self.shutdown().await;
+                if !self.shutdown().await {
+                    return Err(Failure::CleanupUnconfirmed);
+                }
                 return Err(Failure::Unavailable);
             }
         };
@@ -178,8 +214,8 @@ impl Client {
         } else {
             result
         };
-        if result.is_err() {
-            self.shutdown().await;
+        if result.is_err() && !self.shutdown().await {
+            return Err(Failure::CleanupUnconfirmed);
         }
         result
     }

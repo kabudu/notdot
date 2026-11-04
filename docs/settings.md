@@ -12,6 +12,26 @@ Open the single Intelligence card to choose a model, then its **thinking level**
 
 The choices come from your installed Codex tool and account. notdot checks them again before saving and sending a request. If a choice disappears, it asks you to choose another instead of switching silently. The same choice is used for replies and background memory checks.
 
+## Other Codex chats
+
+Ask something like **“Find my Codex chat about the website and remind me what we decided.”** notdot can find saved local chats by title and read relevant messages. If several match, it can ask which one you mean.
+
+Choose what it may do under **Other Codex chats**:
+
+| Mode | What happens |
+| --- | --- |
+| **Read only** | Find chats and read messages. This is the default. |
+| **Confirm before sending** | Read back the destination and instruction before each change. Say **“yes, send it”**, or **“yes, stop it”** for stopping a task. A bare “yes” does not approve it. |
+| **Send when asked** | Act directly on an exact request such as **“Tell Website to make the button clearer”**, using the chat's saved name and your original words. Different or ambiguous wording is read back for confirmation. |
+
+Each spoken request controls one chat action. With control enabled, notdot can send work to an available chat, add an instruction to a task it started, stop that task, and check its progress. A send acknowledgement means Codex accepted the request, not that the work finished. Ask notdot to check progress or read the chat for the answer.
+
+Sending can start work using the target chat's existing model, working directory and permissions. notdot does not grant extra permissions. It cannot take over a chat held by the desktop app or another runtime, and it cannot steer or stop their active tasks. It explains that a handoff is needed instead of forcing one. Desktop-only tools and approval flows may still require the desktop app.
+
+Approval is for one action only and expires after two minutes. Escape, muting, opening Settings, hiding notdot or a new request cancels pending approval. An action already accepted by Codex cannot be unsent. Changing to Read only prevents new actions; it does not stop work already running. Keep notdot open while tasks it started are running. Stopping cancels the current Codex turn; background processes may continue.
+
+Selected chat messages go to the Codex model to answer your request. These controls do not provide access to chats that are not stored in the local Codex runtime. Empty, unsaved chats may not appear in its history index.
+
 ## Voice
 
 With wake listening on, say your wake phrase. Orb clicks and Enter/Space do not start a separate recording. Drag still moves the orb, right-click opens Settings, and Escape cancels.
@@ -85,3 +105,5 @@ When update checks are on, notdot checks every six hours. It asks before install
 **Reconnect companion** restarts the conversation service. It interrupts any reply in progress. **Remove voice key** removes the saved service key.
 
 Voice recordings go to the selected voice service. Words from your request and relevant saved notes go to the model through the Codex tool. Local memories are not separately encrypted by notdot; your computer’s account and backups matter. See [Security](../SECURITY.md) for the full boundaries.
+
+If backup wake recognition fails on a phrase, the primary detector keeps listening and the backup can retry on the next phrase. Settings shows a short warning while that backup failure remains unresolved. Initial model-loading or microphone errors still need attention; notdot does not silently grant microphone permission.
