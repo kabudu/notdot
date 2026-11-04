@@ -126,7 +126,7 @@ For animation diagnostics, `visual-status.json` in the app-data directory contai
 
 ## Desktop lifecycle and releases
 
-The companion uses its own headless Codex runtime; the desktop window need not be foreground. Work/Chat conversations are not a supported bridge. Startup options, the branded About screen and updater implementation are described in [release readiness](release-readiness.md). Public releases and installed cross-platform update acceptance remain gated. GitHub Actions is disabled while this repository is private; run `scripts/ci-local.sh` locally.
+The companion uses its own headless Codex runtime; the desktop window need not be foreground. Work/Chat conversations are not a supported bridge. Startup options, About and updates are available in Settings. Public installers and the update feed are published through GitHub Releases. Maintainers prepare a release from a validated commit on master, tag that exact version, run the desktop release workflow, verify the draft assets and then publish. Run `scripts/ci-local.sh` for local validation.
 
 ### Voice usage alerts
 
