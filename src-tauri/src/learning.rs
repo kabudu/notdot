@@ -32,6 +32,7 @@ struct Pending {
 pub struct Learning {
     pending: Mutex<Option<Pending>>,
     sender: mpsc::Sender<Job>,
+    worker: tokio::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     status: Arc<Mutex<Status>>,
     memory: Arc<Memory>,
     selection: tokio::sync::watch::Sender<notdot_core::models::Selection>,
@@ -47,7 +48,7 @@ impl Learning {
         let proposals = confirmations.clone();
         let report = status.clone();
         let ledger = memory.clone();
-        tauri::async_runtime::spawn(async move {
+        let worker = tauri::async_runtime::spawn(async move {
             // Own a separate runtime: memory inference cannot overflow the companion's
             // event stream or change its connected-tool configuration.
             let mut client: Option<Arc<Bridge>> = None;
@@ -148,11 +149,26 @@ impl Learning {
         Self {
             pending: Mutex::new(None),
             sender,
+            worker: tokio::sync::Mutex::new(Some(worker)),
             status,
             memory,
             selection,
             confirmations,
         }
+    }
+    /// Stop queued/in-flight inference and release its ledger reference. The
+    /// owned analysis Bridge kills its child on drop, including cancellation.
+    pub async fn shutdown(&self) -> Result<(), String> {
+        self.cancel();
+        self.memory.set_learning_enabled(false).await;
+        if let Some(mut worker) = self.worker.lock().await.take() {
+            worker.abort();
+            match tokio::time::timeout(std::time::Duration::from_secs(2), &mut worker).await {
+                Ok(_) => {}
+                Err(_) => return Err("Memory worker is still stopping; try again".into()),
+            }
+        }
+        Ok(())
     }
     pub fn configure(&self, selection: notdot_core::models::Selection) {
         self.selection.send_if_modified(|current| {
@@ -282,6 +298,14 @@ impl Learning {
     }
 }
 
+impl Drop for Learning {
+    fn drop(&mut self) {
+        if let Some(worker) = self.worker.get_mut().take() {
+            worker.abort();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,6 +318,7 @@ mod tests {
             confirmations: Arc::new(crate::memory_confirmation::Confirmations::default()),
             pending: Mutex::new(None),
             sender,
+            worker: tokio::sync::Mutex::new(None),
             status: Arc::new(Mutex::new(Status::default())),
             memory,
             selection: tokio::sync::watch::channel(notdot_core::models::Selection::default()).0,

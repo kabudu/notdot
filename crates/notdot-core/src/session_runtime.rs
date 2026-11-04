@@ -20,8 +20,17 @@ pub struct Completion {
     pub title: String,
     pub status: String,
     pub summary: String,
+    /// Host-only authority; never include in spoken text or public serialization.
+    pub origin: Option<crate::chat_tools::ChatPolicy>,
 }
 impl Completion {
+    pub fn completion_allowed(&self) -> bool {
+        self.origin.as_ref().is_none_or(|policy| {
+            policy
+                .check(&self.thread_id, crate::profiles::ChatOp::Read)
+                .is_ok()
+        })
+    }
     pub fn key(&self) -> String {
         format!("task:{}:{}", self.thread_id, self.turn_id)
     }
@@ -56,6 +65,7 @@ struct Running {
     notify: bool,
     summary: String,
     approval_blocked: bool,
+    origin: Option<crate::chat_tools::ChatPolicy>,
 }
 pub struct SessionRuntime {
     bridge: Arc<Bridge>,
@@ -113,7 +123,11 @@ impl SessionRuntime {
                                 .await
                                 .insert(tid.into(), notify.clone());
                             let task = active.remove(tid).expect("matched owned task");
-                            if task.notify {
+                            if task.notify
+                                && task.origin.as_ref().is_none_or(|policy| {
+                                    policy.check(tid, crate::profiles::ChatOp::Read).is_ok()
+                                })
+                            {
                                 let status = if task.approval_blocked {
                                     "approval_required"
                                 } else {
@@ -127,6 +141,7 @@ impl SessionRuntime {
                                     title: task.title,
                                     status: status.into(),
                                     summary: task.summary,
+                                    origin: task.origin,
                                 });
                             }
                             // Admission reads active before completions. Publish
@@ -220,13 +235,20 @@ impl SessionRuntime {
         let mut active = self.active.lock().await;
         let mut completions = self.completions.lock().await;
         for (thread_id, task) in active.drain() {
-            if task.notify {
+            if task.notify
+                && task.origin.as_ref().is_none_or(|policy| {
+                    policy
+                        .check(&thread_id, crate::profiles::ChatOp::Read)
+                        .is_ok()
+                })
+            {
                 completions.push_back(Completion {
                     thread_id,
                     turn_id: task.turn.unwrap_or_else(|| "unconfirmed".into()),
                     title: task.title,
                     status: "unknown".into(),
                     summary: String::new(),
+                    origin: task.origin,
                 });
             }
         }
@@ -234,7 +256,14 @@ impl SessionRuntime {
     /// Peek until the host durably saves the notice, then acknowledge it. This
     /// prevents a transient disk error from silently dropping a completion.
     pub async fn completion(&self) -> Option<Completion> {
-        self.completions.lock().await.front().cloned()
+        let mut queue = self.completions.lock().await;
+        while queue
+            .front()
+            .is_some_and(|notice| !notice.completion_allowed())
+        {
+            queue.pop_front();
+        }
+        queue.front().cloned()
     }
     pub async fn acknowledge_completion(&self, key: &str) {
         let mut queue = self.completions.lock().await;
@@ -254,17 +283,34 @@ impl SessionRuntime {
         authority: Authorised,
         notify_default: bool,
     ) -> Result<String, String> {
+        self.execute_for_profile(authority, notify_default, None)
+            .await
+    }
+    pub async fn execute_for_profile(
+        &self,
+        authority: Authorised,
+        notify_default: bool,
+        policy: Option<&crate::chat_tools::ChatPolicy>,
+    ) -> Result<String, String> {
         let notify = notify_default || authority.notify_on_completion();
         let plan = authority.plan();
         plan.validate()?;
         if !self.healthy.load(Ordering::SeqCst) {
             return Err("The session-control connection lost its live state. Check the target in Codex before restarting notdot; no action was retried.".into());
         }
+        if let Some(policy) = policy {
+            policy.action(plan)?;
+        }
         if !authority.is_valid() {
             return Err("Chat action cancelled or expired. Nothing was sent.".into());
         }
+        if policy.is_some_and(|policy| policy.turn.role == crate::profiles::Role::Member)
+            && matches!(plan.action, Action::Steer | Action::Stop)
+        {
+            return Err("Members can add messages to shared chats, but cannot start, steer or stop device tasks.".into());
+        }
         if plan.action == Action::Status {
-            return Ok(if self.active.lock().await.contains_key(&plan.thread_id) {
+            let result = if self.active.lock().await.contains_key(&plan.thread_id) {
                 format!(
                     "The task notdot started in {} is still running.",
                     plan.title
@@ -290,7 +336,11 @@ impl SessionRuntime {
                     "Notdot is not running {}. I can read its saved messages, but cannot confirm the desktop app's live status.",
                     plan.title
                 )
-            });
+            };
+            if let Some(policy) = policy {
+                policy.action(plan)?;
+            }
+            return Ok(result);
         }
         let mut gate = self.gate.lock().await;
         if plan.action == Action::Send && self.releasing.lock().await.contains_key(&plan.thread_id)
@@ -300,6 +350,9 @@ impl SessionRuntime {
             while self.releasing.lock().await.contains_key(&plan.thread_id)
                 && std::time::Instant::now() < deadline
             {
+                if let Some(policy) = policy {
+                    policy.action(plan)?;
+                }
                 if !authority.is_valid() {
                     return Err("Chat action cancelled or expired".into());
                 }
@@ -312,6 +365,9 @@ impl SessionRuntime {
             return Err(
                 "The session-control live state is unavailable. No action was retried.".into(),
             );
+        }
+        if let Some(policy) = policy {
+            policy.action(plan)?;
         }
         if !authority.is_valid() {
             return Err("Chat action cancelled or expired".into());
@@ -339,7 +395,8 @@ impl SessionRuntime {
                 return Err("Four chats are already running. Wait for one to finish.".into());
             }
             drop(releasing);
-            let resumed=self.bridge.call("thread/resume",json!({"threadId":plan.thread_id,"excludeTurns":true})).await.map_err(|e|if e.contains("active writer") {"The desktop app or another runtime owns that chat. Release it there before asking notdot to send. Nothing was sent.".into()}else{e})?;
+            let resume = json!({"threadId":plan.thread_id,"excludeTurns":true});
+            let resumed=self.bridge.call("thread/resume",resume).await.map_err(|e|if e.contains("active writer") {"The desktop app or another runtime owns that chat. Release it there before asking notdot to send. Nothing was sent.".into()}else{e})?;
             if resumed["thread"]["id"] != plan.thread_id
                 || resumed["thread"]["status"]["type"] == "active"
             {
@@ -368,6 +425,33 @@ impl SessionRuntime {
                     .await;
                 return Err("Chat action cancelled before sending. Nothing was sent.".into());
             }
+            if let Some(policy) = policy
+                && let Err(error) = policy.action(plan)
+            {
+                let _ = self
+                    .bridge
+                    .call("thread/unsubscribe", json!({"threadId":plan.thread_id}))
+                    .await;
+                return Err(error);
+            }
+            if policy.is_some_and(|policy| policy.turn.role == crate::profiles::Role::Member) {
+                // Append only a host-constructed USER item. No turn starts, no
+                // tools execute and the target's permissions/config stay intact.
+                let posted=self.bridge.call("thread/inject_items",json!({"threadId":plan.thread_id,"items":[{"type":"message","role":"user","content":[{"type":"input_text","text":plan.message}]}]})).await;
+                let released = self
+                    .bridge
+                    .call("thread/unsubscribe", json!({"threadId":plan.thread_id}))
+                    .await;
+                posted.map_err(|error|format!("Adding the message was not confirmed. Check the target before retrying; nothing was retried automatically: {error}"))?;
+                released?;
+                if let Some(policy) = policy {
+                    policy.action(plan)?;
+                }
+                return Ok(format!(
+                    "Added your message to {}'s chat context for its next continuation. No task was started.",
+                    plan.title
+                ));
+            }
             self.active.lock().await.insert(
                 plan.thread_id.clone(),
                 Running {
@@ -376,6 +460,7 @@ impl SessionRuntime {
                     notify,
                     summary: String::new(),
                     approval_blocked: false,
+                    origin: policy.cloned(),
                 },
             );
             // Preserve the target's model, working directory and permission profile.
@@ -412,6 +497,9 @@ impl SessionRuntime {
             }
         } else {
             let turn=self.active.lock().await.get(&plan.thread_id).and_then(|task| task.turn.clone()).ok_or("Notdot does not own a running task in that chat. It cannot steer or stop a desktop-owned session.")?;
+            if let Some(policy) = policy {
+                policy.action(plan)?;
+            }
             if !authority.is_valid() {
                 return Err("Chat action cancelled or expired".into());
             }
@@ -428,6 +516,9 @@ impl SessionRuntime {
                     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
                     let mut delay = 50;
                     loop {
+                        if let Some(policy) = policy {
+                            policy.action(plan)?;
+                        }
                         if !authority.is_valid() {
                             return Err("Stop request cancelled or expired".into());
                         }
@@ -461,5 +552,103 @@ impl SessionRuntime {
     }
     pub async fn shutdown(&self) {
         self.bridge.shutdown().await;
+    }
+}
+
+#[cfg(all(test, unix))]
+mod member_posting_tests {
+    use super::*;
+    use crate::{
+        chat_tools::ChatPolicy,
+        profiles::{Actor, Admission, ChatAccess, Roster, SpeakerOutcome},
+        session_control::{Consent, Decision, Mode, Plan},
+    };
+    use std::os::unix::fs::PermissionsExt;
+    #[tokio::test]
+    async fn member_posting_never_inherits_target_device_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = dir.path().join("runtime");
+        std::fs::write(&runtime,r#"#!/usr/bin/env python3
+import json,sys
+for line in sys.stdin:
+ m=json.loads(line); method=m.get('method');p=m.get('params',{})
+ if 'id' not in m:continue
+ if method=='initialize':r={}
+ elif method=='config/read':r={'config':{'mcp_servers':{'files':{'enabled':True}},'apps':{'mail':{'enabled':True}},'plugins':{'external':{'enabled':True}}}}
+ elif method=='thread/resume':
+  assert 'config' not in p and 'sandbox' not in p and 'approvalPolicy' not in p
+  r={'thread':{'id':'shared','name':'Target','status':{'type':'idle'}},'sandbox':{'type':'workspaceWrite'},'approvalPolicy':'untrusted'}
+ elif method=='thread/inject_items':
+  assert p['items']==[{'type':'message','role':'user','content':[{'type':'input_text','text':'reply ready'}]}]
+  r={}
+ elif method=='turn/start':raise Exception('Member posting must not start a turn')
+ elif method=='thread/unsubscribe':r={'status':'notLoaded'}
+ else:r={}
+ print(json.dumps({'id':m['id'],'result':r}),flush=True)
+"#).unwrap();
+        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut roster = Roster::new("Owner").unwrap();
+        let member = roster.add_member(&Actor::LocalDevice, "Member").unwrap();
+        roster
+            .set_voice_enrolled(&Actor::LocalDevice, &member, true)
+            .unwrap();
+        roster
+            .grant_chat(&Actor::LocalDevice, "shared", &member, ChatAccess::Read)
+            .unwrap();
+        roster
+            .grant_chat(
+                &Actor::LocalDevice,
+                "shared",
+                &member,
+                ChatAccess::ReadWrite,
+            )
+            .unwrap();
+        let Admission::Admit(turn) = roster.admit(
+            "capture",
+            &SpeakerOutcome::Recognised {
+                profile: member,
+                score: 0.99,
+            },
+        ) else {
+            panic!("admit")
+        };
+        let path = dir.path().join("profiles.json");
+        roster.save(&path).unwrap();
+        let policy = ChatPolicy {
+            roster_path: path,
+            turn,
+            global_mode: Mode::Confirm,
+            companion_thread: None,
+        };
+        let mut consent = Consent::default();
+        consent.begin(Mode::Confirm, "Tell Target to reply ready");
+        consent.bind("source-turn");
+        consent
+            .stage(
+                "source-turn",
+                Plan {
+                    action: Action::Send,
+                    thread_id: "shared".into(),
+                    title: "Target".into(),
+                    message: "reply ready".into(),
+                    unambiguous: true,
+                },
+            )
+            .unwrap();
+        let id = consent.pending().unwrap();
+        assert!(matches!(consent.question(&id).unwrap(), Decision::Ask(_)));
+        let authority = consent
+            .answer(&id, "yes please send that message")
+            .unwrap()
+            .unwrap();
+        let session = SessionRuntime::connect(&runtime).await.unwrap();
+        assert!(
+            session
+                .execute_for_profile(authority, false, Some(&policy))
+                .await
+                .unwrap()
+                .starts_with("Added your message to")
+        );
+        session.shutdown().await;
     }
 }

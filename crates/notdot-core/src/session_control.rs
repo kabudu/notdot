@@ -123,13 +123,17 @@ impl Plan {
             Action::Status => format!("Check {}", destination),
         };
         format!(
-            "{detail}. This uses that chat's existing permissions. Say yes, {} it to confirm, or no to cancel.",
-            if self.action == Action::Stop {
-                "stop"
-            } else {
-                "send"
-            }
+            "{detail}. This uses that chat's existing permissions. Say {} to confirm, or no to cancel.",
+            self.confirmation_phrase()
         )
+    }
+    fn confirmation_phrase(&self) -> &'static str {
+        match self.action {
+            Action::Send => "yes, please send that message",
+            Action::Steer => "yes, please add that instruction",
+            Action::Stop => "yes, please stop that task",
+            Action::Status => "yes, please check that chat",
+        }
     }
 }
 fn words(s: &str) -> String {
@@ -324,6 +328,10 @@ impl Consent {
             self.pending = None;
         }
     }
+    pub fn waiting(&mut self) -> bool {
+        self.prune();
+        self.pending.is_some()
+    }
     pub fn pending(&mut self) -> Option<String> {
         self.prune();
         self.pending
@@ -370,12 +378,16 @@ impl Consent {
         } else {
             "yes send it"
         };
-        Ok((words(text) == expected).then_some(Authorised {
-            plan: p.plan,
-            notify: p.notify,
-            valid: self.authority.clone(),
-            expires: p.created + Duration::from_secs(120),
-        }))
+        let answer = words(text);
+        let longer = words(p.plan.confirmation_phrase());
+        Ok(
+            (answer == expected || answer == longer).then_some(Authorised {
+                plan: p.plan,
+                notify: p.notify,
+                valid: self.authority.clone(),
+                expires: p.created + Duration::from_secs(120),
+            }),
+        )
     }
     pub fn cancel_id(&mut self, id: &str) {
         if self.issued_id.as_deref() == Some(id) {
@@ -472,8 +484,61 @@ mod tests {
         let id = c.pending().unwrap();
         assert!(c.answer(&id, "yes send it").is_err());
         assert!(matches!(c.question(&id).unwrap(), Decision::Ask(_)));
+        assert!(c.pending().is_none());
+        assert!(
+            c.waiting(),
+            "offered confirmation must block speaker switches"
+        );
         assert!(c.answer(&id, "yes send it").unwrap().is_some());
         assert!(c.answer(&id, "yes send it").is_err());
+    }
+    #[test]
+    fn longer_chat_confirmations_are_exact_and_action_specific() {
+        for (action, phrase, legacy) in [
+            (
+                Action::Send,
+                "Yes, please send that message!",
+                "yes send it",
+            ),
+            (
+                Action::Steer,
+                "Yes, please add that instruction.",
+                "yes send it",
+            ),
+            (Action::Stop, "Yes, please stop that task.", "yes stop it"),
+        ] {
+            for answer in [
+                phrase,
+                legacy,
+                "yes",
+                "yes please do not send that message",
+                "yes please send that message no",
+                "yes please save that memory",
+                if action == Action::Stop {
+                    "yes please send that message"
+                } else {
+                    "yes please stop that task"
+                },
+            ] {
+                let mut consent = Consent::default();
+                consent.begin(Mode::Confirm, "Please control this chat");
+                consent.bind("turn");
+                let mut requested = plan();
+                requested.action = action;
+                if matches!(action, Action::Stop | Action::Status) {
+                    requested.message.clear();
+                }
+                consent.stage("turn", requested).unwrap();
+                let id = consent.pending().unwrap();
+                assert!(matches!(consent.question(&id).unwrap(), Decision::Ask(_)));
+                let approved = consent.answer(&id, answer).unwrap().is_some();
+                assert_eq!(
+                    approved,
+                    answer == phrase || answer == legacy,
+                    "{action:?}: {answer}"
+                );
+            }
+        }
     }
     #[test]
     fn when_asked_requires_the_exact_current_request() {

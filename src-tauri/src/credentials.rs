@@ -8,7 +8,7 @@ use zeroize::Zeroizing;
 // Legacy macOS keychain UI control is process-wide. Serialize all credential
 // reads/writes across vault instances, so an explicit approval cannot race a
 // scoped non-interactive read. The cache lock stays separate for UI snapshots.
-static OPERATIONS: Mutex<()> = Mutex::new(());
+pub(crate) static OPERATIONS: Mutex<()> = Mutex::new(());
 #[derive(Default)]
 pub struct Credentials {
     cache: Mutex<HashMap<String, Zeroizing<String>>>,

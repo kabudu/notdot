@@ -127,9 +127,9 @@ jobs:
       - name: Rebuild generic native decoder with the selected generator
         run: cargo clean -p whisper-rs-sys
       - name: Test native Windows code and bundled models
-        run: cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-orb -p notdot --release --target x86_64-pc-windows-msvc --locked -- --test-threads=1
+        run: cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-speakers -p notdot-orb -p notdot --release --target x86_64-pc-windows-msvc --locked -- --test-threads=1
       - name: Check Windows-specific Rust code
-        run: cargo clippy -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --all-targets --locked -- -D warnings
+        run: cargo clippy -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-speakers -p notdot --all-targets --locked -- -D warnings
       - name: Install verified prebuilt release tools
         run: python scripts/install_release_tools.py
       - name: Verify packaging commands select the pinned tools
@@ -232,9 +232,9 @@ jobs:
       - name: Rebuild the native C++ boundary
         run: cargo clean -p whisper-rs-sys
       - name: Test Linux code and the bundled wake models
-        run: cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-orb -p notdot --release --locked -- --test-threads=1
+        run: cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-speakers -p notdot-orb -p notdot --release --locked -- --test-threads=1
       - name: Check Linux-specific Rust code
-        run: cargo clippy -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --all-targets --locked -- -D warnings
+        run: cargo clippy -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-speakers -p notdot --all-targets --locked -- -D warnings
       # Isolate one known accuracy case under the maintainer 0.1 Linux policy.
       # All other errors, including decode failures and native crashes, block.
       - name: Linux 48 kHz wake accuracy (advisory)

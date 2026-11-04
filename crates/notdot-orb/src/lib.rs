@@ -2,6 +2,8 @@
 mod audio_meter;
 mod conversation;
 mod interaction;
+mod settings_navigation;
+mod speakers;
 mod speech_queue;
 mod visual_state;
 use serde::{Deserialize, Serialize};
@@ -76,9 +78,13 @@ struct Settings {
 }
 #[derive(Clone, Default, Deserialize)]
 struct Snapshot {
+    #[serde(default)]
+    profile_id: String,
     settings: Settings,
     #[serde(default)]
     session_pending: Option<String>,
+    #[serde(default)]
+    settings_pending: Option<String>,
     phase: String,
     reply: String,
     #[serde(default)]
@@ -652,6 +658,7 @@ fn followup_allowed(view: &Shared, snapshot: &Snapshot) -> bool {
     let v = view.borrow();
     snapshot.settings.followup_enabled
         && snapshot.session_pending.is_none()
+        && snapshot.settings_pending.is_none()
         && snapshot.phase == "idle"
         && snapshot.window_visible
         && snapshot.settings.onboarding_complete
@@ -1037,6 +1044,7 @@ fn refresh_models(view: &Shared, model: String, effort: String) {
 fn open_panel(view: &Shared) {
     spawn_local(async {
         let _ = call("cancel_session", json!({})).await;
+        let _ = call("cancel_settings", json!({})).await;
     });
     if view.borrow().conversation.active()
         || view.borrow().capture_token.is_some()
@@ -1151,6 +1159,8 @@ fn open_panel(view: &Shared) {
             select("provider").set_value(&provider);
         }
     });
+    settings_navigation::on_open(!view.borrow().snapshot.settings.onboarding_complete);
+    speakers::on_open();
     let _ = dialog("panel").show_modal();
     if view.borrow().snapshot.key_authorized {
         let target = view.clone();
@@ -1162,6 +1172,7 @@ fn open_panel(view: &Shared) {
     }
 }
 fn close_panel(view: &Shared) {
+    speakers::cancel();
     view.borrow_mut().preview_hue = None;
     apply_theme(view.borrow().snapshot.settings.hue);
     dialog("panel").close();
@@ -1197,6 +1208,8 @@ fn stop_audio(view: &Shared) {
             let _ = call(
                 if id.starts_with("session-") {
                     "cancel_session"
+                } else if id.starts_with("settings-") {
+                    "cancel_settings"
                 } else {
                     "cancel_memory"
                 },
@@ -1368,23 +1381,28 @@ async fn submit_transcript(view: Shared, text: String, generation: u64) -> Resul
     if view.borrow().generation != generation {
         return Ok(());
     }
-    view.borrow_mut().capture_token = None;
+    let capture_token = view.borrow_mut().capture_token.take();
     view.borrow_mut().native_manual = false;
-    let pending_confirmation = view.borrow_mut().confirmation_listening.take();
+    // Keep the operation ID while native validation is pending, so Escape can
+    // revoke approval before a voice/model lookup reaches the save boundary.
+    let pending_confirmation = view.borrow().confirmation_listening.clone();
     if let Some(id) = pending_confirmation {
         view.borrow_mut().local_phase = Some("synthesizing");
         let result = call(
             if id.starts_with("session-") {
                 "answer_session"
+            } else if id.starts_with("settings-") {
+                "answer_settings"
             } else {
                 "answer_memory"
             },
-            json!({"id":id,"text":text}),
+            json!({"id":id,"text":text,"captureToken":capture_token}),
         )
         .await?;
         if view.borrow().generation != generation {
             return Ok(());
         }
+        view.borrow_mut().confirmation_listening = None;
         let answer = result
             .as_string()
             .ok_or("Confirmation returned no answer")?;
@@ -1413,10 +1431,13 @@ async fn submit_transcript(view: Shared, text: String, generation: u64) -> Resul
     view.borrow_mut().conversation.close();
     let request = format!("voice-{:.0}-{generation}", js_sys::Date::now());
     view.borrow_mut().request_id = Some(request.clone());
-    let turn = call("send_message", json!({"text":text,"requestId":request}))
-        .await?
-        .as_string()
-        .ok_or("Runtime did not identify the submitted turn")?;
+    let turn = call(
+        "send_message",
+        json!({"text":text,"requestId":request,"captureToken":capture_token}),
+    )
+    .await?
+    .as_string()
+    .ok_or("Runtime did not identify the submitted turn")?;
     if view.borrow().generation != generation {
         return Ok(());
     }
@@ -1745,6 +1766,8 @@ async fn browser_voice(view: Shared) -> Result<(), String> {
 }
 #[wasm_bindgen(start)]
 pub fn start() -> Result<(), JsValue> {
+    settings_navigation::install()?;
+    speakers::install()?;
     let view = Rc::new(RefCell::new(View {
         snapshot: Snapshot {
             settings: Settings {
@@ -2596,6 +2619,28 @@ pub fn start() -> Result<(), JsValue> {
                 serde_wasm_bindgen::from_value::<Snapshot>(v).map_err(|e| e.to_string())
             }) {
                 Ok(mut snapshot) => {
+                    let previous_profile = target.borrow().snapshot.profile_id.clone();
+                    if !previous_profile.is_empty() && previous_profile != snapshot.profile_id {
+                        let capturing = {
+                            let v = target.borrow();
+                            v.capture_token.as_deref() == snapshot.wake["capture_token"].as_str()
+                                && v.capture_token.is_some()
+                                && v.audio.is_none()
+                                && matches!(
+                                    snapshot.wake["phase"].as_str(),
+                                    Some("capturing" | "ready")
+                                )
+                        };
+                        if capturing {
+                            let mut v = target.borrow_mut();
+                            v.speech_queue = Default::default();
+                            v.reply_turn.clear();
+                            v.voice_pending = false;
+                        } else {
+                            stop_audio(&target);
+                        }
+                        target.borrow_mut().conversation.close();
+                    }
                     if target.borrow().conversation.active()
                         && !followup_allowed(&target, &snapshot)
                     {
@@ -2830,6 +2875,7 @@ pub fn start() -> Result<(), JsValue> {
                             && snapshot.window_visible
                             && !snapshot.settings.microphone_muted
                             && snapshot.session_pending.is_none()
+                            && snapshot.settings_pending.is_none()
                             && snapshot.learning["confirmation"].is_null()
                             && snapshot.wake["phase"] != "capturing"
                             && !speak
@@ -2870,11 +2916,15 @@ pub fn start() -> Result<(), JsValue> {
                             && !dialog("about").open()
                             && v.audio.as_ref().is_none_or(|a| a.paused() || a.ended())
                         {
-                            snapshot.session_pending.clone().or_else(|| {
-                                snapshot.learning["confirmation"]
-                                    .as_str()
-                                    .map(str::to_owned)
-                            })
+                            snapshot
+                                .settings_pending
+                                .clone()
+                                .or_else(|| snapshot.session_pending.clone())
+                                .or_else(|| {
+                                    snapshot.learning["confirmation"]
+                                        .as_str()
+                                        .map(str::to_owned)
+                                })
                         } else {
                             None
                         }
@@ -2886,6 +2936,11 @@ pub fn start() -> Result<(), JsValue> {
                         let model = select("model").value();
                         let effort = select("effort").value();
                         refresh_models(&target, model, effort);
+                    }
+                    if !dialog("panel").open()
+                        && target.borrow().snapshot.settings.hue != snapshot.settings.hue
+                    {
+                        apply_theme(snapshot.settings.hue);
                     }
                     let onboard = !snapshot.settings.onboarding_complete;
                     target.borrow_mut().snapshot = snapshot;
@@ -2922,6 +2977,11 @@ pub fn start() -> Result<(), JsValue> {
                                         .as_str()
                                         .ok_or("Chat action expired")?
                                         .to_owned()
+                                } else if id.starts_with("settings-") {
+                                    call("settings_question", json!({"id":id}))
+                                        .await?
+                                        .as_string()
+                                        .ok_or("Settings check expired")?
                                 } else {
                                     call("memory_question", json!({"id":id}))
                                         .await?
@@ -3514,6 +3574,7 @@ fn mount_debug(view: &Shared) {
 }
 
 async fn review_followups() -> Result<(), String> {
+    settings_navigation::reveal("reminders-section");
     let value = call("followups", json!({})).await?;
     let entries: Value = serde_wasm_bindgen::from_value(value).map_err(|e| e.to_string())?;
     let container = element("followups");
@@ -3570,6 +3631,7 @@ async fn review_followups() -> Result<(), String> {
     Ok(())
 }
 async fn review_memories() -> Result<(), String> {
+    settings_navigation::reveal("memory-section");
     let value = call("memories", json!({})).await?;
     let records: Value = serde_wasm_bindgen::from_value(value).map_err(|e| e.to_string())?;
     let container = element("notes");

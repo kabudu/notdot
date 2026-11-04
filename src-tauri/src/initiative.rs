@@ -23,6 +23,13 @@ pub struct Status {
     pub task_report: bool,
     pub error: Option<String>,
 }
+fn visible_to(entry: &Entry, profile: &notdot_core::profiles::ProfileId) -> bool {
+    entry.origin_allowed()
+        && entry
+            .profile_origin
+            .as_ref()
+            .is_none_or(|origin| &origin.turn.profile == profile)
+}
 pub struct Initiative {
     journal: Mutex<Journal>,
     path: PathBuf,
@@ -91,8 +98,13 @@ impl Initiative {
         }
         Ok(())
     }
-    pub async fn status(&self, policy: &notdot_core::initiative::Policy) -> Status {
-        let j = self.journal.lock().await;
+    pub async fn status(
+        &self,
+        policy: &notdot_core::initiative::Policy,
+        profile: &notdot_core::profiles::ProfileId,
+    ) -> Status {
+        let mut j = self.journal.lock().await.clone();
+        j.entries.retain(|entry| visible_to(entry, profile));
         let date = Local::now();
         let next = j.next(
             policy,
@@ -128,6 +140,7 @@ impl Initiative {
             evidence: "Status from the exact Codex turn started by notdot. A completed turn does not independently verify external work.".into(),
             created: time, due: time, expires: time + 7 * 86400,
             permitted: true, delivered: false, dismissed: false,
+            profile_origin: completion.origin.clone(),
         }).await
     }
     pub async fn command(&self, text: &str, behaviour: Behaviour) -> Option<String> {
@@ -148,7 +161,7 @@ impl Initiative {
             let messages: Vec<_> = j
                 .entries
                 .iter()
-                .filter(|e| !e.dismissed && !e.delivered && e.expires > now())
+                .filter(|e| !e.dismissed && !e.delivered && e.expires > now() && e.origin_allowed())
                 .take(5)
                 .map(|e| e.message.as_str())
                 .collect();
@@ -177,6 +190,7 @@ impl Initiative {
                 permitted: true,
                 delivered: false,
                 dismissed: false,
+                profile_origin: None,
             })
             .await;
         Some(match result { Err(e)=>e,Ok(())=>match behaviour { Behaviour::Reactive=>"Reminder saved. Automatic announcements are off in Reactive mode; choose Suggestions or Proactive in Settings to surface it.".into(),Behaviour::Suggestions=>"Reminder saved. It will appear silently on the orb when due. Proactive mode is needed for a spoken reminder.".into(),Behaviour::Proactive=>"Reminder saved. I'll announce it when you're idle, respecting your quiet hours and frequency limits.".into() } })
@@ -184,20 +198,22 @@ impl Initiative {
 }
 #[tauri::command]
 pub async fn followups(state: State<'_, Arc<AppState>>) -> Result<Vec<Entry>, String> {
-    Ok(state
+    let context = state.context();
+    Ok(context
         .initiative
         .journal
         .lock()
         .await
         .entries
         .iter()
-        .filter(|e| !e.dismissed && e.expires > now())
+        .filter(|e| !e.dismissed && e.expires > now() && visible_to(e, &context.id))
         .cloned()
         .collect())
 }
 #[tauri::command]
 pub fn cancel_followup_speech(state: State<'_, Arc<AppState>>) {
-    state.initiative.cancel();
+    let context = state.context();
+    context.initiative.cancel();
 }
 #[tauri::command]
 pub async fn followup_action(
@@ -205,10 +221,11 @@ pub async fn followup_action(
     id: String,
     action: String,
 ) -> Result<(), String> {
-    let mut j = state.initiative.journal.lock().await;
+    let context = state.context();
+    let mut j = context.initiative.journal.lock().await;
     let mut updated = j.clone();
     updated.action(&id, &action, now())?;
-    state.initiative.save(&updated).await?;
+    context.initiative.save(&updated).await?;
     *j = updated;
     Ok(())
 }
@@ -218,7 +235,11 @@ pub async fn announce_followup(
     state: State<'_, Arc<AppState>>,
     id: String,
 ) -> Result<(), String> {
-    let generation = state.initiative.cancellation.load(Ordering::Relaxed);
+    let context = state.context();
+    if !state.can_announce_private() {
+        return Err("Please speak to notdot before hearing a private follow-up".into());
+    }
+    let generation = context.initiative.cancellation.load(Ordering::Relaxed);
     if !window.is_visible().unwrap_or(false) || window.is_minimized().unwrap_or(true) {
         return Err("Show notdot to hear a follow-up".into());
     }
@@ -242,7 +263,7 @@ pub async fn announce_followup(
         }
         s.settings.initiative.clone()
     };
-    let source = state
+    let source = context
         .initiative
         .journal
         .lock()
@@ -251,10 +272,10 @@ pub async fn announce_followup(
         .iter()
         .find(|e| e.id == id)
         .and_then(|e| e.source.strip_prefix("memory:").map(str::to_owned));
-    let memory_ticket = state.memory.learning_ticket();
+    let memory_ticket = context.memory.learning_ticket();
     if let Some(source) = &source
         && (memory_ticket.is_none()
-            || !state.memory.review("").await?.iter().any(|n| {
+            || !context.memory.review("").await?.iter().any(|n| {
                 n.id == *source
                     && !n
                         .metadata
@@ -262,14 +283,25 @@ pub async fn announce_followup(
                         .is_some_and(|s| s == "provisional")
             }))
     {
-        state.initiative.remove_inferred(Some(source)).await?;
+        context.initiative.remove_inferred(Some(source)).await?;
         return Err("The source for this follow-up is no longer available".into());
     }
     let date = Local::now();
     let time = now();
     let message = {
-        let mut j = state.initiative.journal.lock().await;
+        let mut j = context.initiative.journal.lock().await;
         let mut updated = j.clone();
+        let entry = updated
+            .entries
+            .iter()
+            .find(|e| e.id == id)
+            .ok_or("Follow-up unavailable")?;
+        if !visible_to(entry, &context.id) {
+            return Err("Follow-up permission changed".into());
+        }
+        if !state.can_announce_private() {
+            return Err("Private follow-up permission expired".into());
+        }
         let message = updated.claim(
             &id,
             &policy,
@@ -278,16 +310,19 @@ pub async fn announce_followup(
             (date.hour() * 60 + date.minute()) as u16,
         )?;
         // Persist before audio. A crash can lose an alert but cannot repeat it.
-        state.initiative.save(&updated).await?;
+        context.initiative.save(&updated).await?;
         *j = updated;
         message
     };
     state.wake.ready(false);
-    if state.initiative.cancellation.load(Ordering::Relaxed) != generation {
+    if !state.can_announce_private()
+        || state.context().id != context.id
+        || context.initiative.cancellation.load(Ordering::Relaxed) != generation
+    {
         return Err("Follow-up cancelled".into());
     }
     let task_report = source.is_none()
-        && state
+        && context
             .initiative
             .journal
             .lock()
@@ -299,10 +334,12 @@ pub async fn announce_followup(
         let mut ticks = tokio::time::interval(std::time::Duration::from_millis(100));
         loop {
             ticks.tick().await;
-            if !window.is_visible().unwrap_or(false)
+            if !state.can_announce_private()
+                || state.context().id != context.id
+                || !window.is_visible().unwrap_or(false)
                 || window.is_minimized().unwrap_or(true)
-                || (source.is_some() && state.memory.learning_ticket() != memory_ticket)
-                || state.initiative.cancellation.load(Ordering::Relaxed) != generation
+                || (source.is_some() && context.memory.learning_ticket() != memory_ticket)
+                || context.initiative.cancellation.load(Ordering::Relaxed) != generation
             {
                 break;
             }
@@ -313,9 +350,11 @@ pub async fn announce_followup(
             {
                 break;
             }
-            let j = state.initiative.journal.lock().await;
+            let j = context.initiative.journal.lock().await;
             if j.entries.iter().find(|e| e.id == id).is_none_or(|e| {
-                e.dismissed || (e.source.starts_with("memory:") && !s.settings.memory_enabled)
+                e.dismissed
+                    || !visible_to(e, &context.id)
+                    || (e.source.starts_with("memory:") && !s.settings.memory_enabled)
             }) {
                 break;
             }
@@ -326,7 +365,7 @@ pub async fn announce_followup(
         _ = interrupt => return Err("Follow-up cancelled".into()),
     };
     if let Err(ref e) = result {
-        *state.initiative.error.lock().await =
+        *context.initiative.error.lock().await =
             Some(format!("Spoken follow-up failed; read it in Settings: {e}"));
     }
     result
@@ -339,29 +378,34 @@ pub fn spawn_task_reports(state: Arc<AppState>) {
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             ticks.tick().await;
-            let runtime = state.session_runtime.lock().await.clone();
-            let Some(runtime) = runtime else { continue };
-            let Some(completion) = runtime.completion().await else {
+            let Ok(contexts) = state.profiles.all() else {
                 continue;
             };
-            match state.initiative.task_completed(&completion).await {
-                Ok(()) => {
-                    let mut outcomes = state.session_outcomes.lock().await;
-                    outcomes.push_back(format!(
-                        "Task report for chat {}: {}",
-                        completion.thread_id,
-                        completion.message()
-                    ));
-                    while outcomes.len() > 8 {
-                        outcomes.pop_front();
+            for context in contexts {
+                let runtime = context.session_runtime.lock().await.clone();
+                let Some(runtime) = runtime else { continue };
+                let Some(completion) = runtime.completion().await else {
+                    continue;
+                };
+                match context.initiative.task_completed(&completion).await {
+                    Ok(()) => {
+                        let mut outcomes = context.session_outcomes.lock().await;
+                        outcomes.push_back(format!(
+                            "Task report for chat {}: {}",
+                            completion.thread_id,
+                            completion.message()
+                        ));
+                        while outcomes.len() > 8 {
+                            outcomes.pop_front();
+                        }
+                        drop(outcomes);
+                        runtime.acknowledge_completion(&completion.key()).await;
                     }
-                    drop(outcomes);
-                    runtime.acknowledge_completion(&completion.key()).await;
-                }
-                Err(error) => {
-                    *state.initiative.error.lock().await =
-                        Some(format!("Could not save a task report: {error}"));
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    Err(error) => {
+                        *context.initiative.error.lock().await =
+                            Some(format!("Could not save a task report: {error}"));
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
                 }
             }
         }
@@ -379,7 +423,8 @@ pub fn spawn(state: Arc<AppState>) {
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             ticks.tick().await;
-            let _refresh = state.initiative.refresh.lock().await;
+            let context = state.context();
+            let _refresh = context.initiative.refresh.lock().await;
             let enabled = {
                 let s = state.snapshot.lock().await;
                 s.settings.memory_enabled && s.settings.initiative.behaviour != Behaviour::Reactive
@@ -387,15 +432,15 @@ pub fn spawn(state: Arc<AppState>) {
             if !enabled {
                 continue;
             }
-            let Some(ticket) = state.memory.learning_ticket() else {
+            let Some(ticket) = context.memory.learning_ticket() else {
                 continue;
             };
             let result = async {
-                let notes = state.memory.review("").await?;
+                let notes = context.memory.review("").await?;
                 let ids: std::collections::BTreeSet<_> =
                     notes.iter().map(|n| n.id.clone()).collect();
                 // Forget/correct/disable must not leave an inferred reminder behind.
-                let mut j = state.initiative.journal.lock().await;
+                let mut j = context.initiative.journal.lock().await;
                 let mut updated = j.clone();
                 updated.entries.retain(|e| {
                     !e.source.starts_with("memory:")
@@ -438,22 +483,25 @@ pub fn spawn(state: Arc<AppState>) {
                             permitted: false,
                             delivered: false,
                             dismissed: false,
+                            profile_origin: None,
                         },
                         time,
                     )?;
                 }
-                if state.memory.learning_ticket() != Some(ticket) {
+                if state.context().id != context.id
+                    || context.memory.learning_ticket() != Some(ticket)
+                {
                     return Ok::<_, String>(());
                 }
                 if updated != *j {
-                    state.initiative.save(&updated).await?;
+                    context.initiative.save(&updated).await?;
                     *j = updated;
                 }
                 Ok(())
             }
             .await;
             if let Err(e) = result {
-                *state.initiative.error.lock().await = Some(e);
+                *context.initiative.error.lock().await = Some(e);
             }
         }
     });
@@ -462,6 +510,46 @@ pub fn spawn(state: Arc<AppState>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn private_report_is_hidden_from_another_profile_even_with_valid_origin() {
+        use notdot_core::{
+            chat_tools::ChatPolicy,
+            profiles::{ProfileId, Role, Roster, TurnLock},
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let roster = Roster::new("Owner").unwrap();
+        let path = directory.path().join("profiles.json");
+        roster.save(&path).unwrap();
+        let owner = roster.owner().clone();
+        let entry = Entry {
+            id: "private".into(),
+            key: "private".into(),
+            message: "Private reminder".into(),
+            source: "reminder".into(),
+            evidence: String::new(),
+            created: 1,
+            due: 1,
+            expires: u64::MAX,
+            permitted: true,
+            delivered: false,
+            dismissed: false,
+            profile_origin: Some(ChatPolicy {
+                roster_path: path,
+                turn: TurnLock {
+                    capture_token: "test-capture".into(),
+                    profile: owner.clone(),
+                    role: Role::Owner,
+                    epoch: 0,
+                    open_fallback: false,
+                },
+                global_mode: notdot_core::session_control::Mode::ReadOnly,
+                companion_thread: None,
+            }),
+        };
+        assert!(visible_to(&entry, &owner));
+        assert!(!visible_to(&entry, &ProfileId::random()));
+    }
+
     #[test]
     fn ongoing_category_matches_complete_words_in_any_key_position() {
         for key in [
@@ -529,6 +617,7 @@ mod tests {
                 permitted: false,
                 delivered: false,
                 dismissed: false,
+                profile_origin: None,
             })
             .await
             .unwrap();
@@ -538,8 +627,20 @@ mod tests {
             quiet_end: 0,
             ..Default::default()
         };
-        assert_eq!(restored.status(&p).await.available, 1);
-        assert!(restored.status(&p).await.announce.is_none());
+        assert_eq!(
+            restored
+                .status(&p, &notdot_core::profiles::ProfileId::random())
+                .await
+                .available,
+            1
+        );
+        assert!(
+            restored
+                .status(&p, &notdot_core::profiles::ProfileId::random())
+                .await
+                .announce
+                .is_none()
+        );
         restored.remove_inferred(None).await.unwrap();
         assert_eq!(restored.journal.lock().await.entries.len(), 1);
         assert!(
@@ -577,6 +678,7 @@ mod task_completion_tests {
             title: "Synthetic task".into(),
             status: "completed".into(),
             summary: "The synthetic result is ready.".into(),
+            origin: None,
         };
         initiative.task_completed(&completion).await.unwrap();
         initiative.task_completed(&completion).await.unwrap();

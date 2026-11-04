@@ -4,6 +4,10 @@ Completed work and the next additions planned for notdot. Priorities may change 
 
 ## Implemented
 
+- **Trusted voices.** Keep separate conversations and memories for people you add. Share chosen Codex chats for reading, with messages allowed separately. Voice matching runs locally and is not authentication. [Settings guide](docs/settings.md#people-and-voices).
+
+- **Change settings by voice.** Ask for a change, hear it read back and approve before it is saved. Settings also has focused categories and search. [Settings guide](docs/settings.md#change-settings-by-speaking).
+
 - **Task completion reports.** Ask notdot to report when work it sends to another chat ends. Hear a short result, failure or interruption notice when you are idle, with optional follow-up listening. [Settings guide](docs/settings.md#hear-task-results).
 
 - **Use other Codex chats.** Find and read local chats, with optional controls to send work, add instructions and stop tasks notdot started. Choose Read only, Confirm before sending or Send when asked. Desktop-owned chats still require a handoff. [Settings guide](docs/settings.md).

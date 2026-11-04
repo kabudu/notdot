@@ -62,7 +62,7 @@ class Accessibility(unittest.TestCase):
 
     def test_settings_are_native_disclosures_and_intelligence_has_no_visible_selects(self):
         sections=[a for t,a in self.markup.tags if t=='details' and 'settings-section' in a.get('class','').split()]
-        self.assertEqual(len(sections),10)
+        self.assertEqual(len(sections),11)
         self.assertTrue(any(a.get("id")=="session-section" for a in sections))
         self.assertTrue(all('open' not in a for a in sections))
         for ident in ('model','effort'):
@@ -71,6 +71,31 @@ class Accessibility(unittest.TestCase):
             self.assertEqual(control['aria-hidden'],'true')
         title=next(a for t,a in self.markup.tags if a.get('id')=='intelligence-toggle')
         self.assertEqual(title['aria-controls'],'intelligence-picker')
+
+    def test_settings_categories_retain_all_controls_and_about_uses_product_language(self):
+        sections=[a for t,a in self.markup.tags if t=='details' and 'settings-section' in a.get('class','').split()]
+        self.assertEqual({a.get('data-settings-category') for a in sections}, {'personalise','voice','codex','memory','app'})
+        tabs=[a for t,a in self.markup.tags if a.get('role')=='tab']
+        self.assertEqual(len(tabs),5)
+        self.assertEqual(sum(a.get('aria-selected')=='true' for a in tabs),1)
+        self.assertTrue(all(a.get('type')=='button' and a.get('aria-controls')=='settings-content' for a in tabs))
+        search=next(a for _,a in self.markup.tags if a.get('id')=='settings-search')
+        self.assertEqual(search['type'],'search')
+        self.assertEqual(search['maxlength'],'100')
+        about=(ROOT/'index.html').read_text().split('id="about">',1)[1]
+        self.assertNotIn('Rust',about)
+        self.assertNotIn('WASM',about)
+        self.assertNotIn('Tauri',about)
+
+    def test_people_enrollment_is_local_and_has_explicit_consent(self):
+        controls={a.get('id'):(t,a) for t,a in self.markup.tags if a.get('id')}
+        self.assertEqual(controls['people-section'][1]['data-settings-category'],'voice')
+        self.assertEqual(controls['speaker-consent'][1]['type'],'checkbox')
+        self.assertIn('disabled',controls['speaker-record'][1])
+        self.assertIn('hidden',controls['speaker-enrol-save'][1])
+        for ident in ('speaker-add','speaker-record','speaker-enrol-save','speaker-enrol-cancel','speaker-confirm-yes','speaker-confirm-no'):
+            self.assertEqual(controls[ident][1]['type'],'button')
+        self.assertEqual(controls['speaker-enrol-status'][1]['aria-live'],'polite')
 
     def test_canvas_focus_never_draws_a_rectangular_frame(self):
         css=(ROOT/'style.css').read_text()

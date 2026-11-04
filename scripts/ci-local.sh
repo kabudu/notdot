@@ -12,8 +12,8 @@ cargo fmt --all --check
 # Exercise inference deadlines against the shipping C++ build, rather than
 # whisper-rs-sys's RelWithDebInfo/WHISPER_DEBUG diagnostic build. Keep unrelated
 # test work from competing with it; retain every fixture and deadline.
-cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-orb -p notdot --release --locked -- --test-threads=1
-cargo clippy -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot --all-targets --locked -- -D warnings
+cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-speakers -p notdot-orb -p notdot --release --locked -- --test-threads=1
+cargo clippy -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-speakers -p notdot --all-targets --locked -- -D warnings
 cargo clippy -p notdot-orb --target wasm32-unknown-unknown --locked -- -D warnings
 cargo clippy -p notdot-orb --target wasm32-unknown-unknown --features debug-ui --locked -- -D warnings
 "$NOTDOT_TEST_PYTHON" -c "from pathlib import Path; s=Path('index.html').read_text(); assert 'composer' not in s and '<textarea' not in s"

@@ -159,7 +159,85 @@ impl Streaming {
         }
     }
 }
-async fn run(state: Arc<AppState>, rate: u32, input: mpsc::Receiver<Input>) -> Completion {
+async fn run(
+    state: Arc<AppState>,
+    token: String,
+    rate: u32,
+    mut input: mpsc::Receiver<Input>,
+) -> Completion {
+    let mut prelude = std::collections::VecDeque::new();
+    let mut pcm = zeroize::Zeroizing::new(Vec::new());
+    // Identification runs locally before opening the provider connection. Hold
+    // only a bounded prefix; the rest remains in the bounded capture channel.
+    let identified = if state.speakers.needs_identification() {
+        if !notdot_speakers::audio::supported_rate(rate) {
+            return Completion::failed(VoiceError::new(
+                VoiceErrorKind::Permission,
+                "The microphone format cannot be checked for trusted voices",
+            ));
+        }
+        let mut target = rate as usize * 4; // first two seconds
+        let max_bytes = rate as usize * 12; // six seconds, still on device
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let mut ended = false;
+        loop {
+            while !ended && pcm.len() < target {
+                let packet = match tokio::time::timeout_at(deadline, input.recv()).await {
+                    Ok(Some(packet)) => packet,
+                    _ => {
+                        return Completion::failed(VoiceError::new(
+                            VoiceErrorKind::Permission,
+                            "Voice identity could not be checked",
+                        ));
+                    }
+                };
+                ended = matches!(packet, Input::Finish { .. });
+                if let Input::Audio { pcm: bytes, .. } = &packet {
+                    if pcm.len() + bytes.len() > max_bytes {
+                        return Completion::failed(VoiceError::new(
+                            VoiceErrorKind::Permission,
+                            "Voice identity buffer exceeded its limit",
+                        ));
+                    }
+                    pcm.extend_from_slice(bytes);
+                }
+                prelude.push_back(packet);
+            }
+            match state.speakers.identify_detailed(&token, rate, &pcm).await {
+                Ok(identity) => break Some(identity),
+                Err(why)
+                    if !ended
+                        && target < max_bytes
+                        && matches!(
+                            why,
+                            notdot_core::profiles::Refusal::UnclearAudio
+                                | notdot_core::profiles::Refusal::UnrecognisedVoice
+                                | notdot_core::profiles::Refusal::UncertainVoice
+                        ) =>
+                {
+                    target = (target + rate as usize * 3).min(max_bytes);
+                }
+                Err(why) => {
+                    return Completion::failed(VoiceError::new(
+                        VoiceErrorKind::Permission,
+                        why.spoken(),
+                    ));
+                }
+            }
+        }
+    } else {
+        None
+    };
+    let identity =
+        match crate::profile_access::bind_capture(state.clone(), &token, rate, &pcm, identified)
+            .await
+        {
+            Ok(identity) => identity,
+            Err(error) => {
+                return Completion::failed(VoiceError::new(VoiceErrorKind::Permission, error));
+            }
+        };
+
     let backend = match recognition_backend(&state).await {
         Ok(backend) => backend,
         Err(_) => {
@@ -169,18 +247,43 @@ async fn run(state: Arc<AppState>, rate: u32, input: mpsc::Receiver<Input>) -> C
             ));
         }
     };
+    if state.speakers.validate(&identity).is_err() {
+        return Completion::failed(VoiceError::new(
+            VoiceErrorKind::Permission,
+            "Voice access changed before transcription",
+        ));
+    }
     let stream = match backend.start_transcription(rate).await {
         Ok(stream) => stream,
         Err(error) => return Completion::failed(error),
     };
-    run_stream(stream, rate, input).await
+    let valid =
+        || state.speakers.validate(&identity).is_ok() && state.context().id == identity.profile;
+    run_stream_with_prelude(stream, rate, input, prelude, &valid).await
 }
+#[cfg(test)]
 async fn run_stream(
-    mut stream: Box<dyn notdot_voice::realtime::StreamingTranscriber>,
+    stream: Box<dyn notdot_voice::realtime::StreamingTranscriber>,
     rate: u32,
     input: mpsc::Receiver<Input>,
 ) -> Completion {
-    let result = process_stream(stream.as_mut(), rate, input).await;
+    run_stream_with_prelude(
+        stream,
+        rate,
+        input,
+        std::collections::VecDeque::new(),
+        &|| true,
+    )
+    .await
+}
+async fn run_stream_with_prelude(
+    mut stream: Box<dyn notdot_voice::realtime::StreamingTranscriber>,
+    rate: u32,
+    input: mpsc::Receiver<Input>,
+    prelude: std::collections::VecDeque<Input>,
+    valid: &(dyn Fn() -> bool + Send + Sync),
+) -> Completion {
+    let result = process_stream(stream.as_mut(), rate, input, prelude, valid).await;
     // Counters contain no transcript or audio. Retain them even when finalisation
     // fails, so diagnostics can distinguish uploaded audio and observed updates.
     let stats = Some(stream.stats());
@@ -191,22 +294,31 @@ async fn process_stream(
     stream: &mut dyn notdot_voice::realtime::StreamingTranscriber,
     rate: u32,
     mut input: mpsc::Receiver<Input>,
+    mut prelude: std::collections::VecDeque<Input>,
+    valid: &(dyn Fn() -> bool + Send + Sync),
 ) -> Result<String, VoiceError> {
     let mut expected = 0u64;
     let mut since_commit = 0usize;
     let mut text = String::new();
     loop {
-        let next = tokio::time::timeout(Duration::from_secs(8), input.recv())
-            .await
-            .map_err(|_| {
-                VoiceError::new(VoiceErrorKind::Network, "Live microphone audio timed out")
-            })?
-            .ok_or_else(|| {
-                VoiceError::new(
-                    VoiceErrorKind::Network,
-                    "Live microphone audio was interrupted",
-                )
-            })?;
+        let next = if let Some(packet) = prelude.pop_front() {
+            Ok(Some(packet))
+        } else {
+            tokio::time::timeout(Duration::from_secs(8), input.recv()).await
+        }
+        .map_err(|_| VoiceError::new(VoiceErrorKind::Network, "Live microphone audio timed out"))?
+        .ok_or_else(|| {
+            VoiceError::new(
+                VoiceErrorKind::Network,
+                "Live microphone audio was interrupted",
+            )
+        })?;
+        if !valid() {
+            return Err(VoiceError::new(
+                VoiceErrorKind::Permission,
+                "Voice access was revoked",
+            ));
+        }
         match next {
             Input::Audio { sequence, pcm } => {
                 if sequence != expected {
@@ -258,6 +370,15 @@ fn append(text: &mut String, segment: &str) -> Result<(), VoiceError> {
     text.push_str(segment);
     Ok(())
 }
+fn enrol_progress_payload(
+    token: &str,
+    result: Result<notdot_speakers::enrol::Progress, String>,
+) -> serde_json::Value {
+    match result {
+        Ok(progress) => serde_json::json!({"token":token,"progress":progress}),
+        Err(error) => serde_json::json!({"token":token,"error":error}),
+    }
+}
 pub fn spawn(app: AppHandle, state: Arc<AppState>, mut events: mpsc::Receiver<CaptureEvent>) {
     tauri::async_runtime::spawn(async move {
         while let Some(event) = events.recv().await {
@@ -268,6 +389,11 @@ pub fn spawn(app: AppHandle, state: Arc<AppState>, mut events: mpsc::Receiver<Ca
                     rate,
                     manual,
                 } => {
+                    if state.speakers.is_enrol_capture(&token) {
+                        state.streaming.report.lock().await.sample_rate = rate;
+                        state.speakers.enrol_audio(&token, rate, &[]);
+                        continue;
+                    }
                     let mut cancellations = state.streaming.cancelled.lock().await;
                     if cancellations.is_cancelled(&token) {
                         continue;
@@ -276,8 +402,9 @@ pub fn spawn(app: AppHandle, state: Arc<AppState>, mut events: mpsc::Receiver<Ca
                     let (sender, input) = mpsc::channel(64);
                     let (answer, result) = oneshot::channel();
                     let owner = state.clone();
+                    let capture_token = token.clone();
                     let task = tokio::spawn(async move {
-                        let _ = answer.send(run(owner, rate, input).await);
+                        let _ = answer.send(run(owner, capture_token, rate, input).await);
                     });
                     let session = Session {
                         token,
@@ -303,6 +430,17 @@ pub fn spawn(app: AppHandle, state: Arc<AppState>, mut events: mpsc::Receiver<Ca
                     sequence,
                     pcm,
                 } => {
+                    if state.speakers.is_enrol_capture(&token) {
+                        let rate = state.streaming.report.lock().await.sample_rate;
+                        // Capture start sets this independently of a cloud session.
+                        let rate = if rate == 0 { 16_000 } else { rate };
+                        if !state.speakers.enrol_audio(&token, rate, &pcm) {
+                            state.speakers.enrol_cancel();
+                            let _ = state.wake.cancel_capture(&token);
+                            let _=app.emit("speaker-enrol-progress",serde_json::json!({"token":token,"error":"The recording exceeded its limit. Please try again."}));
+                        }
+                        continue;
+                    }
                     let slot = state.streaming.inner.lock().await;
                     if let Some(s) = slot.as_ref().filter(|s| s.token == token)
                         && s.input.try_send(Input::Audio { sequence, pcm }).is_err()
@@ -315,6 +453,16 @@ pub fn spawn(app: AppHandle, state: Arc<AppState>, mut events: mpsc::Receiver<Ca
                     valid,
                     sequence,
                 } => {
+                    if state.speakers.is_enrol_capture(&token) {
+                        let result = state.speakers.enrol_capture_end(&token).await;
+                        let payload = enrol_progress_payload(&token, result);
+                        let _ = app.emit("speaker-enrol-progress", payload);
+                        // Discard the separate bounded WAV held by wake as well.
+                        if let Some(id) = state.wake.status().request_id {
+                            let _ = state.wake.take(id);
+                        }
+                        continue;
+                    }
                     let _ = app.emit(
                         "voice-capture",
                         serde_json::json!({"phase":if valid{"ready"}else{"empty"},"token":token}),
@@ -337,6 +485,11 @@ pub fn spawn(app: AppHandle, state: Arc<AppState>, mut events: mpsc::Receiver<Ca
                     }
                 }
                 CaptureEvent::Cancel { token } => {
+                    if state.speakers.is_enrol_capture(&token) {
+                        state.speakers.enrol_cancel();
+                        let _=app.emit("speaker-enrol-progress",serde_json::json!({"token":token,"error":"Voice setup cancelled. Nothing was saved."}));
+                        continue;
+                    }
                     let _ = app.emit(
                         "voice-capture",
                         serde_json::json!({"phase":"cancelled","token":token}),
@@ -356,6 +509,57 @@ mod tests {
         append(&mut t, "second").unwrap();
         assert_eq!(t, "first second");
         assert!(append(&mut t, &"x".repeat(65536)).is_err());
+    }
+    #[test]
+    fn enrol_progress_always_identifies_the_recording_for_stale_event_rejection() {
+        let ready = enrol_progress_payload(
+            "new-capture",
+            Ok(notdot_speakers::enrol::Progress::Ready { of: 4 }),
+        );
+        assert_eq!(ready["token"], "new-capture");
+        assert_eq!(ready["progress"]["step"], "ready");
+        let failed = enrol_progress_payload("old-capture", Err("Cancelled".into()));
+        assert_eq!(failed["token"], "old-capture");
+        assert_eq!(failed["error"], "Cancelled");
+    }
+    #[tokio::test]
+    async fn held_audio_keeps_order_and_revocation_stops_the_next_upload() {
+        use std::collections::VecDeque;
+        for allowed in [0, 1, 3] {
+            let (tx, rx) = mpsc::channel(4);
+            tx.send(Input::Audio {
+                sequence: 1,
+                pcm: vec![0; 32000],
+            })
+            .await
+            .unwrap();
+            tx.send(Input::Finish { sequence: 2 }).await.unwrap();
+            let prefix = VecDeque::from([Input::Audio {
+                sequence: 0,
+                pcm: vec![0; 32000],
+            }]);
+            let checks = std::sync::atomic::AtomicUsize::new(0);
+            let valid = || checks.fetch_add(1, Ordering::SeqCst) < allowed;
+            let result = run_stream_with_prelude(
+                Box::new(MockStream {
+                    continuous: false,
+                    commits: 0,
+                    bytes: 0,
+                }),
+                16000,
+                rx,
+                prefix,
+                &valid,
+            )
+            .await;
+            if allowed < 3 {
+                assert_eq!(result.result.unwrap_err().kind, VoiceErrorKind::Permission);
+                assert_eq!(result.stats.unwrap().audio_chunks, allowed as u64 * 32000);
+            } else {
+                assert_eq!(result.result.unwrap(), "segment1");
+                assert_eq!(result.stats.unwrap().audio_chunks, 64000);
+            }
+        }
     }
     struct MockStream {
         continuous: bool,

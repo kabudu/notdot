@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -15,9 +15,57 @@ use tokio::{
 };
 type Reply = oneshot::Sender<Result<Value, String>>;
 const MAX_FRAME: usize = 4 * 1024 * 1024;
+/// Match the existing pure-analysis deny configuration; the only re-enabled
+/// MCP service is the host-owned, ACL-enforcing notdot_chats helper below.
+pub(crate) fn restrict_profile_tools(config: &mut Value, effective: &Value) {
+    config["web_search"] = "disabled".into();
+    for feature in [
+        "shell_tool",
+        "apps",
+        "remote_plugin",
+        "hooks",
+        "multi_agent",
+        "browser_use",
+        "computer_use",
+        "view_image",
+        "image_generation",
+        "js_repl",
+        "code_mode",
+        "code_mode_host",
+        "tool_suggest",
+        "sleep_tool",
+    ] {
+        config["features"][feature] = false.into();
+    }
+    config["apps"] = json!({"_default":{"enabled":false}});
+    if let Some(apps) = effective["apps"].as_object() {
+        for name in apps.keys() {
+            config["apps"][name] = json!({"enabled":false});
+        }
+    }
+    if let Some(servers) = effective["mcp_servers"].as_object() {
+        for name in servers.keys() {
+            config["mcp_servers"][name] = json!({"enabled":false});
+        }
+    }
+    if let Some(plugins) = effective["plugins"].as_object() {
+        for name in plugins.keys() {
+            config["plugins"][name] = json!({"enabled":false});
+        }
+    }
+}
+fn profile_isolation_required(policy: &crate::chat_tools::ChatPolicy) -> Result<bool, String> {
+    let roster = policy.roster()?;
+    Ok(policy.turn.role == crate::profiles::Role::Member
+        || roster.profiles().len() > 1
+        || roster.mode().locked())
+}
 pub struct Bridge {
     child: Mutex<Child>,
     chat_tools: Option<(PathBuf, PathBuf)>,
+    settings_path: Option<PathBuf>,
+    profile_policy: Option<crate::chat_tools::ChatPolicy>,
+    tools_isolated: AtomicBool,
     input: Arc<Mutex<Option<ChildStdin>>>,
     pending: Arc<Mutex<HashMap<u64, Reply>>>,
     sequence: AtomicU64,
@@ -25,18 +73,52 @@ pub struct Bridge {
 }
 impl Bridge {
     pub async fn connect(binary: &Path) -> Result<Self, String> {
-        Self::connect_inner(binary, None, false).await
+        Self::connect_inner(binary, None, false, None, None).await
     }
     pub async fn connect_with_chat_tools(binary: &Path, executable: &Path) -> Result<Self, String> {
-        Self::connect_inner(binary, Some(executable.to_owned()), false).await
+        Self::connect_inner(binary, Some(executable.to_owned()), false, None, None).await
     }
     pub async fn connect_for_session_control(binary: &Path) -> Result<Self, String> {
-        Self::connect_inner(binary, None, true).await
+        Self::connect_inner(binary, None, true, None, None).await
+    }
+    /// Give the bundled read-only helper only the host's own settings path.
+    /// It is a process argument, never a model-supplied tool argument.
+    pub async fn connect_with_settings_tools(
+        binary: &Path,
+        executable: &Path,
+        settings_path: &Path,
+    ) -> Result<Self, String> {
+        Self::connect_inner(
+            binary,
+            Some(executable.to_owned()),
+            false,
+            Some(settings_path.to_owned()),
+            None,
+        )
+        .await
+    }
+    pub async fn connect_with_profile_tools(
+        binary: &Path,
+        executable: &Path,
+        settings_path: &Path,
+        policy: crate::chat_tools::ChatPolicy,
+    ) -> Result<Self, String> {
+        policy.roster()?;
+        Self::connect_inner(
+            binary,
+            Some(executable.to_owned()),
+            false,
+            Some(settings_path.to_owned()),
+            Some(policy),
+        )
+        .await
     }
     async fn connect_inner(
         binary: &Path,
         chat_executable: Option<PathBuf>,
         unload_immediately: bool,
+        settings_path: Option<PathBuf>,
+        profile_policy: Option<crate::chat_tools::ChatPolicy>,
     ) -> Result<Self, String> {
         // Some emulated Linux hosts report a successful spawn even when exec
         // cannot find the program, leaving only a misleading broken-pipe error.
@@ -114,6 +196,9 @@ impl Bridge {
         let bridge = Self {
             child: Mutex::new(child),
             chat_tools,
+            settings_path,
+            profile_policy,
+            tools_isolated: AtomicBool::new(false),
             input,
             pending,
             sequence: AtomicU64::new(1),
@@ -224,9 +309,33 @@ impl Bridge {
             .call("config/read", json!({"includeLayers":false}))
             .await?;
         let mut config = crate::runtime_policy::companion(&effective["config"], &selection.effort);
+        let isolate_tools = self
+            .profile_policy
+            .as_ref()
+            .map(profile_isolation_required)
+            .transpose()?
+            .unwrap_or(false);
+        if isolate_tools {
+            restrict_profile_tools(&mut config, &effective["config"]);
+        }
         if let Some((executable, runtime)) = &self.chat_tools {
             let inherited = &config["mcp_servers"]["notdot_chats"];
             let mut service = crate::chat_tools::configuration(executable, runtime);
+            if let Some(path) = &self.settings_path {
+                service["args"]
+                    .as_array_mut()
+                    .expect("helper arguments")
+                    .push(json!(path));
+            }
+            if let Some(policy) = &self.profile_policy {
+                policy.roster()?;
+                service["args"]
+                    .as_array_mut()
+                    .expect("helper arguments")
+                    .push(json!(
+                        serde_json::to_string(policy).map_err(|e| e.to_string())?
+                    ));
+            }
             if inherited["default_tools_approval_mode"] == "prompt" {
                 service["default_tools_approval_mode"] = "prompt".into();
             }
@@ -258,6 +367,7 @@ impl Bridge {
         if r["model"] != selection.model || r["reasoningEffort"] != selection.effort {
             return Err("Runtime did not confirm your model and effort".into());
         }
+        self.tools_isolated.store(isolate_tools, Ordering::SeqCst);
         let tid = r["thread"]["id"]
             .as_str()
             .ok_or("Runtime omitted conversation ID")?
@@ -271,6 +381,23 @@ impl Bridge {
         }
         Ok(tid)
     }
+    /// Profile/identity changes can require a fresh restricted thread config.
+    pub fn profile_tools_current(&self) -> Result<bool, String> {
+        Ok(self
+            .profile_policy
+            .as_ref()
+            .map(profile_isolation_required)
+            .transpose()?
+            .unwrap_or(false)
+            == self.tools_isolated.load(Ordering::SeqCst))
+    }
+    fn check_profile_tools(&self) -> Result<(), String> {
+        if self.profile_tools_current()? {
+            Ok(())
+        } else {
+            Err("Profile privacy changed. Reconnect notdot before sending another request.".into())
+        }
+    }
     pub async fn send(&self, tid: &str, text: &str) -> Result<String, String> {
         self.send_with_selection(tid, text, &crate::models::Selection::default())
             .await
@@ -281,7 +408,9 @@ impl Bridge {
         text: &str,
         selection: &crate::models::Selection,
     ) -> Result<String, String> {
+        self.check_profile_tools()?;
         self.validate_selection(selection).await?;
+        self.check_profile_tools()?;
         if text.trim().is_empty() || text.len() > 32_000 {
             return Err("Message must contain 1–32,000 bytes".into());
         }
@@ -514,5 +643,116 @@ for line in sys.stdin:
         assert!(bridge.pending.lock().await.is_empty());
         bridge.call("probe", json!({})).await.unwrap();
         bridge.shutdown().await;
+    }
+}
+
+#[cfg(all(test, unix))]
+mod settings_tools_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    #[tokio::test]
+    async fn configured_settings_path_is_passed_only_as_the_host_helper_argument() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = dir.path().join("runtime");
+        std::fs::write(&runtime,r#"#!/usr/bin/env python3
+import json,sys
+for line in sys.stdin:
+ m=json.loads(line);method=m.get('method')
+ if method=='initialize':r={}
+ elif method=='model/list':r={'data':[{'id':'gpt-6.1-terra','model':'gpt-6.1-terra','displayName':'Terra','defaultReasoningEffort':'medium','supportedReasoningEfforts':[{'reasoningEffort':'medium','description':'Balanced'}]}],'nextCursor':None}
+ elif method=='config/read':r={'config':{}}
+ elif method in ['thread/start','thread/resume']:
+  args=m['params']['config']['mcp_servers']['notdot_chats']['args']
+  assert len(args)==3 and args[0]=='--codex-chat-tools' and args[2]=='/synthetic/settings.json'
+  r={'thread':{'id':'synthetic'},'model':'gpt-6.1-terra','reasoningEffort':'medium'}
+ elif method=='thread/name/set':r={}
+ else:continue
+ print(json.dumps({'id':m['id'],'result':r}),flush=True)
+"#).unwrap();
+        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let bridge = Bridge::connect_with_settings_tools(
+            &runtime,
+            Path::new("/synthetic/notdot"),
+            Path::new("/synthetic/settings.json"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            bridge
+                .thread_with_selection(
+                    None,
+                    dir.path(),
+                    "Synthetic",
+                    &crate::models::Selection::default()
+                )
+                .await
+                .unwrap(),
+            "synthetic"
+        );
+        bridge.shutdown().await;
+    }
+}
+
+#[cfg(test)]
+mod member_tool_policy_tests {
+    use super::*;
+    #[test]
+    fn owner_isolation_tracks_members_and_locked_mode_but_preserves_single_owner_open() {
+        use crate::profiles::{Actor, Admission, IdentityMode, Roster, SpeakerOutcome};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profiles.json");
+        let mut roster = Roster::new("Owner").unwrap();
+        roster
+            .set_voice_enrolled(&Actor::LocalDevice, &roster.owner().clone(), true)
+            .unwrap();
+        let Admission::Admit(turn) = roster.admit(
+            "capture",
+            &SpeakerOutcome::Recognised {
+                profile: roster.owner().clone(),
+                score: 0.99,
+            },
+        ) else {
+            panic!("admission")
+        };
+        let policy = crate::chat_tools::ChatPolicy {
+            roster_path: path.clone(),
+            turn,
+            global_mode: crate::session_control::Mode::WhenAsked,
+            companion_thread: None,
+        };
+        roster.save(&path).unwrap();
+        assert!(!profile_isolation_required(&policy).unwrap());
+        roster
+            .set_mode(&Actor::LocalDevice, IdentityMode::OwnerOnly)
+            .unwrap();
+        roster.save(&path).unwrap();
+        assert!(
+            profile_isolation_required(&policy).is_err(),
+            "mode change revokes old tool authority"
+        );
+        let mut policy = policy;
+        policy.turn.epoch = roster.profile(&policy.turn.profile).unwrap().epoch;
+        assert!(profile_isolation_required(&policy).unwrap());
+        roster
+            .set_mode(&Actor::LocalDevice, IdentityMode::Open)
+            .unwrap();
+        roster.add_member(&Actor::LocalDevice, "Member").unwrap();
+        roster.save(&path).unwrap();
+        assert!(profile_isolation_required(&policy).is_err());
+        policy.turn.epoch = roster.profile(&policy.turn.profile).unwrap().epoch;
+        assert!(profile_isolation_required(&policy).unwrap());
+    }
+    #[test]
+    fn members_cannot_inherit_external_tools_or_plugins() {
+        let effective = json!({"apps":{"mail":{"enabled":true}},"mcp_servers":{"files":{"enabled":true},"notdot_chats":{"enabled":true}},"plugins":{"external":{"enabled":true}}});
+        let mut config = crate::runtime_policy::companion(&effective, "medium");
+        restrict_profile_tools(&mut config, &effective);
+        assert_eq!(config["apps"]["mail"]["enabled"], false);
+        assert_eq!(config["mcp_servers"]["files"]["enabled"], false);
+        assert_eq!(config["plugins"]["external"]["enabled"], false);
+        assert_eq!(config["features"]["shell_tool"], false);
+        assert_eq!(config["features"]["browser_use"], false);
+        assert_eq!(config["web_search"], "disabled");
+        assert!(!config.to_string().contains("enabled\":true"));
     }
 }

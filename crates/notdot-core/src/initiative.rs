@@ -60,8 +60,24 @@ pub struct Entry {
     pub permitted: bool,
     pub delivered: bool,
     pub dismissed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_origin: Option<crate::chat_tools::ChatPolicy>,
 }
 impl Entry {
+    /// Check immutable origin again after restart or grant changes. Native
+    /// delivery additionally binds this origin to the active profile context.
+    pub fn origin_allowed(&self) -> bool {
+        self.profile_origin.as_ref().is_none_or(|policy| {
+            if let Some(task) = self.source.strip_prefix("task:") {
+                task.split_once(':').is_some_and(|(thread, _)| {
+                    policy.check(thread, crate::profiles::ChatOp::Read).is_ok()
+                })
+            } else {
+                policy.roster().is_ok()
+            }
+        })
+    }
+
     /// Task reports are requested by the user separately from inferred check-ins.
     pub fn task_report(&self) -> bool {
         self.source.starts_with("task:") && self.permitted
@@ -104,6 +120,7 @@ impl Journal {
             .iter()
             .filter(|e| {
                 !e.dismissed
+                    && e.origin_allowed()
                     && !e.delivered
                     && e.due <= now
                     && e.expires > now
@@ -273,6 +290,7 @@ mod tests {
             permitted: true,
             delivered: false,
             dismissed: false,
+            profile_origin: None,
         }
     }
     #[test]
@@ -356,6 +374,7 @@ mod task_report_tests {
             permitted: true,
             delivered: false,
             dismissed: false,
+            profile_origin: None,
         }
     }
     #[test]

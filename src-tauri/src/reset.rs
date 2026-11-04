@@ -93,6 +93,10 @@ pub async fn reset_memory(
     state: State<'_, Arc<super::AppState>>,
     confirmed: bool,
 ) -> Result<(), String> {
+    let context = state.context();
+    if context.id != state.profiles.owner().id {
+        return Err("Choose Use my profile in People before resetting your memory.".into());
+    }
     if !confirmed {
         return Err("Confirm the memory reset in Settings first".into());
     }
@@ -129,9 +133,9 @@ pub async fn reset_memory(
         .await
         .map_err(|e| e.to_string())??;
     state.wake.ready(false);
-    state.learning.cancel();
-    state.initiative.cancel();
-    state.memory.set_learning_enabled(false).await;
+    context.learning.cancel();
+    context.initiative.cancel();
+    context.memory.set_learning_enabled(false).await;
     {
         let mut s = state.snapshot.lock().await;
         s.phase = "resetting".into();
@@ -142,7 +146,7 @@ pub async fn reset_memory(
     state
         .generation
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    if let Some(bridge) = state.bridge.lock().await.take() {
+    if let Some(bridge) = context.bridge.lock().await.take() {
         bridge.shutdown().await;
     }
     app.restart();

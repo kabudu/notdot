@@ -1,6 +1,10 @@
 fn main() {
     use sha2::{Digest, Sha256};
-    for folder in ["resources/wake", "resources/wake/phonetic"] {
+    for folder in [
+        "resources/wake",
+        "resources/wake/phonetic",
+        "resources/speaker",
+    ] {
         println!("cargo:rerun-if-changed={folder}");
         let manifest = std::fs::read_to_string(format!("{folder}/SHA256SUMS"))
             .expect("bundled wake model checksums");

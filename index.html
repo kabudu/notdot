@@ -34,7 +34,22 @@
       </small>
      </span>
     </header>
-    <details class="settings-section" id="appearance-section">
+    <div class="settings-discovery">
+     <label class="sr-only" for="settings-search" id="settings-search-label">Find a setting</label>
+     <input id="settings-search" type="search" maxlength="100" autocomplete="off" placeholder="Find a setting…" aria-controls="settings-content"/>
+     <button id="settings-search-clear" type="button" aria-label="Clear settings search" hidden>×</button>
+    </div>
+    <nav class="settings-categories" id="settings-categories" role="tablist" aria-label="Settings categories">
+     <button id="settings-category-personalise" type="button" role="tab" aria-selected="true" aria-controls="settings-content" tabindex="0">Personalise</button>
+     <button id="settings-category-voice" type="button" role="tab" aria-selected="false" aria-controls="settings-content" tabindex="-1">Voice</button>
+     <button id="settings-category-codex" type="button" role="tab" aria-selected="false" aria-controls="settings-content" tabindex="-1">Codex</button>
+     <button id="settings-category-memory" type="button" role="tab" aria-selected="false" aria-controls="settings-content" tabindex="-1">Memory</button>
+     <button id="settings-category-app" type="button" role="tab" aria-selected="false" aria-controls="settings-content" tabindex="-1">App</button>
+    </nav>
+    <p id="settings-guidance" class="hint" hidden>Start with your companion’s name and voice. Other options can wait.</p>
+    <p id="settings-search-status" class="hint" role="status"></p>
+    <div id="settings-content" role="tabpanel" aria-labelledby="settings-category-personalise" tabindex="0">
+    <details class="settings-section" id="appearance-section" data-settings-category="personalise">
      <summary>
       <span>
        <strong>
@@ -56,7 +71,7 @@
       </label>
      </div>
     </details>
-    <details class="settings-section" id="intelligence-section">
+    <details class="settings-section" id="intelligence-section" data-settings-category="codex" hidden>
      <summary aria-controls="intelligence-picker" aria-expanded="false" id="intelligence-toggle">
       <span>
        <strong id="model-heading">
@@ -130,7 +145,7 @@
       </p>
      </div>
     </details>
-    <details class="settings-section" id="voice-section">
+    <details class="settings-section" id="voice-section" data-settings-category="voice" hidden>
      <summary>
       <span>
        <strong>
@@ -224,7 +239,7 @@
       </p>
      </div>
     </details>
-    <details class="settings-section" id="session-section">
+    <details class="settings-section" id="session-section" data-settings-category="codex" hidden>
      <summary><span><strong>Other Codex chats</strong><small id="session-mode-label">Read only</small></span></summary>
      <div class="settings-body">
      <fieldset class="session-modes">
@@ -246,7 +261,7 @@
      </details>
      </div>
     </details>
-    <details class="settings-section" id="wake-section">
+    <details class="settings-section" id="wake-section" data-settings-category="voice" hidden>
      <summary>
       <span>
        <strong id="wake-title">
@@ -316,7 +331,31 @@
       </p>
      </div>
     </details>
-    <details class="settings-section usage-card" id="usage-section">
+    <details class="settings-section" id="people-section" data-settings-category="voice" hidden>
+     <summary><span><strong>People and voices</strong><small>Who can speak</small></span></summary>
+     <div class="settings-body">
+      <p>Choose who notdot responds to. Voice matching can be fooled; it is not authentication.</p>
+      <label for="speaker-mode">Respond to</label>
+      <select id="speaker-mode"><option value="open">Anyone</option><option value="owner_only">Only me</option><option value="trusted_group">Trusted people</option></select>
+      <p class="hint">In Anyone mode, unrecognised voices use your conversation and memories. Saved voices have their own context.</p>
+      <button id="speaker-mode-save" type="button">Apply listening mode</button>
+      <p id="speaker-status" role="status" aria-live="polite"></p>
+      <div class="speaker-actions"><button id="speaker-reset-voices" type="button" hidden>Reset voice recognition</button><button id="speaker-recover" type="button" hidden>Recover people setup</button></div>
+      <p id="speaker-active"></p><button id="speaker-use-owner" type="button" hidden>Use my profile</button>
+      <div id="speaker-people" class="speaker-people"></div>
+      <p id="speaker-add-guidance" class="hint">Teach your voice first so notdot can keep everyone’s context separate.</p>
+      <div class="speaker-add"><label for="speaker-new-name">Add a person</label><input id="speaker-new-name" maxlength="80" placeholder="Their name"><button id="speaker-add" type="button" disabled>Add person</button></div>
+      <section id="speaker-enrol" aria-labelledby="speaker-enrol-title" hidden>
+       <h3 id="speaker-enrol-title">Teach notdot a voice</h3>
+       <label class="speaker-consent"><input id="speaker-consent" type="checkbox">The person is here and agrees to have their voice recognised on this computer.</label>
+       <p>Read four short phrases. Recordings stay on this computer and are discarded after voice matching is prepared.</p>
+       <p id="speaker-phrase" class="speaker-phrase"></p><p id="speaker-enrol-status" role="status" aria-live="polite"></p>
+       <div class="speaker-actions"><button id="speaker-record" type="button" disabled>Record phrase</button><button id="speaker-enrol-save" type="button" hidden>Save voice</button><button id="speaker-enrol-cancel" type="button">Cancel</button></div>
+      </section>
+      <section id="speaker-confirm" aria-labelledby="speaker-confirm-title" hidden><h3 id="speaker-confirm-title">Check this change</h3><p id="speaker-confirm-text"></p><div class="speaker-actions"><button id="speaker-confirm-yes" type="button">Confirm</button><button id="speaker-confirm-no" type="button">Cancel</button></div></section>
+     </div>
+    </details>
+    <details class="settings-section usage-card" id="usage-section" data-settings-category="voice" hidden>
      <summary>
       <span>
        <strong id="usage-title">
@@ -337,7 +376,7 @@
       </div>
      </div>
     </details>
-    <details class="settings-section" id="memory-section">
+    <details class="settings-section" id="memory-section" data-settings-category="memory" hidden>
      <summary>
       <span>
        <strong id="memory-tools-heading">
@@ -401,7 +440,7 @@
       </section>
      </div>
     </details>
-    <details class="settings-section" id="reminders-section">
+    <details class="settings-section" id="reminders-section" data-settings-category="memory" hidden>
      <summary>
       <span>
        <strong>
@@ -465,7 +504,7 @@
       </p>
      </div>
     </details>
-    <details class="settings-section" id="startup-section">
+    <details class="settings-section" id="startup-section" data-settings-category="app" hidden>
      <summary>
       <span>
        <strong id="startup-heading">
@@ -542,7 +581,7 @@
       </div>
      </div>
     </details>
-    <details class="settings-section" id="connection-section">
+    <details class="settings-section" id="connection-section" data-settings-category="app" hidden>
      <summary>
       <span>
        <strong>
@@ -564,7 +603,7 @@
       </div>
      </div>
     </details>
-    <details class="settings-help">
+    <details class="settings-help" id="orb-help" data-settings-category="app" hidden>
      <summary>
       How to use the orb
      </summary>
@@ -572,6 +611,7 @@
       Click the orb or press Enter or Space once. Speak after the short chime, then pause to send. A second click sends sooner. Escape cancels. Right-click or press Cmd/Ctrl+, for Settings. Drag the orb or the Settings header to move the window.
      </p>
     </details>
+    </div>
     <div class="actions settings-footer">
      <p id="error" role="status">
      </p>
@@ -601,9 +641,7 @@
     A voice companion for your desktop.
    </p>
    <p class="hint">
-    Rust · Tauri · Rust/WASM
-    <br/>
-    Works with your installed Codex app or command-line tool.
+    Works with your installed Codex app.
     <br/>
     Not affiliated with OpenAI.
    </p>

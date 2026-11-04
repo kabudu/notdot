@@ -4,6 +4,20 @@ For everyday use, start with the [plain-language Settings guide](settings.md). T
 
 A local desktop companion built with Rust, Tauri 2 and a Rust/WASM orb. The normal interface is just the orb. Conversation is voice-only; onboarding, preferences and memory inspection open separately.
 
+## Settings navigation and voice changes
+
+Settings groups controls into Personalise, Voice, Codex, Memory and App. Search matches section labels and control text across categories. Clearing it restores the selected category and disclosure state. Category buttons support arrow keys, Home and End; Escape clears a nonempty search without cancelling the conversation. The header and footer remain visible while the content scrolls.
+
+The companion can inspect current non-secret settings and propose changes using the settings tool. Proposals are not writes. The native host binds approval to the current proposal and settings snapshot, reads it back, and requires **“yes, please change those settings”** before validating and saving. A stale snapshot, cancellation or unavailable choice prevents the write. Voice changes use the same persisted settings and readiness checks as the panel; secrets, raw voice IDs, reset and deletion are outside this tool.
+
+## Trusted voices and local profiles
+
+**Voice → People and voices** manages an owner and trusted members. Four consented phrases create an encrypted, on-device voiceprint; raw enrollment audio is discarded. Anyone mode uses owner context for unrecognised voices. Only me and Trusted people require a recognised voice, with ambiguous or unknown voices rejected before a model call. Members have separate companion conversations and memory stores. Adding a member requires an enrolled owner and switches to Trusted people before adding them; the native command enforces this even if the UI is bypassed. Choosing Anyone later is an explicit local action with a warning. Owner chat sharing starts with read access; **Allow messages** is a second local grant, bounded by the global chat-control mode. Member messages are appended as user messages using `thread/inject_items`, without starting a model turn or changing the target chat’s tools or permissions. This adds context for the next continuation, not a separate completed turn in the desktop history. The chat can continue later in Codex. Members cannot start, steer or stop tasks; no filesystem, computer, MCP or plugin access is inherited. Global Read only also prevents these message appends. Profile management is available only through visible, focused local UI, not model tools or recognised speech.
+
+With more than one person, or in a restricted voice mode, every direct companion runtime uses only notdot’s own permission-checked tools. The owner can still delegate ordinary work through permitted Codex chats; owner delegation retains the target chat’s usual permissions. This prevents connected tools in a direct companion conversation from bypassing profile privacy.
+
+Voice matching is not authentication or replay protection. Do not treat it as a security boundary against someone who controls the unlocked computer. Recognition accuracy depends on the person, microphone and room; automated synthetic checks do not establish real-world accuracy.
+
 ## Run the development app
 
 Requires macOS 14+, Xcode command-line tools, CMake, Rust 1.97+, `wasm32-unknown-unknown`, Trunk, Tauri CLI, and a supported installed Codex runtime signed into your ChatGPT account.
@@ -67,7 +81,7 @@ Mnemara **0.6.0** is embedded as Rust library code with the sled backend. No sep
 
 Memory data and configuration live under the platform application-data directory; on macOS that is `~/Library/Application Support/com.kabudu.notdot`.
 
-The **Remember useful details** switch controls saving and recall. Completed voice interactions can produce source-grounded memory proposals through the isolated learner. A proposal remains in RAM, not the ledger, until the user hears its read-back and says **yes, remember that** (or **yes, save that**). A bare yes, rejection, silence, Escape, muting, a stale proposal or disabling memory cannot save it. Explicit Remember requests follow the same path; cancelled or failed conversations do not save them automatically.
+The **Remember useful details** switch controls saving and recall. Completed voice interactions can produce source-grounded memory proposals through the isolated learner. A proposal remains in RAM, not the ledger, until the user hears its read-back and says **yes, please save that memory**. A bare yes, rejection, silence, Escape, muting, a stale proposal or disabling memory cannot save it. Explicit Remember requests follow the same path; cancelled or failed conversations do not save them automatically.
 
 Read-backs are scoped, single-use and bounded to 512 content bytes, with a 120-second expiry. They start only while idle and visible, and use a short automatic response capture; no second click/wake phrase is required. New interactions supersede older proposals. Confirmed facts preserve their original source conversation, turn and evidence, and can supersede older same-key values and summaries. Existing notes remain available; legacy provisional records still need review. The trusted core ingestion API retains its provisional/corroboration contract, but the app’s voice path cannot invoke it to save unconfirmed proposals.
 

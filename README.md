@@ -29,7 +29,8 @@ https://github.com/user-attachments/assets/8279f3a2-af14-4c5b-8960-e69596ca5ad5
 - **Hear when work finishes.** Add “and let me know when it’s done” when sending a task. notdot reports the result when you’re idle, respecting quiet hours.
 - **Pick up where you left off.** Continue the same chat after restarting notdot. You can view its history in Codex.
 - **Choose what it remembers.** Turn learning on or off, review and edit saved memories, forget individual notes or reset them all.
-- **Make it yours.** Choose its name, orb colour, voice and how much it can interrupt you.
+- **Share without sharing everything.** Add trusted voices with separate conversations and memories, then choose which Codex chats each person may read or message. Voice matching is a convenience, not authentication.
+- **Make it yours.** Choose its name, orb colour, voice and how much it can interrupt you. Ask for settings changes by voice, hear them read back, then approve.
 
 The orb shows when notdot is listening, thinking and speaking. Settings opens when you right-click the orb or use Command/Control + comma.
 
