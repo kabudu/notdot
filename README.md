@@ -2,6 +2,11 @@
 
 # notdot
 
+[![CI](https://github.com/kabudu/notdot/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/kabudu/notdot/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/kabudu/notdot)](https://github.com/kabudu/notdot/releases/latest)
+[![Licence: Apache 2.0](https://img.shields.io/badge/licence-Apache%202.0-blue.svg)](LICENSE)
+[![Downloads](https://img.shields.io/github/downloads/kabudu/notdot/total)](https://github.com/kabudu/notdot/releases)
+
 **A voice companion for your desktop.**
 
 Talk to an animated orb that listens and replies aloud. notdot works with the ChatGPT Codex app and can remember useful details with your permission.
