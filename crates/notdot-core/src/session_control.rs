@@ -177,23 +177,31 @@ pub enum Decision {
 pub fn completion_request(text: &str) -> (&str, bool) {
     let text = text.trim();
     let candidate = text.trim_end_matches(['.', '!', '?']);
-    for suffix in [
-        ", and let me know when it's done",
-        " and let me know when it's done",
-        ", and let me know when it’s done",
-        " and let me know when it’s done",
-        ", then tell me when it's finished",
-        " and tell me when it's finished",
-        ", and tell me when it finishes",
-        " and tell me when it finishes",
-    ] {
-        if candidate.len() > suffix.len() {
-            let start = candidate.len() - suffix.len();
-            if candidate
-                .get(start..)
-                .is_some_and(|s| s.eq_ignore_ascii_case(suffix))
-            {
-                return (candidate[..start].trim_end(), true);
+    for separator in [", and ", " and ", ", then ", " then "] {
+        for notice in [
+            "let me know when it's done",
+            "let me know when it’s done",
+            "let me know when it is done",
+            "let me know when it's finished",
+            "let me know when it’s finished",
+            "let me know when it is finished",
+            "tell me when it's done",
+            "tell me when it’s done",
+            "tell me when it is done",
+            "tell me when it's finished",
+            "tell me when it’s finished",
+            "tell me when it is finished",
+            "tell me when it finishes",
+        ] {
+            let suffix = format!("{separator}{notice}");
+            if candidate.len() > suffix.len() {
+                let start = candidate.len() - suffix.len();
+                if candidate
+                    .get(start..)
+                    .is_some_and(|s| s.eq_ignore_ascii_case(&suffix))
+                {
+                    return (candidate[..start].trim_end(), true);
+                }
             }
         }
     }
@@ -678,6 +686,18 @@ mod completion_tests {
     }
     #[test]
     fn no_notice_from_a_mention_negation_or_invented_model_suffix() {
+        for suffix in [
+            ", and let me know when it is done.",
+            " and tell me when it is finished!",
+            " and let me know when it’s done",
+        ] {
+            let text = format!("Tell Website to make it clearer{suffix}");
+            assert_eq!(
+                completion_request(&text),
+                ("Tell Website to make it clearer", true)
+            );
+        }
+
         for text in [
             "Tell Website to write about 'let me know when it is done'",
             "Tell Website to make the button clearer, and don't let me know when it's done",
