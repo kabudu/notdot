@@ -256,8 +256,15 @@ fn cleanup_removed(base: &Path, owner: &ProfileId) -> Result<(), String> {
             return Err("Too many pending profile removals".into());
         }
         let entry = entry.map_err(|e| e.to_string())?;
-        let name = entry.file_name();
-        let id = ProfileId::parse(name.to_str().ok_or("Invalid removal marker")?)?;
+        // Only removal markers name a profile. Ignore unrelated files, such as
+        // Finder metadata, rather than refusing to start; nothing is deleted.
+        let Some(id) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| ProfileId::parse(name).ok())
+        else {
+            continue;
+        };
         if &id == owner {
             return Err("Refusing to remove owner data".into());
         }
@@ -545,7 +552,11 @@ mod tests {
             std::fs::create_dir_all(directory.path().join("profiles").join(id.as_str())).unwrap();
         }
         std::fs::write(marker_dir.join(removed.as_str()), "").unwrap();
+        std::fs::write(marker_dir.join(".DS_Store"), "").unwrap();
+        std::fs::create_dir_all(marker_dir.join("not-a-profile")).unwrap();
         cleanup_removed(directory.path(), &owner).unwrap();
+        assert!(marker_dir.join(".DS_Store").is_file());
+        assert!(!marker_dir.join(removed.as_str()).exists());
         assert!(
             !directory
                 .path()
