@@ -154,6 +154,9 @@ struct View {
     polling: bool,
     native_manual: bool,
     capture_token: Option<String>,
+    /// The capture this window just ended. The native status can report it as
+    /// capturing for one more poll; that stale report must not show as listening.
+    ended_capture: Option<String>,
     last_capture_cue: String,
     capture_feedback_events: u64,
     last_poll_at: f64,
@@ -1197,6 +1200,7 @@ fn stop_audio(view: &Shared) {
     });
     let mut v = view.borrow_mut();
     if let Some(token) = v.capture_token.take() {
+        v.ended_capture = Some(token.clone());
         spawn_local(async move {
             let _ = call("cancel_capture", json!({"token":token})).await;
         });
@@ -3185,12 +3189,17 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                 if v.conversation.listening() && v.local_phase == Some("listening") {
                     "followup"
                 } else {
-                    v.local_phase
-                        .unwrap_or(if v.snapshot.wake["phase"] == "capturing" {
+                    v.local_phase.unwrap_or(
+                        if visual_state::native_capture_live(
+                            v.snapshot.wake["phase"].as_str().unwrap_or(""),
+                            v.snapshot.wake["capture_token"].as_str(),
+                            v.ended_capture.as_deref(),
+                        ) {
                             "listening"
                         } else {
                             v.snapshot.phase.as_str()
-                        })
+                        },
+                    )
                 },
                 playing,
                 v.voice_pending,
