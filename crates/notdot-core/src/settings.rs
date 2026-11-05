@@ -81,8 +81,10 @@ impl Settings {
     pub fn load(path: &Path) -> Result<Self, String> {
         match std::fs::read(path) {
             Ok(bytes) => {
+                // Windows editors and PowerShell often save UTF-8 with a byte-order mark.
+                let json = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
                 let mut settings: Self =
-                    serde_json::from_slice(&bytes).map_err(|e| format!("Read settings: {e}"))?;
+                    serde_json::from_slice(json).map_err(|e| format!("Read settings: {e}"))?;
                 if settings.voice_id.is_empty() {
                     settings.voice_name.clear();
                 }
@@ -129,6 +131,22 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn settings_saved_with_a_utf8_byte_order_mark_still_load() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("settings.json");
+        std::fs::write(
+            &path,
+            b"\xEF\xBB\xBF{\"name\":\"Juniper\",\"wake_enabled\":true}",
+        )
+        .unwrap();
+        let loaded = Settings::load(&path).unwrap();
+        assert_eq!(loaded.name, "Juniper");
+        assert!(loaded.wake_enabled);
+        // Only a leading mark is accepted; other damage is still reported.
+        std::fs::write(&path, b"{\"name\":\"Juniper\"\xEF\xBB\xBF}").unwrap();
+        assert!(Settings::load(&path).is_err());
+    }
     #[test]
     fn session_control_defaults_to_read_only_and_all_modes_persist() {
         use crate::session_control::Mode;
