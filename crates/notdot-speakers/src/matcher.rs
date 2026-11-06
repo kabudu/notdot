@@ -122,6 +122,62 @@ pub fn identify(prints: &[Voiceprint], embedding: &[f32], t: &Thresholds) -> Mat
     }
 }
 
+/// Does one window of a capture still sound like the person the capture was
+/// admitted for?
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "result")]
+pub enum Window {
+    /// Consistent with the admitted person.
+    Same { score: f32 },
+    /// Clearly another enrolled person.
+    OtherPerson {
+        profile: String,
+        score: f32,
+        own: f32,
+    },
+    /// Clearly not the admitted person (an unenrolled voice, or noise that no
+    /// longer resembles them).
+    NotThisPerson { own: f32 },
+}
+
+/// Continuity rule for one window. `own` is the admitted person's centroid
+/// score. Another enrolled person counts as heard when they clear `accept`
+/// and beat `own` by `margin` (a handover). An own score under `floor` means
+/// the window is not the admitted person (for example an unenrolled guest).
+/// Simultaneous speech is mostly not detected: a mixture usually still
+/// resembles one of the two speakers (see the speaker-identity evidence).
+pub fn continuity(
+    prints: &[Voiceprint],
+    embedding: &[f32],
+    profile: &str,
+    t: &Thresholds,
+    floor: f32,
+) -> Window {
+    let own = prints
+        .iter()
+        .find(|p| p.profile == profile)
+        .map_or(f32::MIN, |p| p.score(embedding));
+    let other = prints
+        .iter()
+        .filter(|p| p.profile != profile)
+        .map(|p| (p, p.score(embedding)))
+        .max_by(|a, b| a.1.total_cmp(&b.1));
+    if let Some((p, score)) = other
+        && score >= t.accept
+        && score - own >= t.margin
+    {
+        return Window::OtherPerson {
+            profile: p.profile.clone(),
+            score,
+            own,
+        };
+    }
+    if own < floor {
+        return Window::NotThisPerson { own };
+    }
+    Window::Same { score: own }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +208,28 @@ mod tests {
     }
     // These vectors exercise decision logic only; they say nothing about
     // acoustic accuracy, which is measured with the real model separately.
+    #[test]
+    fn continuity_detects_handover_and_strangers_but_not_variation() {
+        let t = Thresholds::default();
+        let (a, b, c) = (unit(1, 64), unit(2, 64), unit(3, 64));
+        let prints = [print("a", &a, 100), print("b", &b, 200)];
+        assert!(matches!(
+            continuity(&prints, &near(&a, 7, 0.5), "a", &t, 0.45),
+            Window::Same { .. }
+        ));
+        assert!(
+            matches!(continuity(&prints, &near(&b, 7, 0.5), "a", &t, 0.45), Window::OtherPerson { ref profile, .. } if profile == "b")
+        );
+        assert!(matches!(
+            continuity(&prints, &c, "a", &t, 0.45),
+            Window::NotThisPerson { .. }
+        ));
+        // No voiceprint for the admitted person: never "same".
+        assert!(!matches!(
+            continuity(&prints, &a, "zzz", &t, 0.45),
+            Window::Same { .. }
+        ));
+    }
     #[test]
     fn decision_bands() {
         let t = Thresholds::default();

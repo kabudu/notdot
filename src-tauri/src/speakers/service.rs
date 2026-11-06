@@ -8,16 +8,17 @@
 //! - in a locked mode, a missing model, unreadable voiceprints, a missing or
 //!   locked key, an inference error or a timeout refuse the capture;
 //! - security changes only accept [`Actor::LocalDevice`].
+use super::self_removal::{self, Answer, Challenge, Stage};
 #[cfg(test)]
 use notdot_core::profiles::Outbox;
 use notdot_core::profiles::{
-    Actor, Admission, Capability, ChatAccess, IdentityMode, LoadOutcome, ProfileId, Refusal,
+    Actor, Admission, Capability, ChatAccess, IdentityMode, LoadOutcome, ProfileId, Refusal, Role,
     Roster, SpeakerOutcome, TurnLock,
 };
 use notdot_speakers::{
     audio,
     embedding::{CamPlusPlus, Extractor},
-    engine::{Engine, IDENTIFY_TIMEOUT_MS, Identification},
+    engine::{CONTINUITY_FLOOR, Continuity, Engine, IDENTIFY_TIMEOUT_MS, Identification},
     enrol::{EnrolError, Enrolment, Progress},
     matcher::Thresholds,
     store::{KeyStore, StoreError, VoiceprintStore},
@@ -45,6 +46,80 @@ pub const MAX_RECEIPTS: usize = 64;
 const MAX_IDENTIFY_SECONDS: usize = 10;
 /// Longest single enrolment phrase recording accepted.
 const MAX_ENROL_SECONDS: usize = 12;
+/// Longest capture checked for speaker continuity (matches the capture limit).
+const MAX_CONTINUITY_SECONDS: usize = 60;
+/// Spoken when a capture contained another voice after admission.
+pub const SPEAKER_CHANGED: &str =
+    "I heard more than one voice, so I didn't send that. Could one person ask again?";
+pub const SPEAKER_UNCHECKED: &str = "I couldn't check who was speaking. Please try again.";
+
+/// Whether a whole capture has been checked for a change of speaker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ContinuityState {
+    Pending,
+    Verified,
+    Rejected,
+}
+
+struct Receipt {
+    token: String,
+    at: Instant,
+    lock: TurnLock,
+    continuity: ContinuityState,
+}
+
+/// Who asked for a removal. Both routes finish with a deliberate click in
+/// notdot's window; the self-service route also needs a fresh spoken code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemovalRoute {
+    /// The principal owner, at this computer, removing a trusted member.
+    Owner,
+    /// A trusted member removing their own profile.
+    SelfService,
+}
+
+/// Proof that a removal passed every native check. Only
+/// [`Speakers::authorise_removal`] can create one, and it is consumed by
+/// [`Speakers::remove_member`].
+#[derive(Debug)]
+pub struct RemovalTicket {
+    profile: ProfileId,
+    name: String,
+    route: RemovalRoute,
+}
+impl RemovalTicket {
+    pub fn profile(&self) -> &ProfileId {
+        &self.profile
+    }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn route(&self) -> RemovalRoute {
+        self.route
+    }
+}
+
+/// What removal changed in the roster and voice store.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RemovalOutcome {
+    /// Retired private chat, to archive in Codex.
+    pub companion_thread: Option<String>,
+    /// False when the voice store could not be rewritten now (for example a
+    /// locked keychain); the voice is then pruned the next time voices load.
+    pub voice_deleted: bool,
+}
+
+/// Normalise a typed confirmation name for comparison.
+fn same_name(typed: &str, name: &str) -> bool {
+    let norm = |s: &str| {
+        s.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    };
+    !typed.trim().is_empty() && norm(typed) == norm(name)
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "state", content = "detail")]
@@ -78,7 +153,8 @@ pub struct Speakers {
     model_error: Mutex<Option<String>>,
     voices_error: Mutex<Option<StoreError>>,
     store: VoiceprintStore,
-    receipts: Mutex<VecDeque<(String, Instant, TurnLock)>>,
+    receipts: Mutex<VecDeque<Receipt>>,
+    self_removal: Mutex<Option<Challenge>>,
     enrolment: Mutex<Option<EnrolSession>>,
     enrol_epoch: AtomicU64,
     #[cfg(test)]
@@ -134,6 +210,7 @@ impl Speakers {
             model_error: Mutex::new(None),
             voices_error: Mutex::new(None),
             receipts: Mutex::new(VecDeque::new()),
+            self_removal: Mutex::new(None),
             enrolment: Mutex::new(None),
             enrol_epoch: AtomicU64::new(0),
             #[cfg(test)]
@@ -141,6 +218,10 @@ impl Speakers {
         }
     }
 
+    /// The app data directory this service manages.
+    pub fn base(&self) -> &std::path::Path {
+        &self.root
+    }
     #[cfg(test)]
     pub fn roster_path(&self) -> &Path {
         &self.roster_path
@@ -239,9 +320,39 @@ impl Speakers {
                 Vec::new()
             }
         };
+        // Never use (and finish deleting) a voice whose person was removed or
+        // forgotten, for example after a removal that could not rewrite the
+        // store at the time.
+        let roster = self.roster.lock().expect("roster").clone();
+        let enrolled = |id: &str| {
+            ProfileId::parse(id)
+                .ok()
+                .and_then(|id| roster.profile(&id).map(|p| p.voice_enrolled))
+                .unwrap_or(false)
+        };
+        let (prints, stale): (Vec<_>, Vec<_>) =
+            prints.into_iter().partition(|p| enrolled(&p.profile));
+        if !stale.is_empty() && !roster.recovery_required() {
+            let _ = self.store.retain_profiles(enrolled);
+        }
         let engine = Arc::new(Engine::new(extractor, prints, Thresholds::default()));
         *slot = Some(engine.clone());
         Ok(engine)
+    }
+
+    /// Test hook: record a receipt as if a capture had been identified.
+    #[cfg(test)]
+    fn insert_receipt(&self, lock: TurnLock, verified: bool) {
+        let token = lock.capture_token.clone();
+        self.store_receipt(
+            &token,
+            lock,
+            if verified {
+                ContinuityState::Verified
+            } else {
+                ContinuityState::Pending
+            },
+        );
     }
 
     /// Test hook: use a prepared engine instead of loading the model.
@@ -310,13 +421,14 @@ impl Speakers {
                     .expect("roster")
                     .validate_lock(&lock)
                     .map_err(|_| Refusal::IdentityUnavailable)?;
-                let mut receipts = self.receipts.lock().expect("receipts");
-                let now = Instant::now();
-                receipts.retain(|(t, at, _)| t != token && now.duration_since(*at) < RECEIPT_TTL);
-                while receipts.len() >= MAX_RECEIPTS {
-                    receipts.pop_front();
-                }
-                receipts.push_back((token.to_owned(), now, lock.clone()));
+                // Open-mode fallbacks keep legacy behaviour; a recognised
+                // person's capture must pass the continuity check first.
+                let continuity = if lock.open_fallback || !self.needs_identification() {
+                    ContinuityState::Verified
+                } else {
+                    ContinuityState::Pending
+                };
+                self.store_receipt(token, lock.clone(), continuity);
                 Ok(lock)
             }
             Admission::Refuse(r) => Err(r),
@@ -330,22 +442,117 @@ impl Speakers {
             .map_err(|r| r.spoken().to_owned())
     }
 
-    /// The lock recorded for a capture token, re-validated now. Receipts expire
-    /// after [`RECEIPT_TTL`]; a stale or revoked one is removed and refused.
-    pub fn receipt(&self, token: &str) -> Result<TurnLock, String> {
+    fn store_receipt(&self, token: &str, lock: TurnLock, continuity: ContinuityState) {
         let mut receipts = self.receipts.lock().expect("receipts");
         let now = Instant::now();
-        receipts.retain(|(_, at, _)| now.duration_since(*at) < RECEIPT_TTL);
-        let lock = receipts
+        receipts.retain(|r| r.token != token && now.duration_since(r.at) < RECEIPT_TTL);
+        while receipts.len() >= MAX_RECEIPTS {
+            receipts.pop_front();
+        }
+        receipts.push_back(Receipt {
+            token: token.to_owned(),
+            at: now,
+            lock,
+            continuity,
+        });
+    }
+
+    fn receipt_entry(&self, token: &str) -> Result<(TurnLock, ContinuityState), String> {
+        let mut receipts = self.receipts.lock().expect("receipts");
+        let now = Instant::now();
+        receipts.retain(|r| now.duration_since(r.at) < RECEIPT_TTL);
+        let (lock, continuity) = receipts
             .iter()
-            .find(|(t, _, _)| t == token)
-            .map(|(_, _, l)| l.clone())
+            .find(|r| r.token == token)
+            .map(|r| (r.lock.clone(), r.continuity))
             .ok_or("That request has expired. Please ask again.")?;
         if let Err(e) = self.validate(&lock) {
-            receipts.retain(|(t, _, _)| t != token);
+            receipts.retain(|r| r.token != token);
             return Err(e);
         }
-        Ok(lock)
+        Ok((lock, continuity))
+    }
+
+    /// The lock recorded for a capture token, re-validated now. Receipts expire
+    /// after [`RECEIPT_TTL`]; a stale or revoked one is removed and refused.
+    /// A recognised person's capture is only usable once the whole capture
+    /// passed [`Speakers::verify_continuity`].
+    pub fn receipt(&self, token: &str) -> Result<TurnLock, String> {
+        match self.receipt_entry(token)? {
+            (lock, ContinuityState::Verified) => Ok(lock),
+            (_, ContinuityState::Rejected) => Err(SPEAKER_CHANGED.into()),
+            (_, ContinuityState::Pending) => Err(SPEAKER_UNCHECKED.into()),
+        }
+    }
+
+    fn set_continuity(&self, token: &str, state: ContinuityState) {
+        if let Some(r) = self
+            .receipts
+            .lock()
+            .expect("receipts")
+            .iter_mut()
+            .find(|r| r.token == token)
+        {
+            r.continuity = state;
+        }
+    }
+
+    /// Check the whole capture (s16le mono PCM, held locally) for a change of
+    /// speaker after admission. Must run before the transcript is used with
+    /// anyone's private context. Fails closed: a switch, an unavailable model
+    /// or a timeout marks the receipt rejected and returns the spoken reason.
+    pub async fn verify_continuity(
+        &self,
+        token: &str,
+        rate: u32,
+        pcm: &[u8],
+    ) -> Result<(), String> {
+        let (lock, state) = self.receipt_entry(token)?;
+        match state {
+            ContinuityState::Verified => return Ok(()),
+            ContinuityState::Rejected => return Err(SPEAKER_CHANGED.into()),
+            ContinuityState::Pending => {}
+        }
+        let max = rate as usize * 2 * MAX_CONTINUITY_SECONDS;
+        let mut samples = audio::decode_s16le(&pcm[pcm.len().saturating_sub(max)..]);
+        let engine = match self.ensure_engine() {
+            Ok(e) => e,
+            Err(_) => {
+                samples.zeroize();
+                self.set_continuity(token, ContinuityState::Rejected);
+                return Err(SPEAKER_UNCHECKED.into());
+            }
+        };
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let flag = cancelled.clone();
+        let profile = lock.profile.to_string();
+        let windows = samples.len() / (rate.max(1) as usize) / 2 + 1;
+        let budget = Duration::from_millis(IDENTIFY_TIMEOUT_MS + 250 * windows as u64)
+            .min(Duration::from_secs(15));
+        let work = tokio::task::spawn_blocking(move || {
+            let out = engine.continuity(rate, &samples, &profile, CONTINUITY_FLOOR, &flag);
+            samples.zeroize();
+            out
+        });
+        let result = match tokio::time::timeout(budget, work).await {
+            Ok(Ok(Continuity::Consistent { .. })) => Ok(()),
+            Ok(Ok(Continuity::Switched { .. })) => Err(SPEAKER_CHANGED),
+            _ => {
+                cancelled.store(true, Ordering::Release);
+                Err(SPEAKER_UNCHECKED)
+            }
+        };
+        // Access may have changed while checking.
+        let result = result.and_then(|()| self.validate(&lock).map_err(|_| SPEAKER_UNCHECKED));
+        self.set_continuity(
+            token,
+            if result.is_ok() {
+                ContinuityState::Verified
+            } else {
+                ContinuityState::Rejected
+            },
+        );
+        result.map_err(str::to_owned)
     }
 
     /// Lock for typed or clicked requests from notdot's own window: the
@@ -416,31 +623,219 @@ impl Speakers {
         self.mutate(|r| r.revoke_chat(actor, chat, member))
     }
 
-    /// Remove a member. Deletes exactly: their voiceprint, their chat grants,
-    /// their roster entry, their receipts and queued announcements, and
-    /// `<base>/profiles/<id>/` (their memory ledger and private state). Returns
-    /// their companion chat ID: the chat itself lives in Codex and is no longer
-    /// reachable from notdot; archiving it there is the caller's step.
-    pub fn remove_member(&self, actor: &Actor, id: &ProfileId) -> Result<Option<String>, String> {
-        let (dir, thread) = {
-            let r = self.roster()?;
-            let p = r.profile(id).ok_or("Unknown profile")?;
-            (
-                self.root.join("profiles").join(id.as_str()),
-                p.companion_thread.clone(),
-            )
+    // ------------------------------------------------------------ offboarding
+
+    /// Every native check for removing a trusted member, for both routes.
+    ///
+    /// - `actor` must be [`Actor::LocalDevice`]: a click in notdot's own
+    ///   visible, focused window. A voice (even the owner's) never qualifies,
+    ///   and the UI never supplies who is acting.
+    /// - The target must be a current trusted member. The principal owner can
+    ///   never be removed by either route.
+    /// - `confirm_name` must match the target's current name, so the dialog
+    ///   that was confirmed named the person being removed.
+    /// - [`RemovalRoute::SelfService`] additionally needs the target's own
+    ///   pending request whose fresh spoken code was confirmed in time, for
+    ///   the target's current epoch. The pending request is consumed.
+    pub fn authorise_removal(
+        &self,
+        actor: &Actor,
+        target: &ProfileId,
+        confirm_name: &str,
+        route: RemovalRoute,
+    ) -> Result<RemovalTicket, String> {
+        if actor != &Actor::LocalDevice {
+            return Err("Removing a person needs a confirmation on notdot's screen".into());
+        }
+        if self.roster_damaged.load(Ordering::Acquire) {
+            return Err("Voice recognition needs recovery first".into());
+        }
+        let roster = self.roster()?;
+        let person = roster
+            .profile(target)
+            .ok_or("That person is no longer set up")?;
+        if person.role != Role::Member || target == roster.owner() {
+            return Err(
+                "The principal owner can't be removed. To start over, use Reset on this computer."
+                    .into(),
+            );
+        }
+        if !same_name(confirm_name, &person.name) {
+            return Err(format!("Type {} to confirm", person.name));
+        }
+        if route == RemovalRoute::SelfService {
+            let mut slot = self.self_removal.lock().expect("self removal");
+            let now = Instant::now();
+            let ok = slot.as_ref().is_some_and(|c| {
+                &c.profile == target
+                    && c.epoch == person.epoch
+                    && c.stage == Stage::AwaitingLocalConfirmation
+                    && !c.expired(now)
+            });
+            if !ok {
+                return Err(format!(
+                    "{} needs to ask notdot to remove their profile first, then say the code",
+                    person.name
+                ));
+            }
+            *slot = None;
+        }
+        Ok(RemovalTicket {
+            profile: target.clone(),
+            name: person.name.clone(),
+            route,
+        })
+    }
+
+    /// Remove an authorised member from the roster (revoking access, grants,
+    /// receipts and any pending self-removal), retire their private chat and
+    /// delete their voice. The caller records the durable offboarding marker
+    /// *before* calling this and finishes local data deletion afterwards.
+    pub fn remove_member(&self, ticket: RemovalTicket) -> Result<RemovalOutcome, String> {
+        self.complete_recorded_removal(&ticket.profile)
+    }
+
+    /// Finish a removal that was authorised and durably recorded earlier, for
+    /// example after a crash. Idempotent: a person already gone is fine.
+    pub fn complete_recorded_removal(&self, id: &ProfileId) -> Result<RemovalOutcome, String> {
+        let roster = self.roster()?;
+        if id == roster.owner() {
+            return Err("Refusing to remove the owner".into());
+        }
+        let companion_thread = match roster.profile(id) {
+            Some(p) => {
+                let thread = p.companion_thread.clone();
+                self.mutate(|r| r.remove_member_recorded(&self.root, id).map(|_| ()))?;
+                thread
+            }
+            None => None,
         };
-        self.forget_voice(actor, id)?;
-        self.mutate(|r| r.remove_member(actor, &self.root, id).map(|_| ()))?;
         #[cfg(test)]
         self.outbox.lock().expect("outbox").forget(id);
         self.receipts
             .lock()
             .expect("receipts")
-            .retain(|(_, _, l)| &l.profile != id);
-        // App wrapper closes live stores and completes durable profile removal.
-        let _ = dir;
-        Ok(thread)
+            .retain(|r| &r.lock.profile != id);
+        {
+            let mut slot = self.self_removal.lock().expect("self removal");
+            if slot.as_ref().is_some_and(|c| &c.profile == id) {
+                *slot = None;
+            }
+        }
+        let voice_deleted = self.store.retain_profiles(|p| p != id.as_str()).is_ok();
+        if let Some(engine) = self.engine.lock().expect("engine").as_ref() {
+            let prints: Vec<_> = engine
+                .prints()
+                .iter()
+                .filter(|p| p.profile != id.as_str())
+                .cloned()
+                .collect();
+            engine.replace_prints(prints);
+        }
+        Ok(RemovalOutcome {
+            companion_thread,
+            voice_deleted,
+        })
+    }
+
+    /// Record the outcome of archiving a retired chat in Codex.
+    pub fn record_archive(&self, chat: &str, archived: bool) -> Result<(), String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or_default();
+        self.mutate(|r| {
+            r.record_archive(chat, archived, now);
+            Ok(())
+        })
+    }
+
+    // ------------------------------------------------------------ self-service removal
+
+    /// A trusted member asked to remove their own profile. Returns the line to
+    /// speak, containing a fresh one-time code. Only a member's own continuity
+    /// verified capture qualifies; the owner and open-mode fallbacks are told
+    /// how to proceed instead.
+    pub fn self_removal_request(&self, token: &str) -> Result<String, String> {
+        let lock = self.receipt(token)?;
+        if lock.open_fallback {
+            return Err("I can't tell who's speaking, so I can't remove a profile. Ask the owner to help on this computer.".into());
+        }
+        if lock.role == Role::Owner {
+            return Err("You're the owner, so your profile can't be removed. To start over, use Reset in Settings on this computer.".into());
+        }
+        let name = self
+            .roster()?
+            .profile(&lock.profile)
+            .map(|p| p.name.clone())
+            .ok_or("That person is no longer set up")?;
+        let challenge = Challenge::new(&lock, self_removal::random_code(), Instant::now());
+        let line = format!(
+            "{name}, this removes your profile, your saved voice and your private memories. To continue, say: remove me, code {}. Then confirm on notdot's screen. The code works for two minutes.",
+            challenge.spoken_code()
+        );
+        *self.self_removal.lock().expect("self removal") = Some(challenge);
+        Ok(line)
+    }
+
+    /// Offer a transcript to a pending self-removal. `None` means it is not
+    /// part of that flow and should be handled normally.
+    pub fn self_removal_answer(
+        &self,
+        token: &str,
+        transcript: &str,
+    ) -> Option<Result<String, String>> {
+        let mut slot = self.self_removal.lock().expect("self removal");
+        let challenge = slot.as_mut()?;
+        let lock = match self.receipt(token) {
+            Ok(lock) => lock,
+            Err(_) => return None,
+        };
+        let name = self
+            .roster()
+            .ok()?
+            .profile(&challenge.profile)
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
+        match challenge.answer(&lock, transcript, Instant::now()) {
+            Answer::NotForUs => None,
+            Answer::Confirmed => Some(Ok(format!(
+                "Thanks, {name}. To finish, select Remove my profile on notdot's screen and type your name."
+            ))),
+            Answer::WrongCode { remaining } => Some(Err(format!(
+                "That code didn't match. You can try {remaining} more {}.",
+                if remaining == 1 { "time" } else { "times" }
+            ))),
+            Answer::Ended => {
+                *slot = None;
+                Some(Err(
+                    "I've stopped the removal. Nothing was deleted. You can ask again any time."
+                        .into(),
+                ))
+            }
+        }
+    }
+
+    /// Cancel a pending self-removal (from the screen or by voice).
+    pub fn self_removal_cancel(&self) {
+        *self.self_removal.lock().expect("self removal") = None;
+    }
+
+    /// Pending self-removal, for the settings panel.
+    pub fn self_removal_status(&self) -> serde_json::Value {
+        let slot = self.self_removal.lock().expect("self removal");
+        let now = Instant::now();
+        match slot.as_ref().filter(|c| !c.expired(now)) {
+            Some(c) => serde_json::json!({
+                "profile": c.profile,
+                "stage": match c.stage {
+                    Stage::AwaitingCode { .. } => "awaiting_code",
+                    Stage::AwaitingLocalConfirmation => "awaiting_local_confirmation",
+                },
+                "expires_in_s": c.expires_in(now).as_secs(),
+            }),
+            None => serde_json::Value::Null,
+        }
     }
 
     /// Remove one person's voiceprint (they can re-teach it later).
@@ -517,8 +912,9 @@ impl Speakers {
         let r = self.roster()?;
         r.authorise(actor, Capability::ManageMembers)
             .map_err(|e| e.to_string())?;
-        if r.profile(id).is_none() {
-            return Err("Unknown profile".into());
+        let person = r.profile(id).ok_or("Unknown profile")?;
+        if !person.named() {
+            return Err("Tell notdot what to call you first.".into());
         }
         self.ensure_engine()?;
         if let Health::VoicesUnavailable(e) = self.health() {
@@ -639,10 +1035,17 @@ impl Speakers {
     }
 
     /// Save the new voiceprint (replacing any previous one for this person).
-    pub fn enrol_save(&self, actor: &Actor) -> Result<(), String> {
+    /// `consent` is the owner's confirmation, at this computer, that the
+    /// person was present and agreed; it is recorded with the voice.
+    pub fn enrol_save(&self, actor: &Actor, consent: bool) -> Result<(), String> {
         self.roster()?
             .authorise(actor, Capability::ManageMembers)
             .map_err(|e| e.to_string())?;
+        if !consent {
+            return Err(
+                "Confirm that this person is here and agrees before saving their voice.".into(),
+            );
+        }
         let session = self
             .enrolment
             .lock()
@@ -677,7 +1080,10 @@ impl Speakers {
         self.store
             .save(&model, &prints)
             .map_err(|e| e.to_string())?;
-        if let Err(e) = self.mutate(|r| r.set_voice_enrolled(actor, &profile, true)) {
+        if let Err(e) = self.mutate(|r| {
+            r.set_voice_enrolled(actor, &profile, true)?;
+            r.record_voice_consent(actor, &profile)
+        }) {
             let restored: Vec<_> = prints
                 .iter()
                 .filter(|p| p.profile != profile.as_str())
@@ -694,6 +1100,7 @@ impl Speakers {
     pub fn summary(&self) -> serde_json::Value {
         let mut v = self.roster().map(|r| r.summary()).unwrap_or_default();
         v["health"] = serde_json::to_value(self.health()).unwrap_or_default();
+        v["self_removal"] = self.self_removal_status();
         v["enrolling"] = serde_json::json!(
             self.enrolment
                 .lock()
@@ -896,8 +1303,11 @@ mod tests {
             GlobalChatMode::Confirm
         ));
         s.defer(&lock, serde_json::json!("ada's reminder"));
+        let ticket = s
+            .authorise_removal(&local(), &ada, "ada", RemovalRoute::Owner)
+            .unwrap();
         assert_eq!(
-            s.remove_member(&local(), &ada).unwrap().as_deref(),
+            s.remove_member(ticket).unwrap().companion_thread.as_deref(),
             Some("ada-thread")
         );
         assert!(ada_dir.exists()); // App wrapper performs removal after closing stores.
@@ -999,7 +1409,9 @@ mod tests {
             let result = task.await.unwrap();
             if i == 0 {
                 assert_eq!(result.unwrap().profile, ada);
-                assert!(s.receipt(&token).is_ok());
+                // Admitted, but unusable until the whole capture is checked.
+                assert!(s.receipt_entry(&token).is_ok());
+                assert_eq!(s.receipt(&token), Err(SPEAKER_UNCHECKED.into()));
             } else {
                 assert_eq!(result, Err(Refusal::IdentityUnavailable), "change {i}");
                 assert!(s.receipt(&token).is_err(), "change {i}");
@@ -1057,7 +1469,7 @@ mod tests {
         release.send(()).unwrap();
         assert_eq!(task.await.unwrap(), Err("Enrolment cancelled".into()));
         assert!(current(&s).is_none(), "cancelled session was restored");
-        assert!(s.enrol_save(&local()).is_err());
+        assert!(s.enrol_save(&local(), true).is_err());
         assert!(s.summary()["enrolling"].is_null());
 
         // A new enrolment started mid-inference wins; the old one is void.
@@ -1088,6 +1500,377 @@ mod tests {
             "{progress:?}"
         );
         assert!(!dir.path().join(VOICEPRINT_FILE).exists());
+    }
+
+    // ---------------------------------------------------------------- offboarding
+
+    fn member_lock(s: &Speakers, id: &ProfileId, token: &str) -> TurnLock {
+        let r = s.roster().unwrap();
+        let p = r.profile(id).unwrap();
+        TurnLock {
+            capture_token: token.into(),
+            profile: id.clone(),
+            role: p.role,
+            epoch: p.epoch,
+            open_fallback: false,
+        }
+    }
+    /// Owner with a voice, trusted mode, members Ada and Grace with voices.
+    fn household(dir: &Path) -> (Speakers, ProfileId, ProfileId, ProfileId) {
+        let s = open(dir, dir.join("m.onnx"), &SharedKeys::default());
+        let mut r = s.roster().unwrap();
+        let owner = r.owner().clone();
+        let ada = r.add_member(&local(), "Ada").unwrap();
+        let grace = r.add_member(&local(), "Grace").unwrap();
+        for id in [&owner, &ada, &grace] {
+            r.set_voice_enrolled(&local(), id, true).unwrap();
+        }
+        r.set_mode(&local(), IdentityMode::TrustedGroup).unwrap();
+        r.set_companion_thread(&ada, "ada-private", Some("owner-thread"))
+            .unwrap();
+        s.save_roster(r).unwrap();
+        (s, owner, ada, grace)
+    }
+    fn code_from(line: &str) -> String {
+        self_removal::spoken_digits(line.split("code").nth(1).unwrap(), false)
+    }
+
+    #[test]
+    fn owner_removal_needs_local_actor_named_member_target_and_never_the_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, owner, ada, grace) = household(dir.path());
+        let owner_voice = Actor::Voice(member_lock(&s, &owner, "o"));
+        let ada_voice = Actor::Voice(member_lock(&s, &ada, "a"));
+        // Forged actors: no voice, not even the owner's, can remove anyone.
+        for actor in [&owner_voice, &ada_voice] {
+            for target in [&ada, &grace, &owner] {
+                assert!(
+                    s.authorise_removal(actor, target, "Ada", RemovalRoute::Owner)
+                        .is_err()
+                );
+                assert!(
+                    s.authorise_removal(actor, target, "Ada", RemovalRoute::SelfService)
+                        .is_err()
+                );
+            }
+        }
+        // The principal can never be removed, by either route.
+        for route in [RemovalRoute::Owner, RemovalRoute::SelfService] {
+            let name = s.roster().unwrap().profile(&owner).unwrap().name.clone();
+            assert!(
+                s.authorise_removal(&local(), &owner, &name, route)
+                    .unwrap_err()
+                    .contains("principal owner")
+            );
+        }
+        // Named confirmation must match the target, not another person.
+        assert!(
+            s.authorise_removal(&local(), &ada, "Grace", RemovalRoute::Owner)
+                .is_err()
+        );
+        assert!(
+            s.authorise_removal(&local(), &ada, "", RemovalRoute::Owner)
+                .is_err()
+        );
+        assert!(
+            s.authorise_removal(&local(), &ProfileId::random(), "Ada", RemovalRoute::Owner)
+                .is_err()
+        );
+        let ticket = s
+            .authorise_removal(&local(), &ada, "  ada ", RemovalRoute::Owner)
+            .unwrap();
+        assert_eq!((ticket.profile(), ticket.name()), (&ada, "Ada"));
+        let out = s.remove_member(ticket).unwrap();
+        assert_eq!(out.companion_thread.as_deref(), Some("ada-private"));
+        let r = s.roster().unwrap();
+        assert!(
+            r.profile(&ada).is_none() && r.profile(&grace).is_some() && r.profile(&owner).is_some()
+        );
+        assert!(r.is_retired("ada-private"));
+    }
+
+    #[tokio::test]
+    async fn self_removal_needs_own_voice_fresh_code_and_local_click() {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, owner, ada, grace) = household(dir.path());
+        // Without a confirmed request, self-service removal is refused.
+        assert!(
+            s.authorise_removal(&local(), &ada, "Ada", RemovalRoute::SelfService)
+                .is_err()
+        );
+        // The owner and open-mode fallbacks cannot start one.
+        s.insert_receipt(member_lock(&s, &owner, "o1"), true);
+        assert!(s.self_removal_request("o1").unwrap_err().contains("owner"));
+        let mut fallback = member_lock(&s, &owner, "f1");
+        fallback.open_fallback = true;
+        s.insert_receipt(fallback, true);
+        assert!(s.self_removal_request("f1").is_err());
+        // A capture not yet checked for a speaker switch cannot start one.
+        s.insert_receipt(member_lock(&s, &ada, "a0"), false);
+        assert!(s.self_removal_request("a0").is_err());
+        // Ada asks.
+        s.insert_receipt(member_lock(&s, &ada, "a1"), true);
+        let line = s.self_removal_request("a1").unwrap();
+        let code = code_from(&line);
+        assert_eq!(code.len(), 4);
+        assert_eq!(s.self_removal_status()["stage"], "awaiting_code");
+        // Replaying the request capture, Grace's voice, or the owner's voice
+        // saying the code does nothing.
+        assert!(s.self_removal_answer("a1", &code).is_none());
+        s.insert_receipt(member_lock(&s, &grace, "g1"), true);
+        assert!(
+            s.self_removal_answer("g1", &format!("code {code}"))
+                .is_none()
+        );
+        s.insert_receipt(member_lock(&s, &owner, "o2"), true);
+        assert!(
+            s.self_removal_answer("o2", &format!("code {code}"))
+                .is_none()
+        );
+        // Spoken code confirmed, but a click is still required...
+        assert!(
+            s.authorise_removal(&local(), &ada, "Ada", RemovalRoute::SelfService)
+                .is_err()
+        );
+        s.insert_receipt(member_lock(&s, &ada, "a2"), true);
+        assert!(
+            s.self_removal_answer("a2", &format!("remove me, code {code}"))
+                .unwrap()
+                .is_ok()
+        );
+        assert_eq!(
+            s.self_removal_status()["stage"],
+            "awaiting_local_confirmation"
+        );
+        // ...for Ada only, with her name, and never by a voice.
+        assert!(
+            s.authorise_removal(&local(), &grace, "Grace", RemovalRoute::SelfService)
+                .is_err()
+        );
+        assert!(
+            s.authorise_removal(&local(), &ada, "Grace", RemovalRoute::SelfService)
+                .is_err()
+        );
+        let ada_voice = Actor::Voice(member_lock(&s, &ada, "a3"));
+        assert!(
+            s.authorise_removal(&ada_voice, &ada, "Ada", RemovalRoute::SelfService)
+                .is_err()
+        );
+        let ticket = s
+            .authorise_removal(&local(), &ada, "Ada", RemovalRoute::SelfService)
+            .unwrap();
+        assert_eq!(ticket.route(), RemovalRoute::SelfService);
+        // The confirmation is single use.
+        assert!(
+            s.authorise_removal(&local(), &ada, "Ada", RemovalRoute::SelfService)
+                .is_err()
+        );
+        s.remove_member(ticket).unwrap();
+        assert!(s.roster().unwrap().profile(&ada).is_none());
+        assert!(s.roster().unwrap().profile(&grace).is_some());
+        assert!(s.self_removal_status().is_null());
+    }
+
+    #[test]
+    fn stale_locks_and_wrong_codes_cannot_complete_self_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, _, ada, _) = household(dir.path());
+        s.insert_receipt(member_lock(&s, &ada, "a1"), true);
+        let code = code_from(&s.self_removal_request("a1").unwrap());
+        // Re-teaching Ada's voice bumps her epoch: the old receipt and the
+        // pending request are both stale.
+        let mut r = s.roster().unwrap();
+        r.set_voice_enrolled(&local(), &ada, true).unwrap();
+        s.save_roster(r).unwrap();
+        assert!(s.self_removal_answer("a1", &code).is_none());
+        s.insert_receipt(member_lock(&s, &ada, "a2"), true);
+        assert!(
+            s.self_removal_answer("a2", &format!("code {code}"))
+                .unwrap()
+                .is_err()
+        );
+        assert!(s.self_removal_status().is_null());
+        assert!(
+            s.authorise_removal(&local(), &ada, "Ada", RemovalRoute::SelfService)
+                .is_err()
+        );
+        // Three wrong codes end the request; nothing is deleted.
+        s.insert_receipt(member_lock(&s, &ada, "b1"), true);
+        let code = code_from(&s.self_removal_request("b1").unwrap());
+        let wrong = if code == "0000" { "1111" } else { "0000" };
+        for (i, t) in ["b2", "b3", "b4"].iter().enumerate() {
+            s.insert_receipt(member_lock(&s, &ada, t), true);
+            let answer = s.self_removal_answer(t, &format!("code {wrong}")).unwrap();
+            assert!(answer.is_err(), "{i}");
+        }
+        assert!(s.self_removal_status().is_null());
+        assert!(s.roster().unwrap().profile(&ada).is_some());
+        // A local cancel also ends it.
+        s.insert_receipt(member_lock(&s, &ada, "c1"), true);
+        s.self_removal_request("c1").unwrap();
+        s.self_removal_cancel();
+        assert!(s.self_removal_status().is_null());
+    }
+
+    #[test]
+    fn removal_deletes_the_voice_even_without_the_model_and_readding_starts_fresh() {
+        use notdot_speakers::matcher::Voiceprint;
+        let dir = tempfile::tempdir().unwrap();
+        let keys = SharedKeys::default();
+        let s = open(dir.path(), dir.path().join("missing.onnx"), &keys);
+        let mut r = s.roster().unwrap();
+        let owner = r.owner().clone();
+        let ada = r.add_member(&local(), "Ada").unwrap();
+        r.set_voice_enrolled(&local(), &owner, true).unwrap();
+        r.set_voice_enrolled(&local(), &ada, true).unwrap();
+        s.save_roster(r).unwrap();
+        let store = VoiceprintStore::new(dir.path().join(VOICEPRINT_FILE), Box::new(keys.clone()));
+        let print = |id: &ProfileId| Voiceprint {
+            profile: id.to_string(),
+            samples: vec![vec![0.5; 8]; 3],
+        };
+        store.save(&[1; 32], &[print(&owner), print(&ada)]).unwrap();
+        let ticket = s
+            .authorise_removal(&local(), &ada, "Ada", RemovalRoute::Owner)
+            .unwrap();
+        assert!(s.remove_member(ticket).unwrap().voice_deleted);
+        let left = store.load(&[1; 32]).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].profile, owner.to_string());
+        let again = s.add_member(&local(), "Ada").unwrap();
+        assert_ne!(again, ada);
+        let p = s.roster().unwrap().profile(&again).unwrap().clone();
+        assert!(
+            !p.voice_enrolled && p.voice_consent_unix_ms.is_none() && p.companion_thread.is_none()
+        );
+        assert!(!dir.path().join("profiles").join(again.as_str()).exists());
+    }
+
+    #[test]
+    fn owner_must_be_named_and_consent_recorded_before_saving_a_voice() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Speakers::with_keys(
+            dir.path().into(),
+            dir.path().join("m.onnx"),
+            Box::new(SharedKeys::default()),
+            notdot_core::profiles::OWNER_PLACEHOLDER_NAME,
+        );
+        let owner = s.roster().unwrap().owner().clone();
+        assert_eq!(
+            s.enrol_begin(&local(), &owner).unwrap_err(),
+            "Tell notdot what to call you first."
+        );
+        assert_eq!(s.summary()["people"][0]["needs_name"], true);
+        s.rename(&local(), &owner, "Kamba").unwrap();
+        assert_eq!(s.summary()["people"][0]["needs_name"], false);
+        assert!(
+            s.enrol_save(&local(), false)
+                .unwrap_err()
+                .contains("agrees")
+        );
+    }
+
+    /// Extractor whose "voice" is the loudness of the audio: quiet = one
+    /// person, loud = another. Exercises continuity wiring, not acoustics.
+    struct Loudness;
+    impl Extractor for Loudness {
+        fn embed(&self, _: u32, v: &[f32]) -> Result<Vec<f32>, String> {
+            let rms = (v.iter().map(|x| x * x).sum::<f32>() / v.len().max(1) as f32).sqrt();
+            Ok(if rms < 0.25 {
+                vec![1.0, 0.0, 0.0]
+            } else {
+                vec![0.0, 1.0, 0.0]
+            })
+        }
+        fn dim(&self) -> usize {
+            3
+        }
+        fn model_id(&self) -> [u8; 32] {
+            [0; 32]
+        }
+    }
+    fn tone(seconds: usize, amp: f32) -> Vec<u8> {
+        (0..16_000 * seconds)
+            .flat_map(|i| ((amp * (i as f32 * 0.05).sin() * 32767.0) as i16).to_le_bytes())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_change_of_speaker_after_admission_blocks_the_capture() {
+        use notdot_speakers::matcher::Voiceprint;
+        let dir = tempfile::tempdir().unwrap();
+        let (s, owner, ada, _) = household(dir.path());
+        // Enrolment samples near (not identical to) each "voice", so a match
+        // is not mistaken for a replayed enrolment clip.
+        let n = |v: Vec<f32>| notdot_speakers::embedding::normalise(v).unwrap();
+        let near = |x: f32, y: f32| {
+            vec![
+                n(vec![x, y, 0.3]),
+                n(vec![x, y, -0.3]),
+                n(vec![x + 0.3 * y, y + 0.3 * x, 0.0]),
+            ]
+        };
+        s.install_engine(Engine::new(
+            Arc::new(Loudness),
+            vec![
+                Voiceprint {
+                    profile: owner.to_string(),
+                    samples: near(1.0, 0.0),
+                },
+                Voiceprint {
+                    profile: ada.to_string(),
+                    samples: near(0.0, 1.0),
+                },
+            ],
+            Thresholds::default(),
+        ));
+        // The owner alone: admitted and usable after the check.
+        let alone = tone(6, 0.2);
+        assert_eq!(
+            s.identify("one", 16_000, &alone).await.unwrap().profile,
+            owner
+        );
+        assert_eq!(s.receipt("one"), Err(SPEAKER_UNCHECKED.into()));
+        s.verify_continuity("one", 16_000, &alone).await.unwrap();
+        assert_eq!(s.receipt("one").unwrap().profile, owner);
+        // The owner starts, Ada finishes: admitted as the owner on the first
+        // seconds, then refused before anything is sent.
+        let mut handover = tone(3, 0.2);
+        handover.extend(tone(4, 0.6));
+        assert_eq!(
+            s.identify("two", 16_000, &handover[..16_000 * 2 * 2])
+                .await
+                .unwrap()
+                .profile,
+            owner
+        );
+        assert_eq!(
+            s.verify_continuity("two", 16_000, &handover).await,
+            Err(SPEAKER_CHANGED.into())
+        );
+        assert_eq!(s.receipt("two"), Err(SPEAKER_CHANGED.into()));
+        // A rejected capture stays rejected.
+        assert_eq!(
+            s.verify_continuity("two", 16_000, &alone).await,
+            Err(SPEAKER_CHANGED.into())
+        );
+    }
+
+    #[tokio::test]
+    async fn continuity_fails_closed_without_the_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, _, ada, _) = household(dir.path());
+        s.insert_receipt(member_lock(&s, &ada, "a1"), false);
+        assert_eq!(
+            s.verify_continuity("a1", 16_000, &tone(3, 0.2)).await,
+            Err(SPEAKER_UNCHECKED.into())
+        );
+        assert!(s.receipt("a1").is_err());
+        assert!(
+            s.verify_continuity("unknown", 16_000, &tone(3, 0.2))
+                .await
+                .is_err()
+        );
     }
 
     // ------------------------------------------------------------------
@@ -1124,7 +1907,7 @@ mod tests {
                 "{p:?}"
             );
         }
-        s.enrol_save(&local()).unwrap();
+        s.enrol_save(&local(), true).unwrap();
     }
 
     #[tokio::test]
@@ -1145,7 +1928,7 @@ mod tests {
         s.enrol_audio("t", rate, &pcm);
         s.enrol_cancel();
         assert!(s.enrol_capture_end("t").await.is_err());
-        assert!(s.enrol_save(&local()).is_err());
+        assert!(s.enrol_save(&local(), true).is_err());
         assert!(!dir.path().join(VOICEPRINT_FILE).exists());
 
         enrol(&s, &owner, &fx.join("daniel")).await;
@@ -1162,6 +1945,21 @@ mod tests {
         assert_eq!(s.identify("o1", r, &p).await.unwrap().profile, owner);
         let (r, p) = say("karen", 2);
         let ada_lock = s.identify("a1", r, &p).await.unwrap();
+        s.verify_continuity("a1", r, &p).await.unwrap();
+        assert!(s.receipt("a1").is_ok());
+        // The owner starts and Ada takes over: refused before anything is sent.
+        let (r2, mut handover) = say("daniel", 3);
+        handover.truncate(r2 as usize * 2 * 5 / 2);
+        handover.extend(vec![0u8; r2 as usize / 2]);
+        handover.extend(say("karen", 5).1);
+        // Admission sees only the first two seconds, as in the capture path.
+        let prefix = &handover[..r2 as usize * 2 * 2];
+        assert_eq!(s.identify("h1", r2, prefix).await.unwrap().profile, owner);
+        assert_eq!(
+            s.verify_continuity("h1", r2, &handover).await,
+            Err(SPEAKER_CHANGED.into())
+        );
+        assert!(s.receipt("h1").is_err());
         assert_eq!(
             (ada_lock.profile.clone(), ada_lock.role),
             (ada.clone(), Role::Member)

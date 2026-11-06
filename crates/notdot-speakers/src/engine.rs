@@ -135,6 +135,87 @@ impl Engine {
     }
 }
 
+/// Window length for continuity checks.
+pub const CONTINUITY_WINDOW_SECONDS: f32 = 3.0;
+/// Bound on windows checked; longer captures widen the hop instead.
+pub const MAX_CONTINUITY_WINDOWS: usize = 40;
+/// Lowest own-voice score per window still treated as the admitted person.
+pub const CONTINUITY_FLOOR: f32 = 0.45;
+
+/// Whether a whole capture was spoken by the person it was admitted for.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "result")]
+pub enum Continuity {
+    /// Every assessable window matched; `checked` may be 0 for very short
+    /// captures, which are then covered only by the admission check.
+    Consistent {
+        checked: usize,
+    },
+    /// Another enrolled person, or a voice that is clearly not the admitted
+    /// person, was heard in window `window` (0-based).
+    Switched {
+        window: usize,
+        other: Option<String>,
+    },
+    Cancelled,
+    Unavailable,
+}
+
+impl Engine {
+    /// Check every window of a capture against the admitted `profile`.
+    /// Windows without enough clear speech are skipped. `floor` is the lowest
+    /// own-voice score still treated as the same person.
+    pub fn continuity(
+        &self,
+        rate: u32,
+        samples: &[f32],
+        profile: &str,
+        floor: f32,
+        cancelled: &AtomicBool,
+    ) -> Continuity {
+        let prints = self.prints();
+        if !prints.iter().any(|p| p.profile == profile) {
+            return Continuity::Unavailable;
+        }
+        let mut checked = 0;
+        for (i, window) in audio::windows(
+            rate,
+            samples,
+            CONTINUITY_WINDOW_SECONDS,
+            MAX_CONTINUITY_WINDOWS,
+        )
+        .into_iter()
+        .enumerate()
+        {
+            let mut e = match self.embed(rate, window, cancelled) {
+                Ok(e) => e,
+                Err(Identification::Unusable { .. }) => continue,
+                Err(Identification::Cancelled) => return Continuity::Cancelled,
+                Err(_) => return Continuity::Unavailable,
+            };
+            let verdict = matcher::continuity(&prints, &e, profile, &self.thresholds, floor);
+            e.zeroize();
+            checked += 1;
+            match verdict {
+                matcher::Window::Same { .. } => {}
+                matcher::Window::OtherPerson { profile, .. } => {
+                    return Continuity::Switched {
+                        window: i,
+                        other: Some(profile),
+                    };
+                }
+                matcher::Window::NotThisPerson { .. } => {
+                    return Continuity::Switched {
+                        window: i,
+                        other: None,
+                    };
+                }
+            }
+        }
+        Continuity::Consistent { checked }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

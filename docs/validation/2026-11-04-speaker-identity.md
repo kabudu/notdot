@@ -80,7 +80,7 @@ notdot has no anti-spoofing. Anyone with a recording of an enrolled person, or a
 
 ## Privacy and policy tests
 
-`profiles.rs` (14 tests), `notdot-speakers` (16 unit tests) and the native adapter (6 tests, including a mid-inference access-change race, plus one end-to-end test that uses the model). All pass in the release profile, with Clippy `-D warnings` clean.
+`profiles.rs` (18 tests), `notdot-speakers` (16 unit tests) and the native adapter (6 tests, including a mid-inference access-change race, plus one end-to-end test that uses the model). All pass in the release profile, with Clippy `-D warnings` clean.
 
 - Profile IDs are random UUIDv4 values and cannot be names or path fragments. Renaming a person never moves their data.
 - Namespaces:
@@ -118,13 +118,51 @@ notdot has no anti-spoofing. Anyone with a recording of an enrolled person, or a
 - Restart: voices persist through the keychain. A lost key leads to "Forget all voices", which keeps people, memories and shares.
 - Cancelled enrolment leaves no file and no samples. Enrolment and identification audio are zeroised after embedding.
 - Removing a person deletes exactly:
-  - their voiceprint,
+  - their voiceprint (works without the speaker model; if the keychain is unavailable, the voice is never used and is deleted the next time voices load),
   - their shares,
   - their roster entry,
-  - their receipts and queued announcements,
+  - their receipts, pending self-removal and queued announcements,
   - `profiles/<id>/`.
 
-  The owner's ledger is untouched. Their companion chat ID is returned so it can be archived in Codex.
+  The owner's ledger is untouched. Messages they added to shared owner chats are left in those chats.
+
+## Offboarding (6 November)
+
+Authority is checked natively in `Speakers::authorise_removal`, which is the only way to obtain the ticket that `remove_member` consumes:
+- The actor must be a click in notdot's visible, focused window. A voice never qualifies, including the owner's, and the UI never states who is acting.
+- The target must be a current trusted member. The principal owner can't be removed by either route, and a recorded removal naming the owner is refused at startup.
+- The typed confirmation must match the target's current name.
+- Self-service additionally needs the member's own spoken request, a fresh four-digit code spoken back in a *different* capture admitted as that member within two minutes, and the on-screen step within two minutes after that. Everything is bound to the member's current epoch and is single-use. Three wrong codes, expiry, re-enrolment or cancellation end the request. Ordinary speech during a pending request is not treated as a wrong code.
+
+Replay limit: a pre-made recording cannot contain a code that didn't exist when it was recorded, and the last step needs someone at the computer. A real-time voice clone of the member, by someone at the computer, would still pass. Removal is irreversible, so this is a deliberate trade-off between self-service and safety; the owner can always remove members directly.
+
+Retired chats: a removed member's private chat ID is kept in `profiles.json` (ID only, no name) and denied to everyone for every operation, including the owner; it can't be shared or reused as anyone's companion chat, and a hand-edited roster that tries is treated as damaged. Archiving in Codex (`thread/archive`) is attempted at once and retried with backoff from 30 seconds up to hourly until it succeeds. A thread Codex no longer has counts as archived. The panel shows how many are still being archived.
+
+Crash safety: the durable removal marker is written and synced *before* the roster changes. At startup, every marked removal is completed in the roster first; the private folder is deleted only once the roster no longer has the person, otherwise the marker is kept for the next attempt. Tests cover a crash after the marker, after the roster change and after folder deletion, each followed by a restart, plus the case where the roster still has the person. Re-adding someone with the same name gets a new ID, no voice, no consent record, no shares and no companion chat.
+
+## Speaker changes within one capture (6 November)
+
+Admission still identifies the speaker from the first 2–6 seconds, before any audio leaves the computer in locked modes. The whole capture (up to 60 s) is then checked locally in half-overlapping 3-second windows before the transcript can reach anyone's private context. A window fails when another enrolled person clears the accept threshold and beats the admitted person by the margin, or when the admitted person's own score falls below 0.45. Captures shorter than one assessable window rely on admission alone. A switch, an unavailable model or a timeout rejects the capture ("I heard more than one voice, so I didn't send that.") and the request is not sent. Receipts for recognised people are unusable until this check passes; open-mode fallbacks keep legacy behaviour.
+
+Measured on spliced and mixed synthetic voices (8 enrolled, 4 unenrolled; 32 captures per row; `crates/notdot-speakers/tests/continuity.rs`):
+
+| Scenario | Stopped at admission | Stopped by the whole-capture check | Mixed captures sent |
+|---|---|---|---|
+| One enrolled person, two phrases | 0 | 0 | — |
+| One enrolled person, 20 dB noise | 0 | 0 | — |
+| One enrolled person, 10 dB noise | 16 | 0 | — |
+| A for 2.5 s, then enrolled B | 0 | 32 | 0 |
+| A for one phrase, then enrolled B | 0 | 31 | 1 |
+| A for 2.5 s, then an unenrolled guest | 0 | 31 | 1 |
+| A and B overlapping at equal level | 3 | 2 | 27 |
+| A with B 6 dB quieter underneath | 0 | 4 | 28 |
+| A with a guest 6 dB quieter underneath | 1 | 5 | 26 |
+
+Handovers are caught; simultaneous speech mostly is not, because a mixture usually still resembles one speaker. I tried an extra rule that flags any window where another enrolled voice scores 0.65 or more. It caught 8 of 32 equal-level overlaps but also stopped 4 of 32 single-speaker captures, so it was not adopted. Overlap is a documented limit: the guidance tells people to speak one at a time.
+
+## Name use
+
+The model is given the speaker's name only when they were actually recognised and have a real name. An unrecognised voice served in Anyone mode is not called by the owner's name, and the owner's placeholder name "Me" is never used. The instruction asks for occasional, natural use rather than starting every reply with it. Teaching the owner's voice requires a real name first.
 
 ## Coverage gaps (not yet evidence)
 
@@ -133,3 +171,4 @@ notdot has no anti-spoofing. Anyone with a recording of an enrolled person, or a
 - Windows and Linux runtime timing (the same sherpa-onnx static build ships there, but this was not measured).
 - Long-term voice drift and re-enrolment cadence.
 - The UI enrolment flow on a device with consenting people. This needs an audio slot and participants.
+- Real interruptions and overlapping conversation between real people, and self-service removal spoken by a real person.

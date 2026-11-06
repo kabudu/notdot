@@ -20,6 +20,27 @@ thread_local! {
     static CHAT_TITLES: RefCell<std::collections::HashMap<String,String>> = RefCell::new(std::collections::HashMap::new());
     static CAPTURE: RefCell<Option<String>> = const { RefCell::new(None) };
     static CONFIRM: RefCell<Option<(String, Value)>> = const { RefCell::new(None) };
+    /// Name the current confirmation must be typed as, if any.
+    static CONFIRM_NAME: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// Person whose voice is being taught, and whether it is the owner.
+    static ENROL_FOR: RefCell<(String, bool)> = const { RefCell::new((String::new(), false)) };
+    /// Pending self-removal: (profile, name).
+    static LEAVING: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
+    /// Outcome to show after the next refresh, instead of the default line.
+    static NOTICE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+fn notice_after_refresh(text: String) {
+    NOTICE.with(|n| *n.borrow_mut() = Some(text));
+    on_open();
+}
+fn same_name(typed: &str, name: &str) -> bool {
+    let norm = |s: &str| {
+        s.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    };
+    !typed.trim().is_empty() && norm(typed) == norm(name)
 }
 fn hidden(id: &str, yes: bool) {
     let _ = element(id).toggle_attribute_with_force("hidden", yes);
@@ -45,11 +66,57 @@ fn button(
 }
 fn confirm(command: &str, args: Value, text: &str) {
     CONFIRM.with(|c| *c.borrow_mut() = Some((command.into(), args)));
+    CONFIRM_NAME.with(|c| *c.borrow_mut() = None);
     element("speaker-confirm-text").set_text_content(Some(text));
+    hidden("speaker-confirm-named", true);
+    input("speaker-confirm-yes").set_disabled(false);
     hidden("speaker-confirm", false);
 }
+/// A confirmation that only enables once `name` is typed. The typed text is
+/// sent as `confirmName`; notdot checks it again natively.
+fn confirm_named(command: &str, args: Value, text: &str, name: &str) {
+    confirm(command, args, text);
+    CONFIRM_NAME.with(|c| *c.borrow_mut() = Some(name.into()));
+    element("speaker-confirm-name-label")
+        .set_text_content(Some(&format!("Type {name} to confirm")));
+    input("speaker-confirm-name").set_value("");
+    hidden("speaker-confirm-named", false);
+    input("speaker-confirm-yes").set_disabled(true);
+    let _ = input("speaker-confirm-name").focus();
+}
+/// Plain account of what a removal actually did.
+fn removal_report(v: &Value) -> String {
+    let name = v["name"].as_str().unwrap_or("This person");
+    let own = v["route"].as_str() == Some("self_service");
+    let mut lines = vec![if own {
+        format!("{name}'s profile was removed.")
+    } else {
+        format!("{name} was removed. They can't use notdot by voice any more.")
+    }];
+    lines.push(match (v["data"].as_str(), v["voice"].as_str()) {
+        (Some("deleted"), Some("deleted")) => "Their saved voice and private memories on this computer were deleted.".into(),
+        (Some("deleted"), _) => "Their private memories were deleted. Their saved voice is no longer used and will be deleted the next time voices load.".into(),
+        (_, Some("deleted")) => "Their saved voice was deleted. Their private memories will finish deleting when notdot restarts.".into(),
+        _ => "Their saved voice is no longer used and their private memories will finish deleting when notdot restarts.".into(),
+    });
+    match v["chat"].as_str() {
+        Some("archived") => lines.push("Their own notdot chat was archived in Codex.".into()),
+        Some("pending") => lines.push("Codex wasn't available, so notdot will keep trying to archive their own chat. It's already hidden everywhere in notdot.".into()),
+        _ => {}
+    }
+    lines.push("Messages they added to shared chats stay in those chats.".into());
+    lines.join(" ")
+}
 async fn command(command: &str, args: Value) {
+    let removal = matches!(
+        command,
+        "speaker_remove_person" | "speaker_confirm_self_removal"
+    );
     match call(command, args).await {
+        Ok(v) if removal => {
+            let report: Value = serde_wasm_bindgen::from_value(v).unwrap_or(Value::Null);
+            notice_after_refresh(removal_report(&report));
+        }
         Ok(_) => on_open(),
         Err(e) => status(&e),
     }
@@ -65,11 +132,19 @@ fn progress(v: &Value) {
     hidden("speaker-enrol-save", step != "ready");
     hidden("speaker-record", step == "ready" || step == "failed");
     element("speaker-phrase").set_text_content(p["phrase"].as_str());
+    let (name, owner) = ENROL_FOR.with(|e| e.borrow().clone());
+    let whose = if owner {
+        "your".to_owned()
+    } else {
+        format!("{name}'s")
+    };
     let text = match step {
-        "ready" => "All four phrases are ready. Save this voice to finish.".into(),
+        "ready" => format!("All four phrases are ready. Save {whose} voice to finish."),
         "prompt" => format!(
-            "Phrase {} of {}. Select Record, read the phrase, then pause.",
-            p["index"], p["of"]
+            "Phrase {} of {} for {}. Select Record, read the phrase, then pause.",
+            p["index"],
+            p["of"],
+            if owner { "you" } else { name.as_str() }
         ),
         _ => p["guidance"]
             .as_str()
@@ -87,6 +162,7 @@ pub(crate) fn cancel() {
     CONFIRM.with(|c| *c.borrow_mut() = None);
     hidden("speaker-enrol", true);
     hidden("speaker-confirm", true);
+    CONFIRM_NAME.with(|c| *c.borrow_mut() = None);
     spawn_local(async move {
         if let Some(token) = token {
             let _ = call("cancel_capture", json!({"token":token})).await;
@@ -154,21 +230,64 @@ async fn refresh() -> Result<(), String> {
         "speaker-use-owner",
         owner.is_none_or(|p| p["id"] == v["active_profile"]),
     );
+    let pending = v["removed_chats"]["pending"].as_u64().unwrap_or(0);
+    hidden("speaker-removed-chats", pending == 0);
+    element("speaker-removed-chats").set_text_content(Some(&format!(
+        "notdot is still archiving {pending} removed {} in Codex and will keep trying. {} hidden everywhere in notdot.",
+        if pending == 1 { "person's chat" } else { "people's chats" },
+        if pending == 1 { "It's already" } else { "They're already" }
+    )));
+    render_leaving(&v);
     let list = element("speaker-people");
     list.set_text_content(None);
     for person in v["people"].as_array().into_iter().flatten() {
         render_person(&list, person).map_err(|e| format!("Could not show people: {e:?}"))?;
     }
-    status(if v["recovery_required"].as_bool() == Some(true) {
-        "People setup needs recovery. Review the recovery option below."
+    let notice = NOTICE.with(|n| n.borrow_mut().take());
+    status(&if v["recovery_required"].as_bool() == Some(true) {
+        "People setup needs recovery. Review the recovery option below.".to_owned()
     } else if health == "voices_unavailable" {
-        "Saved voices are unavailable. Reset voice recognition to teach them again."
+        "Saved voices are unavailable. Reset voice recognition to teach them again.".to_owned()
     } else if health == "model_unavailable" {
-        "The voice model is unavailable. Reinstall notdot to restore it. Resetting voices will not repair the model."
+        "The voice model is unavailable. Reinstall notdot to restore it. Resetting voices will not repair the model.".to_owned()
     } else {
-        "Changes here take effect immediately."
+        notice.unwrap_or_else(|| "Changes here take effect immediately.".to_owned())
     });
     Ok(())
+}
+/// A member asked by voice to remove their own profile.
+fn render_leaving(v: &Value) {
+    let pending = &v["self_removal"];
+    let profile = pending["profile"].as_str().unwrap_or_default().to_owned();
+    let name = v["people"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|p| p["id"].as_str() == Some(profile.as_str()))
+        .and_then(|p| p["name"].as_str())
+        .unwrap_or_default()
+        .to_owned();
+    if profile.is_empty() || name.is_empty() {
+        LEAVING.with(|l| *l.borrow_mut() = None);
+        hidden("speaker-leave", true);
+        return;
+    }
+    let ready = pending["stage"].as_str() == Some("awaiting_local_confirmation");
+    element("speaker-leave-title")
+        .set_text_content(Some(&format!("{name} asked to remove their profile")));
+    element("speaker-leave-text").set_text_content(Some(&if ready {
+        format!("{name}, removing your profile:\n• deletes your saved voice and private memories on this computer\n• archives your own notdot chat in Codex\n• ends access to any chats shared with you. Messages you added there stay.\nThis can't be undone.")
+    } else {
+        format!("Waiting for {name} to say the code notdot gave them (about {} seconds left). Nothing has been deleted.", pending["expires_in_s"].as_u64().unwrap_or(0))
+    }));
+    element("speaker-leave-name-label")
+        .set_text_content(Some(&format!("{name}, type your name to confirm")));
+    hidden("speaker-leave-confirm", !ready);
+    hidden("speaker-leave-yes", !ready);
+    input("speaker-leave-yes").set_disabled(true);
+    input("speaker-leave-name").set_value("");
+    LEAVING.with(|l| *l.borrow_mut() = Some((profile, name)));
+    hidden("speaker-leave", false);
 }
 fn render_person(list: &Element, p: &Value) -> Result<(), JsValue> {
     let doc = web_sys::window().unwrap().document().unwrap();
@@ -197,9 +316,26 @@ fn render_person(list: &Element, p: &Value) -> Result<(), JsValue> {
         .clone()
         .unchecked_into::<web_sys::HtmlInputElement>()
         .set_value(name);
+    let needs_name = p["needs_name"].as_bool() == Some(true);
+    if needs_name {
+        rename.set_attribute("placeholder", "Your name")?;
+        rename
+            .clone()
+            .unchecked_into::<web_sys::HtmlInputElement>()
+            .set_value("");
+    }
     card.append_child(&rename)?;
+    if needs_name {
+        let hint = doc.create_element("p")?;
+        hint.set_class_name("hint");
+        hint.set_text_content(Some(
+            "What should notdot call you? Type your name, then teach your voice.",
+        ));
+        card.append_child(&hint)?;
+    }
     let actions = doc.create_element("div")?;
     actions.set_class_name("speaker-actions");
+    let typed = rename.clone();
     let profile = id.clone();
     button(&actions, "Save name", move |_| {
         let name = rename
@@ -216,16 +352,46 @@ fn render_person(list: &Element, p: &Value) -> Result<(), JsValue> {
         });
     })?;
     let profile = id.clone();
+    let person = name.to_owned();
     button(&actions, "Teach voice", move |_| {
         let profile = profile.clone();
+        let typed = typed
+            .clone()
+            .unchecked_into::<web_sys::HtmlInputElement>()
+            .value();
+        if needs_name && typed.trim().is_empty() {
+            status("Type what notdot should call you, then select Teach voice.");
+            return;
+        }
+        let person = if needs_name {
+            typed.trim().to_owned()
+        } else {
+            person.clone()
+        };
         let epoch = EPOCH.with(|e| *e.borrow());
         spawn_local(async move {
-            match call("speaker_enrol_begin", json!({"profile":profile})).await {
+            let args = if needs_name {
+                json!({"profile":profile,"name":person})
+            } else {
+                json!({"profile":profile})
+            };
+            match call("speaker_enrol_begin", args).await {
                 Ok(v) => {
                     if EPOCH.with(|e| *e.borrow()) != epoch {
                         return;
                     }
                     ACTIVE.with(|a| *a.borrow_mut() = true);
+                    ENROL_FOR.with(|e| *e.borrow_mut() = (person.clone(), owner));
+                    element("speaker-enrol-title").set_text_content(Some(&if owner {
+                        "Teach notdot your voice".to_owned()
+                    } else {
+                        format!("Teach notdot {person}'s voice")
+                    }));
+                    element("speaker-consent-text").set_text_content(Some(&if owner {
+                        "I agree that notdot can recognise my voice on this computer. My voiceprint stays on this computer, encrypted.".to_owned()
+                    } else {
+                        format!("{person} is here with me and agrees that notdot can recognise their voice on this computer. The voiceprint stays on this computer, encrypted.")
+                    }));
                     input("speaker-consent").set_checked(false);
                     match serde_wasm_bindgen::from_value::<Value>(v) {
                         Ok(p) => progress(&p),
@@ -248,11 +414,25 @@ fn render_person(list: &Element, p: &Value) -> Result<(), JsValue> {
     }
     if !owner {
         let profile = id.clone();
-        button(&actions, "Remove person", move |_| {
-            confirm(
+        let person = name.to_owned();
+        let shared = p["shared_chats"].as_array().map_or(0, Vec::len);
+        button(&actions, &format!("Remove {name}"), move |_| {
+            let shares = match shared {
+                0 => String::new(),
+                1 => format!(
+                    "\n• {person} loses access to the chat you shared. Messages {person} already added stay in it."
+                ),
+                n => format!(
+                    "\n• {person} loses access to the {n} chats you shared. Messages {person} already added stay in them."
+                ),
+            };
+            confirm_named(
                 "speaker_remove_person",
                 json!({"profile":profile}),
-                "Remove this person, their saved voice, private memories and chat access? This cannot be undone.",
+                &format!(
+                    "Remove {person} from notdot?\n• From now on, {person} can't use notdot by voice. Anything {person} asked for that's still waiting is cancelled.\n• {person}'s saved voice and private memories on this computer are deleted.\n• {person}'s own notdot chat is archived in Codex and can no longer be opened from notdot.{shares}\nThis can't be undone."
+                ),
+                &person,
             )
         })?;
     }
@@ -403,9 +583,21 @@ pub(crate) fn install() -> Result<(), JsValue> {
         element("speaker-confirm-yes").unchecked_ref(),
         "click",
         |_| {
+            let required = CONFIRM_NAME.with(|c| c.borrow().clone());
+            let typed = input("speaker-confirm-name").value();
+            if required
+                .as_deref()
+                .is_some_and(|name| !same_name(&typed, name))
+            {
+                return;
+            }
             let action = CONFIRM.with(|c| c.borrow_mut().take());
+            CONFIRM_NAME.with(|c| *c.borrow_mut() = None);
             hidden("speaker-confirm", true);
-            if let Some((cmd, args)) = action {
+            if let Some((cmd, mut args)) = action {
+                if required.is_some() {
+                    args["confirmName"] = json!(typed);
+                }
                 spawn_local(async move {
                     command(&cmd, args).await;
                 });
@@ -417,7 +609,68 @@ pub(crate) fn install() -> Result<(), JsValue> {
         "click",
         |_| {
             CONFIRM.with(|c| *c.borrow_mut() = None);
+            CONFIRM_NAME.with(|c| *c.borrow_mut() = None);
             hidden("speaker-confirm", true);
+        },
+    );
+    on(
+        element("speaker-confirm-name").unchecked_ref(),
+        "input",
+        |_| {
+            let ok = CONFIRM_NAME.with(|c| {
+                c.borrow()
+                    .as_deref()
+                    .is_none_or(|name| same_name(&input("speaker-confirm-name").value(), name))
+            });
+            input("speaker-confirm-yes").set_disabled(!ok);
+        },
+    );
+    on(
+        element("speaker-leave-name").unchecked_ref(),
+        "input",
+        |_| {
+            let ok = LEAVING.with(|l| {
+                l.borrow()
+                    .as_ref()
+                    .is_some_and(|(_, name)| same_name(&input("speaker-leave-name").value(), name))
+            });
+            input("speaker-leave-yes").set_disabled(!ok);
+        },
+    );
+    on(
+        element("speaker-leave-yes").unchecked_ref(),
+        "click",
+        |_| {
+            let Some((profile, name)) = LEAVING.with(|l| l.borrow().clone()) else {
+                return;
+            };
+            let typed = input("speaker-leave-name").value();
+            if !same_name(&typed, &name) {
+                return;
+            }
+            hidden("speaker-leave", true);
+            spawn_local(async move {
+                command(
+                    "speaker_confirm_self_removal",
+                    json!({"profile":profile,"confirmName":typed}),
+                )
+                .await;
+            });
+        },
+    );
+    on(
+        element("speaker-leave-cancel").unchecked_ref(),
+        "click",
+        |_| {
+            hidden("speaker-leave", true);
+            spawn_local(async {
+                match call("speaker_cancel_self_removal", json!({})).await {
+                    Ok(_) => {
+                        notice_after_refresh("The removal was stopped. Nothing was deleted.".into())
+                    }
+                    Err(e) => status(&e),
+                }
+            });
         },
     );
     on(element("speaker-consent").unchecked_ref(), "change", |_| {
@@ -436,11 +689,16 @@ pub(crate) fn install() -> Result<(), JsValue> {
                 return;
             }
             spawn_local(async {
-                match call("speaker_enrol_save", json!({})).await {
+                match call("speaker_enrol_save", json!({"consent":true})).await {
                     Ok(_) => {
                         hidden("speaker-enrol", true);
                         ACTIVE.with(|a| *a.borrow_mut() = false);
-                        on_open();
+                        let (name, owner) = ENROL_FOR.with(|e| e.borrow().clone());
+                        notice_after_refresh(if owner {
+                            "Got it. notdot will know your voice now.".to_owned()
+                        } else {
+                            format!("Got it. notdot will know {name}'s voice now.")
+                        });
                     }
                     Err(e) => status(&e),
                 }
