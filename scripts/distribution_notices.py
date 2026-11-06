@@ -70,6 +70,17 @@ def validate(bundle, lock):
         raise ValueError('Rust standard-library notice mismatch')
     if not set(manifest['already_retained_model_native_notices']) <= set(texts):
         raise ValueError('retained model notice missing')
+    for model in manifest.get('bundled_models', []):
+        relative = Path(model['file'])
+        if relative.is_absolute() or '..' in relative.parts or relative.parts[:3] != ('src-tauri', 'resources', 'speaker'):
+            raise ValueError('unsafe bundled model path')
+        model_path = ROOT / relative
+        if model_path.is_symlink() or digest(model_path) != model['sha256']:
+            raise ValueError('bundled model checksum mismatch')
+        if not model['original_notices'] or not set(model['original_notices']) <= set(texts):
+            raise ValueError('bundled model notice missing')
+        if not model['source_url'].startswith('https://'):
+            raise ValueError('bundled model source missing')
     return manifest
 
 
@@ -103,6 +114,11 @@ def render(manifest):
         lines.append('- ' + p['component'] + ': ' + ', '.join(link(s) for s in p['original_notices']))
     lines += ['', '## Models and previously retained native notices', '']
     lines += ['- ' + link(s) for s in manifest['already_retained_model_native_notices']]
+    if manifest.get('bundled_models'):
+        lines += ['', '## Bundled speaker model', '']
+        for model in manifest['bundled_models']:
+            lines.append('- ' + model['name'] + ' (' + model['license_expression'] + '): ' + ', '.join(link(s) for s in model['original_notices']))
+            lines.append('  Weight SHA-256: `' + model['sha256'] + '`. [Upstream asset](' + model['source_url'] + ').')
     lines += ['', '## Separate public-distribution checks', '']
     lines += ['- ' + item for item in manifest['remaining_distribution_gates']]
     return '\n'.join(lines) + '\n'

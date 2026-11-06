@@ -352,7 +352,7 @@ async fn install(
         if bytes.len() as u64 > MAX_DOWNLOAD { return Err("Update exceeds the download budget".into()); }
         { let mut i = updates.lock_state(); i.status.phase = "installing".into(); i.status.message = "Installing update and restarting…".into(); }
         // Close our only writer before replacing files. The desktop viewer is independent.
-        if let Some(bridge) = state.bridge.lock().await.take() { bridge.shutdown().await; }
+        for context in state.profiles.all()? { if let Some(bridge) = context.bridge.lock().await.take() { bridge.shutdown().await; } }
         let result = tokio::task::spawn_blocking(move || update.install(bytes)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string());
         result?;
         app.restart();
@@ -360,7 +360,7 @@ async fn install(
     if let Err(e) = &result {
         updates.fail(e);
         state.snapshot.lock().await.phase = "idle".into();
-        let disconnected = state.bridge.lock().await.is_none();
+        let disconnected = state.context().bridge.lock().await.is_none();
         if disconnected {
             // Release the submission gate before reconnecting after an install failure.
             drop(_turn);

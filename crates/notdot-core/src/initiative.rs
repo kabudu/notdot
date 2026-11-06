@@ -60,6 +60,28 @@ pub struct Entry {
     pub permitted: bool,
     pub delivered: bool,
     pub dismissed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_origin: Option<crate::chat_tools::ChatPolicy>,
+}
+impl Entry {
+    /// Check immutable origin again after restart or grant changes. Native
+    /// delivery additionally binds this origin to the active profile context.
+    pub fn origin_allowed(&self) -> bool {
+        self.profile_origin.as_ref().is_none_or(|policy| {
+            if let Some(task) = self.source.strip_prefix("task:") {
+                task.split_once(':').is_some_and(|(thread, _)| {
+                    policy.check(thread, crate::profiles::ChatOp::Read).is_ok()
+                })
+            } else {
+                policy.roster().is_ok()
+            }
+        })
+    }
+
+    /// Task reports are requested by the user separately from inferred check-ins.
+    pub fn task_report(&self) -> bool {
+        self.source.starts_with("task:") && self.permitted
+    }
 }
 #[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -94,17 +116,34 @@ impl Journal {
         Ok(())
     }
     pub fn available(&self, policy: &Policy, now: u64) -> Vec<&Entry> {
-        if policy.behaviour == Behaviour::Reactive {
-            return vec![];
-        }
         self.entries
             .iter()
-            .filter(|e| !e.dismissed && !e.delivered && e.due <= now && e.expires > now)
+            .filter(|e| {
+                !e.dismissed
+                    && e.origin_allowed()
+                    && !e.delivered
+                    && e.due <= now
+                    && e.expires > now
+                    && (policy.behaviour != Behaviour::Reactive || e.task_report())
+            })
             .collect()
     }
     pub fn next(&self, policy: &Policy, now: u64, day: &str, minute: u16) -> Option<&Entry> {
+        if policy.quiet(minute) {
+            return None;
+        }
+        // Requested task results are acknowledgements, not unsolicited check-ins.
+        // Space simultaneous results apart, without the hour-long proactive gap.
+        if now >= self.last_delivery.saturating_add(5)
+            && let Some(entry) = self
+                .available(policy, now)
+                .into_iter()
+                .filter(|e| e.task_report())
+                .min_by_key(|e| e.due)
+        {
+            return Some(entry);
+        }
         if policy.behaviour != Behaviour::Proactive
-            || policy.quiet(minute)
             || now
                 < self
                     .last_delivery
@@ -115,7 +154,7 @@ impl Journal {
         }
         self.available(policy, now)
             .into_iter()
-            .filter(|e| e.permitted)
+            .filter(|e| e.permitted && !e.task_report())
             .min_by_key(|e| e.due)
     }
     pub fn claim(
@@ -142,7 +181,9 @@ impl Journal {
             self.day = day.into();
             self.delivered_today = 0;
         }
-        self.delivered_today += 1;
+        if !e.task_report() {
+            self.delivered_today += 1;
+        }
         self.last_delivery = now;
         Ok(e.message.clone())
     }
@@ -249,6 +290,7 @@ mod tests {
             permitted: true,
             delivered: false,
             dismissed: false,
+            profile_origin: None,
         }
     }
     #[test]
@@ -313,5 +355,60 @@ mod tests {
                 .is_err()
         );
         assert!(reminder("Just discussing reminders", 100).is_none());
+    }
+}
+
+#[cfg(test)]
+mod task_report_tests {
+    use super::*;
+    fn entry(id: &str) -> Entry {
+        Entry {
+            id: id.into(),
+            key: id.into(),
+            source: format!("task:{id}"),
+            message: "Codex finished its reply.".into(),
+            evidence: "exact owned turn".into(),
+            created: 100,
+            due: 100,
+            expires: 10000,
+            permitted: true,
+            delivered: false,
+            dismissed: false,
+            profile_origin: None,
+        }
+    }
+    #[test]
+    fn requested_reports_respect_quiet_hours_and_deliver_once_in_reactive_mode() {
+        let mut journal = Journal::default();
+        let policy = Policy::default();
+        journal.insert(entry("first"), 100).unwrap();
+        assert!(journal.next(&policy, 100, "today", 23 * 60).is_none());
+        assert!(journal.next(&policy, 100, "today", 12 * 60).is_some());
+        journal
+            .claim("first", &policy, 100, "today", 12 * 60)
+            .unwrap();
+        let saved = serde_json::to_string(&journal).unwrap();
+        let restored: Journal = serde_json::from_str(&saved).unwrap();
+        assert!(restored.next(&policy, 200, "today", 12 * 60).is_none());
+        assert_eq!(restored.delivered_today, 0);
+    }
+    #[test]
+    fn task_reports_do_not_wait_for_the_unsolicited_hourly_gap_or_grant_external_permission() {
+        let mut journal = Journal::default();
+        let policy = Policy::default();
+        journal.insert(entry("first"), 100).unwrap();
+        journal.insert(entry("second"), 100).unwrap();
+        journal.claim("first", &policy, 100, "today", 720).unwrap();
+        assert!(journal.next(&policy, 104, "today", 720).is_none());
+        assert_eq!(
+            journal.next(&policy, 105, "today", 720).unwrap().id,
+            "second"
+        );
+        journal.action("second", "dismiss", 105).unwrap();
+        assert!(journal.next(&policy, 200, "today", 720).is_none());
+        let mut e = entry("unpermitted");
+        e.permitted = false;
+        journal.insert(e, 100).unwrap();
+        assert!(journal.available(&policy, 200).is_empty());
     }
 }

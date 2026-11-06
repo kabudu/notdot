@@ -20,3 +20,7 @@ pub mod chat_tools;
 pub mod session_control;
 
 pub mod session_runtime;
+
+pub mod voice_settings;
+
+pub mod profiles;

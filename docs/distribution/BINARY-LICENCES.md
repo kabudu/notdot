@@ -1,6 +1,6 @@
 # Shipping binary releases
 
-The app source is Apache-2.0. This does not change the licences of linked code, codecs, operating-system libraries or models. Keep `notices/` and `wake/legal/` in every package. The tracked notice manifest is the inventory for Rust and the listed static native/model components.
+The app source is Apache-2.0. This does not change the licences of linked code, codecs, operating-system libraries or models. Keep `notices/`, `wake/legal/` and `speaker/` (including its original `LICENSE`, `NOTICE.md` and `SHA256SUMS`) in every package. The speaker model is 3D-Speaker CAM++ common advanced, distributed under Apache-2.0; its exact ONNX checksum and upstream source are recorded in the notice manifest. The tracked notice manifest is the inventory for Rust and the listed static native/model components.
 
 ## Windows
 

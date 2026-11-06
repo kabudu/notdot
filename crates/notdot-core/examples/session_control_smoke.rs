@@ -139,7 +139,7 @@ async fn main() {
     let authority = consent.answer(&pending, "yes send it").unwrap().unwrap();
     assert!(
         session
-            .execute(authority)
+            .execute_with_notifications(authority, true)
             .await
             .unwrap()
             .starts_with("Sent to")
@@ -164,6 +164,27 @@ async fn main() {
     })
     .await
     .unwrap();
+    let report = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(report) = session.completion().await {
+                break report;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("completion report was not queued");
+    assert_eq!(report.thread_id, tid);
+    assert_eq!(report.status, "completed");
+    assert!(
+        report.summary.contains(&marker),
+        "report must contain the actual final reply"
+    );
+    session.acknowledge_completion(&report.key()).await;
+    assert!(session.completion().await.is_none());
+    println!(
+        "Owned turn completion report contains the actual synthetic result and is acknowledged once."
+    );
     let plan = |action, message: &str| Plan {
         action,
         thread_id: tid.clone(),
@@ -283,6 +304,6 @@ async fn main() {
     target.shutdown().await;
     println!(
         "{}",
-        json!({"status":"passed","model":"gpt-6.1-terra","effort":"medium","model_prepared_action":true,"no_post_before_confirmation":true,"confirmed_send_and_reply":true,"steer":true,"stop":true,"scope":"Authenticated synthetic chat control; no microphone, speaker or voice keys"})
+        json!({"status":"passed","model":"gpt-6.1-terra","effort":"medium","model_prepared_action":true,"no_post_before_confirmation":true,"confirmed_send_and_reply":true,"owned_completion_report":true,"steer":true,"stop":true,"scope":"Authenticated synthetic chat control; no microphone, speaker or voice keys"})
     );
 }

@@ -371,7 +371,8 @@ impl Memory {
         plan: &LearningPlan,
         batch: LearningBatch,
     ) -> Result<usize, String> {
-        self.apply_learning_inner(plan, batch, false).await
+        self.apply_learning_inner(plan, batch, false, &|| true)
+            .await
     }
     /// Only for a native, unexpired read-back explicitly confirmed by the user.
     pub async fn apply_confirmed_learning(
@@ -379,7 +380,18 @@ impl Memory {
         plan: &LearningPlan,
         batch: LearningBatch,
     ) -> Result<usize, String> {
-        self.apply_learning_inner(plan, batch, true).await
+        self.apply_confirmed_learning_checked(plan, batch, || true)
+            .await
+    }
+    /// Revalidate host authority after waiting for the mutation gate and before
+    /// each durable write. The callback must not wait on this memory's gate.
+    pub async fn apply_confirmed_learning_checked(
+        &self,
+        plan: &LearningPlan,
+        batch: LearningBatch,
+        valid: impl Fn() -> bool + Send + Sync,
+    ) -> Result<usize, String> {
+        self.apply_learning_inner(plan, batch, true, &valid).await
     }
     pub fn plan_is_current(&self, plan: &LearningPlan) -> bool {
         self.learning_ticket() == Some(plan.ticket)
@@ -390,8 +402,10 @@ impl Memory {
         plan: &LearningPlan,
         batch: LearningBatch,
         user_confirmed: bool,
+        valid: &(dyn Fn() -> bool + Send + Sync),
     ) -> Result<usize, String> {
         let _gate = self.mutations.lock().await;
+        check_authority(valid)?;
         if self.learning_ticket() != Some(plan.ticket) {
             return Ok(0);
         }
@@ -475,11 +489,15 @@ impl Memory {
                         confirmed
                             .metadata
                             .insert("confirmation_evidence".into(), n.evidence.clone());
-                        self.put_learned(confirmed).await?;
+                        self.put_learned_checked(confirmed, valid).await?;
                         for link in &prior.lineage {
                             if link.relation == mnemara::LineageRelationKind::Supersedes {
-                                self.retire_with_summaries(&link.record_id, &current)
-                                    .await?;
+                                self.retire_with_summaries_checked(
+                                    &link.record_id,
+                                    &current,
+                                    valid,
+                                )
+                                .await?;
                             }
                         }
                         written += 1;
@@ -542,10 +560,11 @@ impl Memory {
                     confidence: n.confidence,
                 });
             }
-            self.put_learned(record).await?;
+            self.put_learned_checked(record, valid).await?;
             written += 1;
             for prior in old.into_iter().filter(|r| correction || provisional(r)) {
-                self.retire_with_summaries(&prior.id, &current).await?;
+                self.retire_with_summaries_checked(&prior.id, &current, valid)
+                    .await?;
             }
         }
         if let Some(d) = batch.digest {
@@ -587,7 +606,7 @@ impl Memory {
                         confidence: 0.9,
                     });
                 }
-                self.put_learned(record).await?;
+                self.put_learned_checked(record, valid).await?;
                 written += 1;
                 for prior in current.iter().filter(|r| {
                     active(r)
@@ -595,7 +614,8 @@ impl Memory {
                             .get("origin")
                             .is_some_and(|o| o == "semantic distillation")
                 }) {
-                    self.retire_with_summaries(&prior.id, &current).await?;
+                    self.retire_with_summaries_checked(&prior.id, &current, valid)
+                        .await?;
                 }
             }
         }
@@ -659,6 +679,14 @@ impl Memory {
         }
         Ok(())
     }
+    async fn put_learned_checked(
+        &self,
+        record: MemoryRecord,
+        valid: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<(), String> {
+        check_authority(valid)?;
+        self.put_learned(record).await
+    }
     async fn put_learned(&self, mut record: MemoryRecord) -> Result<(), String> {
         record.updated_at_unix_ms = now_ms();
         self.store
@@ -678,6 +706,15 @@ impl Memory {
         &self,
         id: &str,
         current: &[MemoryRecord],
+    ) -> Result<(), String> {
+        self.retire_with_summaries_checked(id, current, &|| true)
+            .await
+    }
+    async fn retire_with_summaries_checked(
+        &self,
+        id: &str,
+        current: &[MemoryRecord],
+        valid: &(dyn Fn() -> bool + Send + Sync),
     ) -> Result<(), String> {
         let mut ids = std::collections::BTreeSet::from([id.to_string()]);
         loop {
@@ -700,7 +737,7 @@ impl Memory {
         {
             r.quality_state = MemoryQualityState::Archived;
             r.historical_state = MemoryHistoricalState::Superseded;
-            self.put_learned(r).await?;
+            self.put_learned_checked(r, valid).await?;
         }
         Ok(())
     }
@@ -734,6 +771,14 @@ fn learned_record(text: &str, kind: MemoryRecordKind) -> MemoryRecord {
     }
 }
 
+fn check_authority(valid: &(dyn Fn() -> bool + Send + Sync)) -> Result<(), String> {
+    if valid() {
+        Ok(())
+    } else {
+        Err("Memory confirmation cancelled or access changed".into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -754,6 +799,58 @@ mod tests {
             }],
             digest: None,
         }
+    }
+    #[tokio::test]
+    async fn confirmed_learning_rechecks_authority_after_waiting_for_mutation_gate() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let memory = Arc::new(Memory::open_with_learning(dir.path(), true).unwrap());
+        let text = "I prefer peppermint tea.";
+        let plan = memory
+            .plan(memory.learning_ticket().unwrap(), Some(source(text)))
+            .await
+            .unwrap()
+            .unwrap();
+        let gate = memory.mutations.lock().await;
+        let valid = Arc::new(AtomicBool::new(true));
+        let worker = memory.clone();
+        let worker_valid = valid.clone();
+        let task = tokio::spawn(async move {
+            worker
+                .apply_confirmed_learning_checked(&plan, one("drink", text, text), || {
+                    worker_valid.load(Ordering::SeqCst)
+                })
+                .await
+        });
+        tokio::task::yield_now().await;
+        valid.store(false, Ordering::SeqCst);
+        drop(gate);
+        assert!(task.await.unwrap().is_err());
+        assert!(memory.review("").await.unwrap().is_empty());
+    }
+    #[tokio::test]
+    async fn confirmed_learning_checks_again_before_first_durable_write() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        let memory = Memory::open_with_learning(dir.path(), true).unwrap();
+        let text = "I prefer peppermint tea.";
+        let plan = memory
+            .plan(memory.learning_ticket().unwrap(), Some(source(text)))
+            .await
+            .unwrap()
+            .unwrap();
+        let calls = AtomicUsize::new(0);
+        let result = memory
+            .apply_confirmed_learning_checked(&plan, one("drink", text, text), || {
+                calls.fetch_add(1, Ordering::SeqCst) == 0
+            })
+            .await;
+        assert!(result.is_err());
+        assert!(calls.load(Ordering::SeqCst) >= 2);
+        assert!(memory.review("").await.unwrap().is_empty());
     }
     async fn learn(m: &Memory, key: &str, text: &str) -> String {
         let plan = m

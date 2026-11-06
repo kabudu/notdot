@@ -53,6 +53,20 @@ class DistributionNotices(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'incomplete licence mapping'):
             notices.validate(self.bundle, self.lock)
 
+    def test_changed_speaker_model_checksum_is_rejected(self):
+        manifest = self.manifest()
+        manifest['bundled_models'][0]['sha256'] = '0' * 64
+        self.save(manifest)
+        with self.assertRaisesRegex(ValueError, 'bundled model checksum mismatch'):
+            notices.validate(self.bundle, self.lock)
+
+    def test_speaker_model_requires_retained_original_notices(self):
+        manifest = self.manifest()
+        manifest['bundled_models'][0]['original_notices'] = []
+        self.save(manifest)
+        with self.assertRaisesRegex(ValueError, 'bundled model notice missing'):
+            notices.validate(self.bundle, self.lock)
+
     def test_changed_lockfile_is_rejected(self):
         self.lock.write_text('changed')
         with self.assertRaisesRegex(ValueError, 'Cargo.lock changed'):

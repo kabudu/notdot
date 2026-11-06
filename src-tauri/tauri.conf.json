@@ -55,6 +55,7 @@
     ],
     "resources": {
       "resources/wake/": "wake/",
+      "resources/speaker/": "speaker/",
       "resources/notices/": "notices/"
     }
   },

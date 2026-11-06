@@ -4,6 +4,12 @@ Completed work and the next additions planned for notdot. Priorities may change 
 
 ## Implemented
 
+- **Trusted voices.** Keep separate conversations and memories for people you add. Share chosen Codex chats for reading, with messages allowed separately. Voice matching runs locally and is not authentication. [Settings guide](docs/settings.md#people-and-voices).
+
+- **Change settings by voice.** Ask for a change, hear it read back and approve before it is saved. Settings also has focused categories and search. [Settings guide](docs/settings.md#change-settings-by-speaking).
+
+- **Task completion reports.** Ask notdot to report when work it sends to another chat ends. Hear a short result, failure or interruption notice when you are idle, with optional follow-up listening. [Settings guide](docs/settings.md#hear-task-results).
+
 - **Use other Codex chats.** Find and read local chats, with optional controls to send work, add instructions and stop tasks notdot started. Choose Read only, Confirm before sending or Send when asked. Desktop-owned chats still require a handoff. [Settings guide](docs/settings.md).
 
 - **Conversation continuity.** Turn on an optional 3–20 second listening window after spoken replies. Two soft orb rings show when you can answer; say “That’s all”, press Escape or stay silent to stop. The microphone pauses while notdot speaks. [Implementation and tests](https://github.com/kabudu/notdot/pull/22) · [Settings guide](docs/settings.md).
@@ -46,3 +52,5 @@ A new backend needs streaming where supported, reliable cancellation, clear erro
 ## Suggest an addition
 
 [Open an issue](https://github.com/kabudu/notdot/issues/new) describing what you want to do and what gets in your way. New integrations should preserve the voice-first orb, local wake listening, clear memory controls and permission before taking outside actions.
+
+See the [OpenAI voice assessment](docs/research/openai-voice.md) for speech services and the current distinction between API billing and subscription-funded desktop voice.

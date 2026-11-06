@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- **Recognise trusted voices.** Keep separate conversations and memories, with explicit sharing for other Codex chats. Voice matching stays on your computer and is not authentication.
+
+- **Change settings by voice.** Hear proposed changes and approve before saving, or use a cleaner Settings panel with categories and search.
+
+- **Hear task results.** Ask for a spoken report when delegated Codex work ends, with quiet hours, failure handling and optional follow-up listening.
+- **Measure releases.** Define voice reliability and response-time targets, with checks that reject incomplete acceptance evidence.
+
 ## [0.3.0] - 2026-11-04
 
 Work with your other local Codex chats by voice, with control over when notdot may act.

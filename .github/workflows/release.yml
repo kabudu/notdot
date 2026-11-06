@@ -122,7 +122,7 @@ jobs:
           cargo clean -p whisper-rs-sys --target "${{ matrix.target }}"
       - run: cargo fmt --all --check
       - name: Test the shipping profile without concurrent inference tests
-        run: cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-orb -p notdot --release --target ${{ matrix.test_target }} --locked -- --test-threads=1
+        run: cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-speakers -p notdot-orb -p notdot --release --target ${{ matrix.test_target }} --locked -- --test-threads=1
       - run: cargo clippy -p notdot -p notdot-wake-runtime --all-targets --locked -- -D warnings
       - run: cargo clippy -p notdot-orb --target wasm32-unknown-unknown --locked -- -D warnings
       - name: Install verified prebuilt release tools
