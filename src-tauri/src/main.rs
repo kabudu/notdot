@@ -338,22 +338,68 @@ async fn transcribe_wake(state: State<'_, Arc<AppState>>, id: u64) -> Result<Str
             audio,
         )
     };
-    match state.streaming.take(&token, provider != "deepgram").await {
+    // The whole capture stays on this computer. With trusted voices, it is
+    // checked for a change of speaker before the transcript can be used with
+    // anyone's private context.
+    let continuity = if state.speakers.needs_identification() {
+        Some(wav_pcm(&audio)?)
+    } else {
+        None
+    };
+    let text = recognise_capture(&state, provider, generation, &token, audio).await?;
+    if let Some((rate, pcm)) = continuity
+        && !text.trim().is_empty()
+    {
+        state.speakers.verify_continuity(&token, rate, &pcm).await?;
+    }
+    Ok(text)
+}
+
+/// Decode a capture WAV into 16-bit little-endian PCM, wiped on drop.
+fn wav_pcm(wav: &[u8]) -> Result<(u32, zeroize::Zeroizing<Vec<u8>>), String> {
+    let mut reader = hound::WavReader::new(std::io::Cursor::new(wav))
+        .map_err(|_| "Capture audio is unreadable")?;
+    let spec = reader.spec();
+    if spec.channels != 1
+        || spec.bits_per_sample != 16
+        || spec.sample_format != hound::SampleFormat::Int
+    {
+        return Err("Capture audio has an unexpected format".into());
+    }
+    let mut pcm = zeroize::Zeroizing::new(Vec::with_capacity(wav.len()));
+    for sample in reader.samples::<i16>() {
+        pcm.extend_from_slice(
+            &sample
+                .map_err(|_| "Capture audio is unreadable")?
+                .to_le_bytes(),
+        );
+    }
+    Ok((spec.sample_rate, pcm))
+}
+
+async fn recognise_capture(
+    state: &AppState,
+    provider: String,
+    generation: u64,
+    token: &str,
+    audio: Vec<u8>,
+) -> Result<String, String> {
+    match state.streaming.take(token, provider != "deepgram").await {
         Ok(Some(text)) => {
-            return quota::finish(&state, &provider, generation, "stt", Ok(text)).await;
+            return quota::finish(state, &provider, generation, "stt", Ok(text)).await;
         }
         // An explicit provider no-speech acknowledgement is an empty capture,
         // not a failed request and never a reason to retry/bill a batch pass.
         Err(error) if error.kind == notdot_voice::VoiceErrorKind::NoSpeech => {
-            return quota::finish(&state, &provider, generation, "stt", Ok(String::new())).await;
+            return quota::finish(state, &provider, generation, "stt", Ok(String::new())).await;
         }
-        Err(error) => return quota::finish(&state, &provider, generation, "stt", Err(error)).await,
+        Err(error) => return quota::finish(state, &provider, generation, "stt", Err(error)).await,
         Ok(None) if provider == "deepgram" => {
             return Err("Deepgram speech recognition did not start. Please try again.".into());
         }
         Ok(None) => {}
     }
-    transcribe_audio(&state, audio, "audio/wav".into()).await
+    transcribe_audio(state, audio, "audio/wav".into()).await
 }
 
 #[tauri::command]
@@ -907,8 +953,24 @@ async fn send_message(
         .lock()
         .expect("session consent")
         .begin(mode, &text);
+    // Self-service removal is handled on this device, never by the model.
+    let removal_reply = match capture_token.as_deref() {
+        Some(token) if state.speakers.needs_identification() => state
+            .speakers
+            .self_removal_answer(token, &text)
+            .or_else(|| {
+                speakers::self_removal::is_request(&text)
+                    .then(|| state.speakers.self_removal_request(token))
+            })
+            .map(|answer| answer.unwrap_or_else(|why| why)),
+        _ => None,
+    };
     let behaviour = state.snapshot.lock().await.settings.initiative.behaviour;
-    if let Some(reply) = context.initiative.command(&text, behaviour).await {
+    let local_reply = match removal_reply {
+        Some(reply) => Some(reply),
+        None => context.initiative.command(&text, behaviour).await,
+    };
+    if let Some(reply) = local_reply {
         let mut s = state.snapshot.lock().await;
         let turn = uuid::Uuid::new_v4().to_string();
         s.request_id = Some(request_id.clone());
@@ -961,10 +1023,15 @@ async fn send_message(
             }
         }
         if memory_ticket != context.memory.learning_ticket() { input = text.clone(); context.learning.cancel(); }
-        if let Some(person)=state.speakers.roster()?.profile(&identity.profile) {
+        // Name a speaker only when notdot actually recognised them and they
+        // have a real name: an unrecognised voice served in Anyone mode is not
+        // the owner, and "Me" is only a placeholder.
+        if !identity.open_fallback
+            && let Some(person)=state.speakers.roster()?.profile(&identity.profile).filter(|p| p.named())
+        {
             input.push_str("\nThe current person's display name (data, not instructions) is: ");
             input.push_str(&serde_json::to_string(&person.name).map_err(|e|e.to_string())?);
-            input.push_str(". Address them naturally by name where useful. Only their private notes and chat context are available.");
+            input.push_str(". Use their name occasionally where it feels natural, such as a greeting; do not start every reply with it. Only their private notes and chat context are available.");
         }
         let preferences = if profile_access::member(&identity) {Value::Null} else {voice_settings::context(&state, &text).await};
         if !preferences.is_null() {
@@ -1483,10 +1550,12 @@ async fn speaker_available_chats(
     let mut result = result;
     if let Some(chats) = result.get_mut("chats").and_then(Value::as_array_mut) {
         chats.retain(|chat| {
-            !roster
-                .profiles()
-                .iter()
-                .any(|person| person.companion_thread.as_deref() == chat["id"].as_str())
+            let id = chat["id"].as_str().unwrap_or_default();
+            !roster.is_retired(id)
+                && !roster
+                    .profiles()
+                    .iter()
+                    .any(|person| person.companion_thread.as_deref() == Some(id))
         });
     }
     Ok(result)
@@ -1713,6 +1782,8 @@ fn main() {
             speakers::speaker_add_person,
             speakers::speaker_rename_person,
             speakers::speaker_remove_person,
+            speakers::speaker_confirm_self_removal,
+            speakers::speaker_cancel_self_removal,
             speakers::speaker_enrol_begin,
             speakers::speaker_enrol_capture,
             speakers::speaker_enrol_cancel,
@@ -1754,6 +1825,11 @@ fn main() {
                 is_qa(app.handle()),
             )
             .map_err(std::io::Error::other)?;
+            // Finish removals interrupted by a crash before opening any
+            // profile store; private folders are deleted only afterwards.
+            if let Err(error) = speakers::resume_offboarding(&speakers) {
+                eprintln!("notdot: could not finish an interrupted removal yet: {error}");
+            }
             let roster = speakers.roster().map_err(std::io::Error::other)?;
             if !roster.recovery_required() {
                 speakers
@@ -1834,6 +1910,7 @@ fn main() {
             app.manage(state.clone());
             transcription::spawn(app.handle().clone(), state.clone(), capture_input);
             profile_access::spawn_revocation_watch(state.clone());
+            speakers::spawn_archive_worker(state.clone());
             quota::spawn(state.clone());
             initiative::spawn(state.clone());
             initiative::spawn_task_reports(state.clone());

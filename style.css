@@ -66,5 +66,9 @@ input:not([type=range]):not([type=checkbox]),select,.voice-control{height:40px;b
 .speaker-add { display:grid; gap:10px; }
 .speaker-consent { display:flex; align-items:flex-start; gap:12px; }
 .speaker-consent input { width:22px; height:22px; flex:0 0 22px; margin-top:3px; }
-#speaker-enrol,#speaker-confirm { margin-top:18px; padding:16px; border:1px solid hsla(var(--hue),35%,65%,.35); border-radius:16px; }
+#speaker-confirm-text,#speaker-leave-text { white-space:pre-line; }
+#speaker-confirm-named,#speaker-leave-confirm { display:grid; gap:8px; }
+#speaker-confirm-named[hidden],#speaker-leave-confirm[hidden] { display:none; }
+#speaker-confirm-name,#speaker-leave-name { width:100%; box-sizing:border-box; }
+#speaker-enrol,#speaker-confirm,#speaker-leave { margin-top:18px; padding:16px; border:1px solid hsla(var(--hue),35%,65%,.35); border-radius:16px; }
 .speaker-phrase { font-size:1.12em; line-height:1.5; padding:12px; background:hsla(var(--hue),30%,30%,.22); border-radius:12px; }
