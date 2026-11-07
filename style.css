@@ -72,3 +72,18 @@ input:not([type=range]):not([type=checkbox]),select,.voice-control{height:40px;b
 #speaker-confirm-name,#speaker-leave-name { width:100%; box-sizing:border-box; }
 #speaker-enrol,#speaker-confirm,#speaker-leave { margin-top:18px; padding:16px; border:1px solid hsla(var(--hue),35%,65%,.35); border-radius:16px; }
 .speaker-phrase { font-size:1.12em; line-height:1.5; padding:12px; background:hsla(var(--hue),30%,30%,.22); border-radius:12px; }
+/* People and voices: body copy matches the rest of Settings, and sharing controls sit on the card's grid. */
+#people-section .settings-body p:where(:not(.hint,.speaker-phrase)){font-size:13px;line-height:1.5;margin:10px 0}
+#people-section .settings-body h3{font-size:15px;line-height:1.3;margin:0 0 8px}
+#people-section .speaker-phrase{font-size:14px;margin:10px 0}
+.speaker-person .speaker-voice-state{margin:0 0 10px}
+.speaker-person>.speaker-actions{margin:10px 0 0}
+.speaker-share{display:grid;gap:10px;margin-top:14px;padding-top:12px;border-top:1px solid hsla(var(--hue),35%,65%,.2)}
+#people-section .speaker-share .speaker-share-title{margin:0;font-size:12px;font-weight:600;color:#b1c4d7}
+.speaker-share .speaker-actions{margin:0}
+.speaker-grant{display:grid;gap:8px;padding:10px 12px;border-radius:12px;background:hsla(var(--hue),30%,30%,.18)}
+#people-section .speaker-grant p{margin:0;font-size:13px;overflow-wrap:anywhere}
+/* Paired number fields: keep the inputs level when one label wraps. */
+.time-fields{align-items:end}
+/* A section body that starts with actions needs the same top gap as one that starts with a field. */
+.settings-body>.tool-actions:first-child{margin-top:12px}

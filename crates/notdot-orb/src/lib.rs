@@ -570,8 +570,16 @@ fn message(error: impl AsRef<str>) {
         reply.set_text_content(Some(error.as_ref()));
     }
 }
+/// Text for a rejected call: the string itself, or an Error's message.
+/// Never a debug dump or stack trace, which would end up on screen.
 fn js_error(v: JsValue) -> String {
-    v.as_string().unwrap_or_else(|| format!("{v:?}"))
+    if let Some(text) = v.as_string() {
+        return text;
+    }
+    v.dyn_ref::<js_sys::Error>()
+        .map(|e| String::from(e.message()))
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| "Something went wrong. Please try again.".to_owned())
 }
 async fn call(command: &str, args: Value) -> Result<JsValue, String> {
     let args = args

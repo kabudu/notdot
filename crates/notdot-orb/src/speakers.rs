@@ -110,7 +110,7 @@ fn removal_report(v: &Value) -> String {
     lines.push("Messages they added to shared chats stay in those chats.".into());
     lines.join(" ")
 }
-async fn command(command: &str, args: Value) {
+async fn command(command: &str, args: Value) -> bool {
     let removal = matches!(
         command,
         "speaker_remove_person" | "speaker_confirm_self_removal"
@@ -119,9 +119,16 @@ async fn command(command: &str, args: Value) {
         Ok(v) if removal => {
             let report: Value = serde_wasm_bindgen::from_value(v).unwrap_or(Value::Null);
             notice_after_refresh(removal_report(&report));
+            true
         }
-        Ok(_) => on_open(),
-        Err(e) => status(&e),
+        Ok(_) => {
+            on_open();
+            true
+        }
+        Err(e) => {
+            status(&e);
+            false
+        }
     }
 }
 fn progress(v: &Value) {
@@ -311,6 +318,7 @@ fn render_person(list: &Element, p: &Value) -> Result<(), JsValue> {
     )));
     card.append_child(&title)?;
     let note = doc.create_element("p")?;
+    note.set_class_name("hint speaker-voice-state");
     note.set_text_content(Some(if p["voice_enrolled"].as_bool() == Some(true) {
         "Voice saved on this computer"
     } else {
@@ -448,15 +456,23 @@ fn render_person(list: &Element, p: &Value) -> Result<(), JsValue> {
     }
     card.append_child(&actions)?;
     if !owner {
+        let share = doc.create_element("div")?;
+        share.set_class_name("speaker-share");
+        let heading = doc.create_element("p")?;
+        heading.set_class_name("speaker-share-title");
+        heading.set_text_content(Some("Shared chats"));
+        share.append_child(&heading)?;
         let select = doc.create_element("select")?;
         select.set_attribute("aria-label", &format!("Chat to share with {name}"))?;
         let blank = doc.create_element("option")?;
         blank.set_attribute("value", "")?;
         blank.set_text_content(Some("Load chats to choose one"));
         select.append_child(&blank)?;
-        card.append_child(&select)?;
+        share.append_child(&select)?;
+        let share_actions = doc.create_element("div")?;
+        share_actions.set_class_name("speaker-actions");
         let choices = select.clone();
-        button(&card, "Load available chats", move |_| {
+        button(&share_actions, "Load available chats", move |_| {
             let choices = choices.clone();
             spawn_local(async move {
                 match call("speaker_available_chats", json!({})).await {
@@ -488,7 +504,7 @@ fn render_person(list: &Element, p: &Value) -> Result<(), JsValue> {
             });
         })?;
         let profile = id.clone();
-        button(&card, "Share for reading", move |_| {
+        button(&share_actions, "Share for reading", move |_| {
             let chat = select.clone().unchecked_into::<HtmlSelectElement>().value();
             if !chat.is_empty() {
                 confirm(
@@ -498,8 +514,11 @@ fn render_person(list: &Element, p: &Value) -> Result<(), JsValue> {
                 );
             }
         })?;
+        share.append_child(&share_actions)?;
         for grant in p["shared_chats"].as_array().into_iter().flatten() {
             let chat = grant["chat_id"].as_str().unwrap_or_default().to_owned();
+            let item = doc.create_element("div")?;
+            item.set_class_name("speaker-grant");
             let row = doc.create_element("div")?;
             row.set_class_name("speaker-actions");
             let label = doc.create_element("p")?;
@@ -514,7 +533,7 @@ fn render_person(list: &Element, p: &Value) -> Result<(), JsValue> {
                     "read only"
                 }
             )));
-            row.append_child(&label)?;
+            item.append_child(&label)?;
             if grant["access"].as_str() == Some("read") {
                 let profile = id.clone();
                 let chat = chat.clone();
@@ -534,8 +553,10 @@ fn render_person(list: &Element, p: &Value) -> Result<(), JsValue> {
                     "Remove this person's access to this chat?",
                 )
             })?;
-            card.append_child(&row)?;
+            item.append_child(&row)?;
+            share.append_child(&item)?;
         }
+        card.append_child(&share)?;
     }
     list.append_child(&card)?;
     Ok(())
@@ -572,7 +593,9 @@ pub(crate) fn install() -> Result<(), JsValue> {
     on(element("speaker-add").unchecked_ref(), "click", |_| {
         let name = input("speaker-new-name").value();
         spawn_local(async move {
-            command("speaker_add_person", json!({"name":name})).await;
+            if command("speaker_add_person", json!({"name":name})).await {
+                input("speaker-new-name").set_value("");
+            }
         });
     });
     on(
