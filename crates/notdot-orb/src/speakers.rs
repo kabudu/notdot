@@ -213,7 +213,7 @@ fn remember_titles(result: &Value) {
         }
     }
 }
-/// Shared chats are stored by ID only. Look their titles up in the
+/// Grants made before titles were kept are stored by ID only. Look their titles up in the
 /// background (one lookup at a time, at most once a minute) and relabel
 /// the rows in place. Failures keep the generic label silently.
 fn fill_chat_titles() {
@@ -577,9 +577,11 @@ fn render_person(list: &Element, p: &Value) -> Result<(), JsValue> {
         button(&share_actions, "Share for reading", move |_| {
             let chat = select.clone().unchecked_into::<HtmlSelectElement>().value();
             if !chat.is_empty() {
+                // The title is kept with the grant, for display only.
+                let title = CHAT_TITLES.with(|c| c.borrow().get(&chat).cloned());
                 confirm(
                     "speaker_share_chat",
-                    json!({"profile":profile,"chat":chat,"access":"read"}),
+                    json!({"profile":profile,"chat":chat,"access":"read","title":title}),
                     "Allow this person to read this chat? Sending messages needs a separate permission.",
                 );
             }
@@ -587,6 +589,12 @@ fn render_person(list: &Element, p: &Value) -> Result<(), JsValue> {
         share.append_child(&share_actions)?;
         for grant in p["shared_chats"].as_array().into_iter().flatten() {
             let chat = grant["chat_id"].as_str().unwrap_or_default().to_owned();
+            // A stored title wins; the background lookup only fills older grants.
+            if let Some(title) = grant["title"].as_str().filter(|t| !t.is_empty()) {
+                CHAT_TITLES.with(|c| {
+                    c.borrow_mut().insert(chat.clone(), title.to_owned());
+                });
+            }
             let item = doc.create_element("div")?;
             item.set_class_name("speaker-grant");
             let row = doc.create_element("div")?;

@@ -389,13 +389,21 @@ pub fn speaker_share_chat(
     chat: String,
     profile: String,
     access: ChatAccess,
+    title: Option<String>,
 ) -> Result<(), String> {
     let _operation = LOCAL_OPERATIONS
         .lock()
         .map_err(|_| "Voice settings are busy")?;
-    state
-        .speakers
-        .grant_chat(&local(&window)?, &chat, &id(&profile)?, access)
+    if title.as_ref().is_some_and(|t| t.len() > 4096) {
+        return Err("Chat title is too long".into());
+    }
+    state.speakers.grant_chat_titled(
+        &local(&window)?,
+        &chat,
+        &id(&profile)?,
+        access,
+        title.as_deref(),
+    )
 }
 
 #[tauri::command]

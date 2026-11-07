@@ -172,6 +172,27 @@ pub struct ChatGrant {
     pub member: ProfileId,
     pub access: ChatAccess,
     pub granted_unix_ms: u64,
+    /// The chat's title when it was shared, for display only. Never used for
+    /// access decisions. Absent for grants made before titles were kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+/// Longest stored chat title, in characters.
+const MAX_CHAT_TITLE: usize = 120;
+
+/// A display title as stored: single-line, trimmed and bounded. Empty or
+/// control-only input gives `None`.
+fn clean_title(title: &str) -> Option<String> {
+    let line: String = title
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let bounded: String = line.chars().take(MAX_CHAT_TITLE).collect();
+    (!bounded.is_empty()).then_some(bounded)
 }
 
 /// Who is asking. `LocalDevice` is a deliberate click or key press in notdot's
@@ -1022,10 +1043,26 @@ impl Roster {
                     member: member.clone(),
                     access,
                     granted_unix_ms: now_ms(),
+                    title: None,
                 });
                 Ok(())
             }
         }
+    }
+
+    /// Remember the title of a shared chat for display. Every grant of that
+    /// chat is updated; a chat that isn't shared is left alone.
+    pub fn name_chat(&mut self, actor: &Actor, chat_id: &str, title: &str) -> Result<(), String> {
+        self.authorise(actor, Capability::ManageChatGrants)
+            .map_err(|e| e.to_string())?;
+        validate_thread(chat_id)?;
+        let title = clean_title(title);
+        for g in self.grants.iter_mut().filter(|g| g.chat_id == chat_id) {
+            if title.is_some() {
+                g.title.clone_from(&title);
+            }
+        }
+        Ok(())
     }
 
     pub fn revoke_chat(
@@ -1134,7 +1171,7 @@ impl Roster {
                 "voice_consent_unix_ms": p.voice_consent_unix_ms,
                 "needs_name": !p.named(),
                 "shared_chats": self.grants.iter().filter(|g| g.member == p.id).map(|g| serde_json::json!({
-                    "chat_id": g.chat_id, "access": g.access,
+                    "chat_id": g.chat_id, "access": g.access, "title": g.title,
                 })).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
             "removed_chats": {
@@ -1218,6 +1255,57 @@ mod tests {
             .unwrap();
         r.set_voice_enrolled(&Actor::LocalDevice, &m, true).unwrap();
         (r, m)
+    }
+    #[test]
+    fn shared_chat_titles_are_kept_for_display_only() {
+        let (mut r, m) = roster_with_member();
+        r.grant_chat(&Actor::LocalDevice, "owner-a", &m, ChatAccess::Read)
+            .unwrap();
+        // Single-line, trimmed and bounded; blank input keeps what was there.
+        r.name_chat(&Actor::LocalDevice, "owner-a", "  Weekend\n plans\t ")
+            .unwrap();
+        assert_eq!(r.grants()[0].title.as_deref(), Some("Weekend plans"));
+        r.name_chat(&Actor::LocalDevice, "owner-a", " \u{7} ")
+            .unwrap();
+        assert_eq!(r.grants()[0].title.as_deref(), Some("Weekend plans"));
+        r.name_chat(&Actor::LocalDevice, "owner-a", &"é".repeat(500))
+            .unwrap();
+        assert_eq!(
+            r.grants()[0].title.as_ref().unwrap().chars().count(),
+            MAX_CHAT_TITLE
+        );
+        r.name_chat(&Actor::LocalDevice, "owner-a", "Weekend plans")
+            .unwrap();
+        // Allowing messages later keeps the title.
+        r.grant_chat(&Actor::LocalDevice, "owner-a", &m, ChatAccess::ReadWrite)
+            .unwrap();
+        assert_eq!(r.grants()[0].title.as_deref(), Some("Weekend plans"));
+        assert_eq!(
+            r.summary()["people"][1]["shared_chats"][0]["title"],
+            "Weekend plans"
+        );
+        // Naming needs the local device, and an unshared chat is left alone.
+        let voice = Actor::Voice(admit(&r, recognised(&r.owner().clone())));
+        assert!(r.name_chat(&voice, "owner-a", "Renamed").is_err());
+        assert!(r.name_chat(&Actor::LocalDevice, "bad id!", "x").is_err());
+        r.name_chat(&Actor::LocalDevice, "not-shared", "Other")
+            .unwrap();
+        assert_eq!(r.grants().len(), 1);
+        // Saved without a title for older grants, and older files still load.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profiles.json");
+        r.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"title\": \"Weekend plans\""));
+        std::fs::write(
+            &path,
+            text.replace(",\n      \"title\": \"Weekend plans\"", ""),
+        )
+        .unwrap();
+        match Roster::load(&path, "Kamba") {
+            LoadOutcome::Loaded(old) => assert_eq!(old.grants()[0].title, None),
+            _ => panic!("a grant without a title must still load"),
+        }
     }
     fn admit(r: &Roster, outcome: SpeakerOutcome) -> TurnLock {
         match r.admit("cap-1", &outcome) {

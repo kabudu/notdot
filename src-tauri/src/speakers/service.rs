@@ -610,6 +610,8 @@ impl Speakers {
         }
         self.mutate(|r| r.set_mode(actor, mode))
     }
+    /// Test shorthand for [`Self::grant_chat_titled`] without a title.
+    #[cfg(test)]
     pub fn grant_chat(
         &self,
         actor: &Actor,
@@ -617,7 +619,24 @@ impl Speakers {
         member: &ProfileId,
         access: ChatAccess,
     ) -> Result<(), String> {
-        self.mutate(|r| r.grant_chat(actor, chat, member, access))
+        self.grant_chat_titled(actor, chat, member, access, None)
+    }
+    /// Share a chat and remember its display title in the same save.
+    pub fn grant_chat_titled(
+        &self,
+        actor: &Actor,
+        chat: &str,
+        member: &ProfileId,
+        access: ChatAccess,
+        title: Option<&str>,
+    ) -> Result<(), String> {
+        self.mutate(|r| {
+            r.grant_chat(actor, chat, member, access)?;
+            match title {
+                Some(title) => r.name_chat(actor, chat, title),
+                None => Ok(()),
+            }
+        })
     }
     pub fn revoke_chat(&self, actor: &Actor, chat: &str, member: &ProfileId) -> Result<(), String> {
         self.mutate(|r| r.revoke_chat(actor, chat, member))
