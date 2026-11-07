@@ -149,6 +149,7 @@ impl Streaming {
                         VoiceErrorKind::NoSpeech
                             | VoiceErrorKind::Authentication
                             | VoiceErrorKind::Permission
+                            | VoiceErrorKind::Refused
                             | VoiceErrorKind::Quota
                             | VoiceErrorKind::RateLimit
                             | VoiceErrorKind::InvalidInput
@@ -172,7 +173,7 @@ async fn run(
     let identified = if state.speakers.needs_identification() {
         if !notdot_speakers::audio::supported_rate(rate) {
             return Completion::failed(VoiceError::new(
-                VoiceErrorKind::Permission,
+                VoiceErrorKind::Refused,
                 "The microphone format cannot be checked for trusted voices",
             ));
         }
@@ -186,7 +187,7 @@ async fn run(
                     Ok(Some(packet)) => packet,
                     _ => {
                         return Completion::failed(VoiceError::new(
-                            VoiceErrorKind::Permission,
+                            VoiceErrorKind::Refused,
                             "Voice identity could not be checked",
                         ));
                     }
@@ -195,7 +196,7 @@ async fn run(
                 if let Input::Audio { pcm: bytes, .. } = &packet {
                     if pcm.len() + bytes.len() > max_bytes {
                         return Completion::failed(VoiceError::new(
-                            VoiceErrorKind::Permission,
+                            VoiceErrorKind::Refused,
                             "Voice identity buffer exceeded its limit",
                         ));
                     }
@@ -219,7 +220,7 @@ async fn run(
                 }
                 Err(why) => {
                     return Completion::failed(VoiceError::new(
-                        VoiceErrorKind::Permission,
+                        VoiceErrorKind::Refused,
                         why.spoken(),
                     ));
                 }
@@ -234,7 +235,7 @@ async fn run(
         {
             Ok(identity) => identity,
             Err(error) => {
-                return Completion::failed(VoiceError::new(VoiceErrorKind::Permission, error));
+                return Completion::failed(VoiceError::new(VoiceErrorKind::Refused, error));
             }
         };
 
@@ -249,7 +250,7 @@ async fn run(
     };
     if state.speakers.validate(&identity).is_err() {
         return Completion::failed(VoiceError::new(
-            VoiceErrorKind::Permission,
+            VoiceErrorKind::Refused,
             "Voice access changed before transcription",
         ));
     }
@@ -315,7 +316,7 @@ async fn process_stream(
         })?;
         if !valid() {
             return Err(VoiceError::new(
-                VoiceErrorKind::Permission,
+                VoiceErrorKind::Refused,
                 "Voice access was revoked",
             ));
         }
@@ -553,7 +554,7 @@ mod tests {
             )
             .await;
             if allowed < 3 {
-                assert_eq!(result.result.unwrap_err().kind, VoiceErrorKind::Permission);
+                assert_eq!(result.result.unwrap_err().kind, VoiceErrorKind::Refused);
                 assert_eq!(result.stats.unwrap().audio_chunks, allowed as u64 * 32000);
             } else {
                 assert_eq!(result.result.unwrap(), "segment1");
@@ -661,6 +662,7 @@ mod tests {
                 VoiceErrorKind::Provider,
                 VoiceErrorKind::Authentication,
                 VoiceErrorKind::Permission,
+                VoiceErrorKind::Refused,
                 VoiceErrorKind::Quota,
                 VoiceErrorKind::RateLimit,
                 VoiceErrorKind::InvalidInput,

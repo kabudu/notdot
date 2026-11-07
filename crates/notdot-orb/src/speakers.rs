@@ -71,6 +71,9 @@ fn confirm(command: &str, args: Value, text: &str) {
     hidden("speaker-confirm-named", true);
     input("speaker-confirm-yes").set_disabled(false);
     hidden("speaker-confirm", false);
+    // The box sits at the end of People; bring it to the button that asked.
+    element("speaker-confirm").scroll_into_view();
+    let _ = input("speaker-confirm-yes").focus();
 }
 /// A confirmation that only enables once `name` is typed. The typed text is
 /// sent as `confirmName`; notdot checks it again natively.

@@ -321,7 +321,10 @@ async fn wake_activity(state: State<'_, Arc<AppState>>, ready: bool) -> Result<(
     Ok(())
 }
 #[tauri::command]
-async fn transcribe_wake(state: State<'_, Arc<AppState>>, id: u64) -> Result<String, String> {
+/// The transcript of a wake or native capture, or `{"refusal": line}` when
+/// notdot refused the capture on this computer (trusted-voice checks). A
+/// refusal is a normal spoken answer, not a provider fault or an app error.
+async fn transcribe_wake(state: State<'_, Arc<AppState>>, id: u64) -> Result<Value, String> {
     let (provider, generation, token, audio) = {
         let s = state.snapshot.lock().await;
         if s.active_turn.is_some() || s.phase != "idle" || s.settings.microphone_muted {
@@ -349,13 +352,31 @@ async fn transcribe_wake(state: State<'_, Arc<AppState>>, id: u64) -> Result<Str
     } else {
         None
     };
-    let text = recognise_capture(&state, provider, generation, &token, audio).await?;
+    let text = match recognise_capture(&state, provider, generation, &token, audio).await {
+        Ok(text) => text,
+        Err(Heard::Refused(line)) => return Ok(json!({ "refusal": line })),
+        Err(Heard::Failed(error)) => return Err(error),
+    };
     if let Some((rate, pcm)) = continuity
         && !text.trim().is_empty()
+        && let Err(line) = state.speakers.verify_continuity(&token, rate, &pcm).await
     {
-        state.speakers.verify_continuity(&token, rate, &pcm).await?;
+        return Ok(json!({ "refusal": line }));
     }
-    Ok(text)
+    Ok(Value::String(text))
+}
+
+/// Why a capture produced no transcript.
+enum Heard {
+    /// Refused on this computer by the trusted-voice checks; spoken to the user.
+    Refused(String),
+    /// The recognition service or the capture failed.
+    Failed(String),
+}
+impl From<String> for Heard {
+    fn from(error: String) -> Self {
+        Self::Failed(error)
+    }
 }
 
 /// Decode a capture WAV into 16-bit little-endian PCM, wiped on drop.
@@ -386,23 +407,36 @@ async fn recognise_capture(
     generation: u64,
     token: &str,
     audio: Vec<u8>,
-) -> Result<String, String> {
+) -> Result<String, Heard> {
     match state.streaming.take(token, provider != "deepgram").await {
         Ok(Some(text)) => {
-            return quota::finish(state, &provider, generation, "stt", Ok(text)).await;
+            return Ok(quota::finish(state, &provider, generation, "stt", Ok(text)).await?);
         }
         // An explicit provider no-speech acknowledgement is an empty capture,
         // not a failed request and never a reason to retry/bill a batch pass.
         Err(error) if error.kind == notdot_voice::VoiceErrorKind::NoSpeech => {
-            return quota::finish(state, &provider, generation, "stt", Ok(String::new())).await;
+            return Ok(
+                quota::finish(state, &provider, generation, "stt", Ok(String::new())).await?,
+            );
         }
-        Err(error) => return quota::finish(state, &provider, generation, "stt", Err(error)).await,
+        // Refused on this computer before the provider was used: not a
+        // provider fault, so it is neither recorded nor announced as one.
+        Err(error) if error.kind == notdot_voice::VoiceErrorKind::Refused => {
+            return Err(Heard::Refused(error.to_string()));
+        }
+        Err(error) => {
+            return quota::finish(state, &provider, generation, "stt", Err(error))
+                .await
+                .map_err(Heard::Failed);
+        }
         Ok(None) if provider == "deepgram" => {
-            return Err("Deepgram speech recognition did not start. Please try again.".into());
+            return Err(Heard::Failed(
+                "Deepgram speech recognition did not start. Please try again.".into(),
+            ));
         }
         Ok(None) => {}
     }
-    transcribe_audio(state, audio, "audio/wav".into()).await
+    Ok(transcribe_audio(state, audio, "audio/wav".into()).await?)
 }
 
 #[tauri::command]
