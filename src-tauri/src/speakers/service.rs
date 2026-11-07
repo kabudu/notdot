@@ -946,6 +946,16 @@ impl Speakers {
 
     /// Is this capture recording an enrolment phrase? Root's capture path
     /// checks this first and diverts the audio here.
+    /// Is a phrase being recorded for enrolment right now? Settings is open
+    /// while teaching a voice, so the window keeps the microphone lease alive
+    /// for this capture even though ordinary listening is paused.
+    pub fn enrol_capture_active(&self) -> bool {
+        self.enrolment
+            .lock()
+            .expect("enrolment")
+            .as_ref()
+            .is_some_and(|s| s.capture.is_some())
+    }
     pub fn is_enrol_capture(&self, token: &str) -> bool {
         self.enrolment
             .lock()
@@ -1923,10 +1933,14 @@ mod tests {
 
         // Cancelled enrolment leaves nothing behind.
         s.enrol_begin(&local(), &owner).unwrap();
+        assert!(!s.enrol_capture_active());
         s.enrol_capture("t").unwrap();
+        // Keeps the microphone lease alive while Settings is open.
+        assert!(s.enrol_capture_active());
         let (rate, pcm) = wav_pcm(&fx.join("daniel/enrol-0.wav"));
         s.enrol_audio("t", rate, &pcm);
         s.enrol_cancel();
+        assert!(!s.enrol_capture_active());
         assert!(s.enrol_capture_end("t").await.is_err());
         assert!(s.enrol_save(&local(), true).is_err());
         assert!(!dir.path().join(VOICEPRINT_FILE).exists());

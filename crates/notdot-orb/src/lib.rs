@@ -2767,6 +2767,7 @@ pub fn start() -> Result<(), JsValue> {
                             }
                         });
                     } else {
+                        let ready = ready || speakers::recording();
                         let _ = call("wake_activity", json!({"ready":ready})).await;
                     }
                     let speak = {

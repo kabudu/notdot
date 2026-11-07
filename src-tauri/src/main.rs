@@ -306,14 +306,17 @@ async fn snapshot(
 #[tauri::command]
 async fn wake_activity(state: State<'_, Arc<AppState>>, ready: bool) -> Result<(), String> {
     let s = state.snapshot.lock().await;
+    // Teaching a voice records locally only and never needs the voice service,
+    // so its capture stays alive without the keys a spoken request needs.
     let allowed = ready
         && s.active_turn.is_none()
         && s.phase == "idle"
-        && s.key_configured
-        && state.credentials.cached(s.settings.transcription_id())
-        && !s.key_checking
-        && !s.settings.voice_id.is_empty()
-        && s.settings.onboarding_complete;
+        && (state.speakers.enrol_capture_active()
+            || (s.key_configured
+                && state.credentials.cached(s.settings.transcription_id())
+                && !s.key_checking
+                && !s.settings.voice_id.is_empty()
+                && s.settings.onboarding_complete));
     state.wake.ready(allowed);
     Ok(())
 }

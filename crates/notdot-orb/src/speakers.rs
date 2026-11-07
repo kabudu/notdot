@@ -155,6 +155,11 @@ fn progress(v: &Value) {
     element("speaker-enrol-status").set_text_content(Some(&text));
     input("speaker-record").set_disabled(!input("speaker-consent").checked());
 }
+/// A phrase is being recorded for enrolment. The microphone lease must be
+/// renewed for it although Settings is open.
+pub(crate) fn recording() -> bool {
+    CAPTURE.with(|c| c.borrow().is_some())
+}
 pub(crate) fn cancel() {
     ACTIVE.with(|a| *a.borrow_mut() = false);
     EPOCH.with(|e| *e.borrow_mut() += 1);
@@ -397,6 +402,8 @@ fn render_person(list: &Element, p: &Value) -> Result<(), JsValue> {
                         Ok(p) => progress(&p),
                         Err(e) => status(&e.to_string()),
                     }
+                    // The panel sits below the people list; bring it into view.
+                    element("speaker-enrol").scroll_into_view();
                 }
                 Err(e) => status(&e),
             }
