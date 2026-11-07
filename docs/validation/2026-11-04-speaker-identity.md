@@ -68,6 +68,20 @@ No enrolled voice was ever identified as a different enrolled person. In noise t
 
 Embedding time: median 37 ms, p95 50 ms, maximum 85 ms per test clip on one thread. Model load and checksum: about 180 ms.
 
+## Short requests (2026-11-07)
+
+A real owner test at desk distance showed that short commands ("what is seven plus five") reach only about 0.6 s of voiced frames. Every one was refused as unclear under the 1.2 s minimum. Requests now need 0.5 s of voiced speech. Enrolment samples and continuity windows keep 1.2 s. `tests/short_requests.rs` cuts each test clip to N seconds from speech onset, at the measured voiced level (RMS 0.019):
+
+| Clip | Enrolled (n = 64) | Unknown (n = 64) |
+|---|---|---|
+| 0.6 s | 6 correct, 54 ambiguous, 4 unknown | 1 same-engine accepted |
+| 0.8 s | 38 correct, 25 ambiguous, 1 unknown | 6 same-engine accepted |
+| 1.0 s | 57 correct, 7 ambiguous | 6 same-engine accepted |
+| 1.3 s | 61 correct, 3 ambiguous | 8 same-engine accepted |
+| 2.5 s | 64 correct | 8 same-engine accepted |
+
+Shorter audio makes matching less certain, so more requests are refused as ambiguous. It does not confuse enrolled people or accept new voices: every accept of an unknown voice is Reed as Eddy, the same pair as at full length. After the change, the full acoustic evaluation gives exactly the figures above.
+
 ## Replay (honest limits)
 
 | Attack | Result |

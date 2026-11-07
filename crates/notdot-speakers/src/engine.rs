@@ -90,8 +90,18 @@ impl Engine {
         samples: &[f32],
         cancelled: &AtomicBool,
     ) -> Result<Vec<f32>, Identification> {
-        let (mut voiced, _) =
-            audio::voiced(rate, samples).map_err(|issue| Identification::Unusable { issue })?;
+        self.embed_with(rate, samples, audio::MIN_VOICED_SECONDS, cancelled)
+    }
+
+    fn embed_with(
+        &self,
+        rate: u32,
+        samples: &[f32],
+        min_seconds: f32,
+        cancelled: &AtomicBool,
+    ) -> Result<Vec<f32>, Identification> {
+        let (mut voiced, _) = audio::voiced_for(rate, samples, min_seconds)
+            .map_err(|issue| Identification::Unusable { issue })?;
         let _one_at_a_time = self.busy.lock().map_err(|_| Identification::Unavailable)?;
         if cancelled.load(Ordering::Acquire) {
             voiced.zeroize();
@@ -112,10 +122,13 @@ impl Engine {
         if prints.is_empty() {
             return Identification::NoVoiceprints;
         }
-        let mut e = match self.embed(rate, samples, cancelled) {
-            Ok(e) => e,
-            Err(outcome) => return outcome,
-        };
+        // A request may be a short command; continuity windows and
+        // enrolment keep the longer minimum.
+        let mut e =
+            match self.embed_with(rate, samples, audio::MIN_IDENTIFY_VOICED_SECONDS, cancelled) {
+                Ok(e) => e,
+                Err(outcome) => return outcome,
+            };
         let result = match matcher::identify(&prints, &e, &self.thresholds) {
             Match::Recognised {
                 profile,

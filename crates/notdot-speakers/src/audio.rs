@@ -3,8 +3,14 @@ use serde::Serialize;
 
 /// Longest audio considered for one embedding.
 pub const MAX_SECONDS: f32 = 8.0;
-/// Minimum voiced speech for a usable sample.
+/// Minimum voiced speech for an enrolment sample or a continuity window.
 pub const MIN_VOICED_SECONDS: f32 = 1.2;
+/// Minimum voiced speech to identify a request. Short spoken commands ("what
+/// is seven plus five") at desk distance reach only about 0.6 s of frames above
+/// [`VOICED_RMS`]. On the evaluation voices, shorter audio turned uncertain
+/// matches into refusals (ambiguous or unknown) without adding false accepts,
+/// so the accept threshold, not this floor, stays the security boundary.
+pub const MIN_IDENTIFY_VOICED_SECONDS: f32 = 0.5;
 const FRAME_MS: u32 = 20;
 /// Frames below this RMS (about −42 dBFS) are treated as silence.
 const VOICED_RMS: f32 = 0.008;
@@ -63,6 +69,15 @@ pub fn decode_s16le(pcm: &[u8]) -> Vec<f32> {
 /// kept, which measured better than splicing), bounded to the last
 /// [`MAX_SECONDS`].
 pub fn voiced(rate: u32, samples: &[f32]) -> Result<(Vec<f32>, Quality), SampleIssue> {
+    voiced_for(rate, samples, MIN_VOICED_SECONDS)
+}
+
+/// [`voiced`] with a caller-chosen minimum of voiced seconds.
+pub fn voiced_for(
+    rate: u32,
+    samples: &[f32],
+    min_seconds: f32,
+) -> Result<(Vec<f32>, Quality), SampleIssue> {
     if !supported_rate(rate) {
         return Err(SampleIssue::UnsupportedRate);
     }
@@ -105,7 +120,7 @@ pub fn voiced(rate: u32, samples: &[f32]) -> Result<(Vec<f32>, Quality), SampleI
     if kept.len() > max {
         kept.drain(..kept.len() - max);
     }
-    if quality.voiced_seconds < MIN_VOICED_SECONDS {
+    if quality.voiced_seconds < min_seconds {
         return Err(SampleIssue::TooShort);
     }
     if quality.voiced_rms < MIN_VOICED_RMS {
@@ -164,6 +179,25 @@ mod tests {
         assert!(w.len() <= 41);
         assert_eq!(windows(16_000, &s[..16_000], 3.0, 40).len(), 1);
         assert_eq!(windows(16_000, &[], 3.0, 40).len(), 1);
+    }
+    #[test]
+    fn requests_may_be_shorter_than_enrolment_samples() {
+        let short = tone(16_000, 0.8, 0.3);
+        assert_eq!(voiced(16_000, &short).unwrap_err(), SampleIssue::TooShort);
+        assert!(voiced_for(16_000, &short, MIN_IDENTIFY_VOICED_SECONDS).is_ok());
+        assert_eq!(
+            voiced_for(16_000, &tone(16_000, 0.4, 0.3), MIN_IDENTIFY_VOICED_SECONDS).unwrap_err(),
+            SampleIssue::TooShort
+        );
+        assert_eq!(
+            voiced_for(
+                16_000,
+                &tone(16_000, 0.8, 0.012),
+                MIN_IDENTIFY_VOICED_SECONDS
+            )
+            .unwrap_err(),
+            SampleIssue::TooQuiet
+        );
     }
     #[test]
     fn decodes_little_endian_pcm() {
