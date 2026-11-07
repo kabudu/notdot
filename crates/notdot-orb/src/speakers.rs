@@ -18,6 +18,8 @@ thread_local! {
     static ACTIVE: RefCell<bool> = const { RefCell::new(false) };
     static EPOCH: RefCell<u64> = const { RefCell::new(0) };
     static CHAT_TITLES: RefCell<std::collections::HashMap<String,String>> = RefCell::new(std::collections::HashMap::new());
+    /// When shared-chat titles were last looked up (ms), and whether a lookup is running.
+    static TITLE_LOOKUP: RefCell<(f64, bool)> = const { RefCell::new((f64::NEG_INFINITY, false)) };
     static CAPTURE: RefCell<Option<String>> = const { RefCell::new(None) };
     static CONFIRM: RefCell<Option<(String, Value)>> = const { RefCell::new(None) };
     /// Name the current confirmation must be typed as, if any.
@@ -185,6 +187,79 @@ pub(crate) fn cancel() {
         let _ = call("speaker_enrol_cancel", json!({})).await;
     });
 }
+fn doc() -> web_sys::Document {
+    web_sys::window().unwrap().document().unwrap()
+}
+/// "Weekend plans · read only". Until the title is known: "Shared chat".
+fn grant_label(chat: &str, access: &str) -> String {
+    format!(
+        "{} · {}",
+        CHAT_TITLES
+            .with(|c| c.borrow().get(chat).cloned())
+            .unwrap_or_else(|| "Shared chat".into()),
+        if access == "read_write" {
+            "read and message"
+        } else {
+            "read only"
+        }
+    )
+}
+fn remember_titles(result: &Value) {
+    for chat in result["chats"].as_array().into_iter().flatten() {
+        if let (Some(id), Some(title)) = (chat["id"].as_str(), chat["title"].as_str()) {
+            CHAT_TITLES.with(|c| {
+                c.borrow_mut().insert(id.into(), title.into());
+            });
+        }
+    }
+}
+/// Shared chats are stored by ID only. Look their titles up in the
+/// background (one lookup at a time, at most once a minute) and relabel
+/// the rows in place. Failures keep the generic label silently.
+fn fill_chat_titles() {
+    let labels = doc()
+        .query_selector_all("#speaker-people .speaker-grant-title")
+        .ok();
+    let missing = labels.as_ref().is_some_and(|l| {
+        (0..l.length()).filter_map(|i| l.item(i)).any(|n| {
+            n.dyn_ref::<Element>()
+                .and_then(|e| e.get_attribute("data-chat"))
+                .is_some_and(|chat| CHAT_TITLES.with(|c| !c.borrow().contains_key(&chat)))
+        })
+    });
+    let now = js_sys::Date::now();
+    let start = missing
+        && TITLE_LOOKUP.with(|t| {
+            let mut t = t.borrow_mut();
+            if t.1 || now - t.0 < 60_000.0 {
+                return false;
+            }
+            *t = (now, true);
+            true
+        });
+    if !start {
+        return;
+    }
+    spawn_local(async {
+        if let Ok(v) = call("speaker_available_chats", json!({})).await {
+            remember_titles(&serde_wasm_bindgen::from_value(v).unwrap_or(Value::Null));
+        }
+        TITLE_LOOKUP.with(|t| t.borrow_mut().1 = false);
+        let Ok(labels) = doc().query_selector_all("#speaker-people .speaker-grant-title") else {
+            return;
+        };
+        for e in (0..labels.length())
+            .filter_map(|i| labels.item(i))
+            .filter_map(|n| n.dyn_into::<Element>().ok())
+        {
+            if let (Some(chat), Some(access)) =
+                (e.get_attribute("data-chat"), e.get_attribute("data-access"))
+            {
+                e.set_text_content(Some(&grant_label(&chat, &access)));
+            }
+        }
+    });
+}
 pub(crate) fn on_open() {
     spawn_local(async {
         if let Err(e) = refresh().await {
@@ -258,6 +333,7 @@ async fn refresh() -> Result<(), String> {
     for person in v["people"].as_array().into_iter().flatten() {
         render_person(&list, person).map_err(|e| format!("Could not show people: {e:?}"))?;
     }
+    fill_chat_titles();
     let notice = NOTICE.with(|n| n.borrow_mut().take());
     status(&if v["recovery_required"].as_bool() == Some(true) {
         "People setup needs recovery. Review the recovery option below.".to_owned()
@@ -479,16 +555,10 @@ fn render_person(list: &Element, p: &Value) -> Result<(), JsValue> {
                     Ok(v) => {
                         let result: Value =
                             serde_wasm_bindgen::from_value(v).unwrap_or(Value::Null);
+                        remember_titles(&result);
                         choices.set_text_content(None);
                         let doc = web_sys::window().unwrap().document().unwrap();
                         for chat in result["chats"].as_array().into_iter().flatten() {
-                            if let (Some(id), Some(title)) =
-                                (chat["id"].as_str(), chat["title"].as_str())
-                            {
-                                CHAT_TITLES.with(|c| {
-                                    c.borrow_mut().insert(id.into(), title.into());
-                                });
-                            }
                             if let Ok(o) = doc.create_element("option") {
                                 let _ = o.set_attribute(
                                     "value",
@@ -521,18 +591,12 @@ fn render_person(list: &Element, p: &Value) -> Result<(), JsValue> {
             item.set_class_name("speaker-grant");
             let row = doc.create_element("div")?;
             row.set_class_name("speaker-actions");
+            let access = grant["access"].as_str().unwrap_or("read");
             let label = doc.create_element("p")?;
-            label.set_text_content(Some(&format!(
-                "{} · {}",
-                CHAT_TITLES
-                    .with(|c| c.borrow().get(&chat).cloned())
-                    .unwrap_or_else(|| "Shared chat".into()),
-                if grant["access"].as_str() == Some("read_write") {
-                    "read and message"
-                } else {
-                    "read only"
-                }
-            )));
+            label.set_class_name("speaker-grant-title");
+            label.set_attribute("data-chat", &chat)?;
+            label.set_attribute("data-access", access)?;
+            label.set_text_content(Some(&grant_label(&chat, access)));
             item.append_child(&label)?;
             if grant["access"].as_str() == Some("read") {
                 let profile = id.clone();
