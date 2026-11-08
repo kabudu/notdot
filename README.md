@@ -15,9 +15,9 @@ Talk to an animated orb that listens and replies aloud. notdot works with the Ch
 
 ## Voice demo · [elevenlabs.io](https://elevenlabs.io)
 
-A real hands-free exchange, with sound and captions. Turn on sound to hear both voices.
+A real wake-word conversation, including a follow-up without repeating “Hey Ava”. Turn on sound to hear both voices.
 
-https://github.com/user-attachments/assets/8279f3a2-af14-4c5b-8960-e69596ca5ad5
+https://github.com/user-attachments/assets/27db5b3f-e31a-40ee-a8dd-37ecc9c2b6b5
 
 [Read the transcript](docs/demo.md#transcript) · [Download the captioned video](docs/site-assets/demo/notdot-demo-captioned.mp4)
 
