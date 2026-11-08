@@ -47,3 +47,15 @@ The browser harness is not a microphone-to-provider or hardware-speaker test. Wi
 - `cargo run -p notdot-core --example task_awareness_smoke -- /path/to/codex`
 - Opt-in audible check: `cargo test -p notdot task_reports_play_through_system_speech_without_provider_keys -- --ignored`
 - Build the existing conversation harness, then run its normal suite and `#tasks-only` suite. These do not access a microphone or paid provider.
+
+## Cue contrast correction
+
+The initial pale symbols could blend into bright waves. They now use opaque `#07111f` backing, `#02060c` outlines and three-pixel `#f1f8ff` strokes. The working arc has a dark track; the other symbols use compact dark badges. All stay inside the core. Colour is not needed to distinguish the shapes.
+
+A debug-build-only acceptance export invokes the same production shader, Canvas fallback and cue renderer at controlled phases, including maximum speech-wave brightness. The export is excluded from release WASM. The repeatable browser harness measures stroke interiors against their adjacent backing, rather than treating partially covered antialiased edge pixels as solid colours.
+
+The complete matrix passed **23,040 samples**: 16 hues (including every preview preset), 24 phases, two actual orb window sizes (320 and 480 pixels), normal/reduced motion, all four cues, and WebGL, Canvas and solid-white backgrounds. The attention stem and dot are checked separately. Minimum measured contrast was **17.6836:1**, against the **3:1** graphical-indicator target in [WCAG 2.2 Non-text Contrast](https://www.w3.org/WAI/WCAG22/Understanding/non-text-contrast.html). Shader stress frames reached white; the minimum did not depend on wave brightness. [Raw results](task-cue-contrast.json).
+
+The 28 orb unit tests, 12 production-WASM cue behaviour checks and debug/release WASM Clippy passed. Blue/dark and purple/light previews were inspected in Chrome. These checks cover the changed indicators; they are not a claim of complete application WCAG conformance or new Windows/Linux hardware acceptance.
+
+To repeat after a fresh debug Trunk build: `python3 scripts/prepare_task_cue_preview.py`, serve the dist directory locally, open `cue-contrast.html` and run the checks. `task-cues.html` provides the silent theme/background comparison.

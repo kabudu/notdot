@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 mod audio_meter;
 mod conversation;
+#[cfg(all(debug_assertions, target_arch = "wasm32"))]
+mod cue_acceptance;
 mod interaction;
 mod orb_renderer;
 mod settings_navigation;

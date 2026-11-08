@@ -19,60 +19,91 @@ struct Palette {
 /// Draw inside the opaque core, shared by GPU and Canvas modes. Shape carries
 /// meaning without depending on colour; reduced motion keeps each cue steady.
 pub(crate) fn task_cue(context: &Context, frame: &Frame<'_>, cue: &str) {
-    if cue == "none" {
+    if !matches!(cue, "working" | "attention" | "review" | "finished") {
         return;
     }
-    let (x, y) = frame.center;
+    let (x, center_y) = frame.center;
     let r = frame.radius;
     let phase = frame.motion.phase;
+    let badge = (r * 0.23).clamp(11., 20.).min(r * 0.28);
+    let y = if cue == "attention" {
+        center_y
+    } else {
+        center_y + r * 0.56
+    };
     context.save();
-    context.set_stroke_style_str(&format!("hsl({},85%,82%)", frame.hue));
-    context.set_fill_style_str(&format!("hsl({},85%,82%)", frame.hue));
-    context.set_line_width(2.);
-    context.begin_path();
-    match cue {
-        "working" => {
-            let start = if frame.reduced { -1.8 } else { phase * 3. };
-            let _ = context.arc(x, y, r * 0.72, start, start + 0.7);
-        }
-        "attention" => {
-            let alpha = if frame.reduced {
-                0.16
-            } else {
-                0.12 + 0.08 * (phase * 4.).sin().powi(2)
-            };
-            context.set_fill_style_str(&format!("hsla({},85%,75%,{alpha})", frame.hue));
-            let _ = context.arc(x, y, r * 0.72, 0., TAU);
-            context.fill();
-            context.begin_path();
-            context.move_to(x, y - r * 0.16);
-            context.line_to(x, y + r * 0.05);
-            context.stroke();
-            context.begin_path();
-            let _ = context.arc(x, y + r * 0.14, 1.8, 0., TAU);
-            context.set_fill_style_str(&format!("hsl({},85%,82%)", frame.hue));
-            context.fill();
-        }
-        "review" => {
-            let y = y + r * 0.58;
-            let d = r * 0.085;
-            context.move_to(x, y - d);
-            context.line_to(x + d, y);
-            context.line_to(x, y + d);
-            context.line_to(x - d, y);
-            context.close_path();
-        }
-        "finished" => {
-            let y = y + r * 0.58;
-            context.move_to(x - r * 0.08, y);
-            context.line_to(x - r * 0.02, y + r * 0.06);
-            context.line_to(x + r * 0.1, y - r * 0.07);
-        }
-        _ => {}
+    context.set_global_alpha(1.);
+    let _ = context.set_global_composite_operation("source-over");
+    context.set_line_cap("round");
+    context.set_line_join("round");
+    if cue == "attention" {
+        let alpha = if frame.reduced {
+            0.16
+        } else {
+            0.12 + 0.08 * (phase * 4.).sin().powi(2)
+        };
+        context.set_fill_style_str(&format!("hsla({},85%,75%,{alpha})", frame.hue));
+        context.begin_path();
+        let _ = context.arc(x, center_y, r * 0.72, 0., TAU);
+        context.fill();
     }
+    context.begin_path();
+    if cue == "working" {
+        let start = if frame.reduced { -1.8 } else { phase * 3. };
+        let _ = context.arc(x, center_y, r * 0.72, start, start + 0.7);
+        context.set_stroke_style_str("#07111f");
+        context.set_line_width(13.);
+        context.stroke();
+    } else {
+        let _ = context.arc(x, y, badge, 0., TAU);
+        context.set_fill_style_str("#07111f");
+        context.fill();
+        context.set_stroke_style_str("#02060c");
+        context.set_line_width(2.);
+        context.stroke();
+        context.begin_path();
+        match cue {
+            "attention" => {
+                context.move_to(x, y - badge * 0.42);
+                context.line_to(x, y + badge * 0.06);
+            }
+            "review" => {
+                let d = badge * 0.48;
+                context.move_to(x, y - d);
+                context.line_to(x + d, y);
+                context.line_to(x, y + d);
+                context.line_to(x - d, y);
+                context.close_path();
+            }
+            "finished" => {
+                context.move_to(x - badge * 0.48, y);
+                context.line_to(x - badge * 0.12, y + badge * 0.32);
+                context.line_to(x + badge * 0.5, y - badge * 0.36);
+            }
+            _ => {}
+        }
+    }
+    // Both the backing and outline are opaque. The cue's contrast therefore
+    // cannot be washed out by a bright shader frame or a light desktop.
+    context.set_stroke_style_str("#02060c");
+    context.set_line_width(7.);
     context.stroke();
+    context.set_stroke_style_str("#f1f8ff");
+    context.set_line_width(3.);
+    context.stroke();
+    if cue == "attention" {
+        context.begin_path();
+        let _ = context.arc(x, y + badge * 0.48, 4.2, 0., TAU);
+        context.set_fill_style_str("#02060c");
+        context.fill();
+        context.begin_path();
+        let _ = context.arc(x, y + badge * 0.48, 2.2, 0., TAU);
+        context.set_fill_style_str("#f1f8ff");
+        context.fill();
+    }
     context.restore();
 }
+
 impl Palette {
     fn colour(&self, alpha: f64, light: f64) -> String {
         format!("hsla({},85%,{}%,{alpha})", self.hue, light)
