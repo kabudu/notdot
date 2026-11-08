@@ -23,6 +23,11 @@ use std::{
 pub const MAX_PROFILES: usize = 8;
 pub const MAX_GRANTS: usize = 256;
 pub const MAX_NAME_CHARS: usize = 40;
+/// Retired private chat IDs are kept forever (IDs only, no names) so a
+/// removed person's chat can never become visible or shareable again.
+pub const MAX_RETIRED_CHATS: usize = 256;
+/// Name given to the owner before they say what notdot should call them.
+pub const OWNER_PLACEHOLDER_NAME: &str = "Me";
 const MAX_ROSTER_BYTES: u64 = 64 * 1024;
 const ROSTER_VERSION: u32 = 1;
 
@@ -109,6 +114,45 @@ pub struct Profile {
     /// grant, mode change that excludes it). In-flight turns then fail.
     #[serde(default)]
     pub epoch: u64,
+    /// When the owner confirmed, at this computer, that this person was
+    /// present and agreed to voice recognition. Cleared with the voice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_consent_unix_ms: Option<u64>,
+}
+impl Profile {
+    /// False while the owner still has the placeholder name. Callers must not
+    /// address anyone by a placeholder.
+    pub fn named(&self) -> bool {
+        !(self.role == Role::Owner && self.name == OWNER_PLACEHOLDER_NAME)
+    }
+}
+
+/// Archiving state of a removed member's private Codex chat.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "state")]
+pub enum ArchiveState {
+    Pending {
+        attempts: u32,
+        #[serde(default)]
+        next_attempt_unix_ms: u64,
+    },
+    Archived {
+        archived_unix_ms: u64,
+    },
+}
+
+/// A removed member's private chat. Denied to everyone, forever.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetiredChat {
+    pub chat_id: String,
+    pub retired_unix_ms: u64,
+    pub archive: ArchiveState,
+}
+
+/// Delay before the next archive attempt: 30 s doubling to at most 1 hour.
+pub fn archive_backoff_ms(attempts: u32) -> u64 {
+    (30_000u64 << attempts.saturating_sub(1).min(7)).min(3_600_000)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -128,6 +172,27 @@ pub struct ChatGrant {
     pub member: ProfileId,
     pub access: ChatAccess,
     pub granted_unix_ms: u64,
+    /// The chat's title when it was shared, for display only. Never used for
+    /// access decisions. Absent for grants made before titles were kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+/// Longest stored chat title, in characters.
+const MAX_CHAT_TITLE: usize = 120;
+
+/// A display title as stored: single-line, trimmed and bounded. Empty or
+/// control-only input gives `None`.
+fn clean_title(title: &str) -> Option<String> {
+    let line: String = title
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let bounded: String = line.chars().take(MAX_CHAT_TITLE).collect();
+    (!bounded.is_empty()).then_some(bounded)
 }
 
 /// Who is asking. `LocalDevice` is a deliberate click or key press in notdot's
@@ -307,6 +372,8 @@ pub struct Roster {
     profiles: Vec<Profile>,
     #[serde(default)]
     grants: Vec<ChatGrant>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    retired_chats: Vec<RetiredChat>,
     /// Set when the stored roster could not be read; never persisted as true.
     #[serde(skip)]
     recovery_required: bool,
@@ -375,8 +442,10 @@ impl Roster {
                 voice_enrolled: false,
                 companion_thread: None,
                 epoch: 0,
+                voice_consent_unix_ms: None,
             }],
             grants: Vec::new(),
+            retired_chats: Vec::new(),
             recovery_required: false,
         })
     }
@@ -392,6 +461,42 @@ impl Roster {
     }
     pub fn grants(&self) -> &[ChatGrant] {
         &self.grants
+    }
+    pub fn retired_chats(&self) -> &[RetiredChat] {
+        &self.retired_chats
+    }
+    /// A removed member's private chat: denied to everyone, forever.
+    pub fn is_retired(&self, chat_id: &str) -> bool {
+        self.retired_chats.iter().any(|r| r.chat_id == chat_id)
+    }
+    /// Retired chats whose Codex archive attempt is due at `now_unix_ms`.
+    pub fn archives_due(&self, now_unix_ms: u64) -> Vec<String> {
+        self.retired_chats
+            .iter()
+            .filter(|r| {
+                matches!(r.archive, ArchiveState::Pending { next_attempt_unix_ms, .. } if next_attempt_unix_ms <= now_unix_ms)
+            })
+            .map(|r| r.chat_id.clone())
+            .collect()
+    }
+    /// Record the outcome of an archive attempt. Retirement itself never
+    /// changes: an archive failure only schedules another attempt.
+    pub fn record_archive(&mut self, chat_id: &str, archived: bool, now_unix_ms: u64) {
+        if let Some(r) = self.retired_chats.iter_mut().find(|r| r.chat_id == chat_id) {
+            r.archive = match (&r.archive, archived) {
+                (ArchiveState::Archived { .. }, _) => r.archive.clone(),
+                (_, true) => ArchiveState::Archived {
+                    archived_unix_ms: now_unix_ms,
+                },
+                (ArchiveState::Pending { attempts, .. }, false) => {
+                    let attempts = attempts.saturating_add(1);
+                    ArchiveState::Pending {
+                        attempts,
+                        next_attempt_unix_ms: now_unix_ms + archive_backoff_ms(attempts),
+                    }
+                }
+            };
+        }
     }
     pub fn recovery_required(&self) -> bool {
         self.recovery_required
@@ -455,6 +560,19 @@ impl Roster {
                 return Err("Duplicate chat grant".into());
             }
         }
+        if self.retired_chats.len() > MAX_RETIRED_CHATS {
+            return Err("Too many retired chats".into());
+        }
+        let mut retired = std::collections::BTreeSet::new();
+        for r in &self.retired_chats {
+            validate_thread(&r.chat_id)?;
+            if !retired.insert(&r.chat_id) || threads.contains(&r.chat_id) {
+                return Err("A retired chat cannot be reused".into());
+            }
+        }
+        if self.grants.iter().any(|g| retired.contains(&g.chat_id)) {
+            return Err("A retired chat cannot be shared".into());
+        }
         if self.mode.locked() && !self.owner_enrolled() {
             return Err("A locked mode needs the owner's voice".into());
         }
@@ -502,8 +620,10 @@ impl Roster {
                 voice_enrolled: false,
                 companion_thread: None,
                 epoch: 0,
+                voice_consent_unix_ms: None,
             }],
             grants: Vec::new(),
+            retired_chats: Vec::new(),
             recovery_required: true,
         }
     }
@@ -680,6 +800,7 @@ impl Roster {
     ) -> Result<(), String> {
         validate_thread(thread)?;
         if owner_thread == Some(thread)
+            || self.is_retired(thread)
             || self.grants.iter().any(|g| g.chat_id == thread)
             || self
                 .profiles
@@ -747,6 +868,7 @@ impl Roster {
             voice_enrolled: false,
             companion_thread: None,
             epoch: 0,
+            voice_consent_unix_ms: None,
         });
         Ok(id)
     }
@@ -781,7 +903,21 @@ impl Roster {
         }
         let p = self.profile_mut(id).ok_or("Unknown profile")?;
         p.voice_enrolled = enrolled;
+        if !enrolled {
+            p.voice_consent_unix_ms = None;
+        }
         p.epoch = p.epoch.wrapping_add(1);
+        Ok(())
+    }
+
+    /// Record that the owner confirmed at this computer that the person was
+    /// present and agreed to voice recognition. Required to save a voice.
+    pub fn record_voice_consent(&mut self, actor: &Actor, id: &ProfileId) -> Result<(), String> {
+        self.authorise(actor, Capability::ManageMembers)
+            .map_err(|e| e.to_string())?;
+        self.profile_mut(id)
+            .ok_or("Unknown profile")?
+            .voice_consent_unix_ms = Some(now_ms());
         Ok(())
     }
 
@@ -796,9 +932,36 @@ impl Roster {
     ) -> Result<Namespace, String> {
         self.authorise(actor, Capability::ManageMembers)
             .map_err(|e| e.to_string())?;
+        self.remove_member_recorded(root, id)
+    }
+
+    /// Complete a removal whose authority was already checked natively and
+    /// recorded durably (offboarding marker). Never callable for the owner.
+    /// Revokes the profile, its grants and its pending turns, and retires its
+    /// private chat so nobody (the owner included) can see or reuse it.
+    pub fn remove_member_recorded(
+        &mut self,
+        root: &Path,
+        id: &ProfileId,
+    ) -> Result<Namespace, String> {
         let ns = self.namespace(root, id).ok_or("Unknown profile")?;
-        if ns.role == Role::Owner {
-            return Err("The owner cannot be removed; use reset instead".into());
+        if ns.role == Role::Owner || id == &self.owner {
+            return Err("The owner cannot be removed".into());
+        }
+        if let Some(thread) = &ns.companion_thread {
+            if self.retired_chats.len() >= MAX_RETIRED_CHATS {
+                return Err("Too many removed people; contact support".into());
+            }
+            if !self.is_retired(thread) {
+                self.retired_chats.push(RetiredChat {
+                    chat_id: thread.clone(),
+                    retired_unix_ms: now_ms(),
+                    archive: ArchiveState::Pending {
+                        attempts: 0,
+                        next_attempt_unix_ms: 0,
+                    },
+                });
+            }
         }
         self.profiles.retain(|p| &p.id != id);
         self.grants.retain(|g| &g.member != id);
@@ -839,10 +1002,11 @@ impl Roster {
         if self.profile(member).is_none_or(|p| p.role != Role::Member) {
             return Err("Chats can only be shared with a member".into());
         }
-        if self
-            .profiles
-            .iter()
-            .any(|p| p.companion_thread.as_deref() == Some(chat_id))
+        if self.is_retired(chat_id)
+            || self
+                .profiles
+                .iter()
+                .any(|p| p.companion_thread.as_deref() == Some(chat_id))
         {
             return Err("A member's private chat cannot be shared".into());
         }
@@ -879,10 +1043,26 @@ impl Roster {
                     member: member.clone(),
                     access,
                     granted_unix_ms: now_ms(),
+                    title: None,
                 });
                 Ok(())
             }
         }
+    }
+
+    /// Remember the title of a shared chat for display. Every grant of that
+    /// chat is updated; a chat that isn't shared is left alone.
+    pub fn name_chat(&mut self, actor: &Actor, chat_id: &str, title: &str) -> Result<(), String> {
+        self.authorise(actor, Capability::ManageChatGrants)
+            .map_err(|e| e.to_string())?;
+        validate_thread(chat_id)?;
+        let title = clean_title(title);
+        for g in self.grants.iter_mut().filter(|g| g.chat_id == chat_id) {
+            if title.is_some() {
+                g.title.clone_from(&title);
+            }
+        }
+        Ok(())
     }
 
     pub fn revoke_chat(
@@ -921,6 +1101,9 @@ impl Roster {
             return false;
         }
         if op.writes() && global == GlobalChatMode::ReadOnly {
+            return false;
+        }
+        if self.is_retired(chat_id) {
             return false;
         }
         let private_owner = self
@@ -985,10 +1168,16 @@ impl Roster {
                 "role": p.role,
                 "name": p.name,
                 "voice_enrolled": p.voice_enrolled,
+                "voice_consent_unix_ms": p.voice_consent_unix_ms,
+                "needs_name": !p.named(),
                 "shared_chats": self.grants.iter().filter(|g| g.member == p.id).map(|g| serde_json::json!({
-                    "chat_id": g.chat_id, "access": g.access,
+                    "chat_id": g.chat_id, "access": g.access, "title": g.title,
                 })).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
+            "removed_chats": {
+                "archived": self.retired_chats.iter().filter(|r| matches!(r.archive, ArchiveState::Archived { .. })).count(),
+                "pending": self.retired_chats.iter().filter(|r| matches!(r.archive, ArchiveState::Pending { .. })).count(),
+            },
         })
     }
 }
@@ -1067,6 +1256,57 @@ mod tests {
         r.set_voice_enrolled(&Actor::LocalDevice, &m, true).unwrap();
         (r, m)
     }
+    #[test]
+    fn shared_chat_titles_are_kept_for_display_only() {
+        let (mut r, m) = roster_with_member();
+        r.grant_chat(&Actor::LocalDevice, "owner-a", &m, ChatAccess::Read)
+            .unwrap();
+        // Single-line, trimmed and bounded; blank input keeps what was there.
+        r.name_chat(&Actor::LocalDevice, "owner-a", "  Weekend\n plans\t ")
+            .unwrap();
+        assert_eq!(r.grants()[0].title.as_deref(), Some("Weekend plans"));
+        r.name_chat(&Actor::LocalDevice, "owner-a", " \u{7} ")
+            .unwrap();
+        assert_eq!(r.grants()[0].title.as_deref(), Some("Weekend plans"));
+        r.name_chat(&Actor::LocalDevice, "owner-a", &"é".repeat(500))
+            .unwrap();
+        assert_eq!(
+            r.grants()[0].title.as_ref().unwrap().chars().count(),
+            MAX_CHAT_TITLE
+        );
+        r.name_chat(&Actor::LocalDevice, "owner-a", "Weekend plans")
+            .unwrap();
+        // Allowing messages later keeps the title.
+        r.grant_chat(&Actor::LocalDevice, "owner-a", &m, ChatAccess::ReadWrite)
+            .unwrap();
+        assert_eq!(r.grants()[0].title.as_deref(), Some("Weekend plans"));
+        assert_eq!(
+            r.summary()["people"][1]["shared_chats"][0]["title"],
+            "Weekend plans"
+        );
+        // Naming needs the local device, and an unshared chat is left alone.
+        let voice = Actor::Voice(admit(&r, recognised(&r.owner().clone())));
+        assert!(r.name_chat(&voice, "owner-a", "Renamed").is_err());
+        assert!(r.name_chat(&Actor::LocalDevice, "bad id!", "x").is_err());
+        r.name_chat(&Actor::LocalDevice, "not-shared", "Other")
+            .unwrap();
+        assert_eq!(r.grants().len(), 1);
+        // Saved without a title for older grants, and older files still load.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profiles.json");
+        r.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"title\": \"Weekend plans\""));
+        std::fs::write(
+            &path,
+            text.replace(",\n      \"title\": \"Weekend plans\"", ""),
+        )
+        .unwrap();
+        match Roster::load(&path, "Kamba") {
+            LoadOutcome::Loaded(old) => assert_eq!(old.grants()[0].title, None),
+            _ => panic!("a grant without a title must still load"),
+        }
+    }
     fn admit(r: &Roster, outcome: SpeakerOutcome) -> TurnLock {
         match r.admit("cap-1", &outcome) {
             Admission::Admit(l) => l,
@@ -1142,6 +1382,122 @@ mod tests {
         for (o, want) in cases.into_iter().skip(1) {
             assert_eq!(r.admit("c", &o), Admission::Refuse(want));
         }
+    }
+
+    #[test]
+    fn removed_members_private_chat_is_retired_for_everyone_forever() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profiles.json");
+        let (mut r, m) = roster_with_member();
+        r.set_companion_thread(&m, "ada-private", Some("owner-thread"))
+            .unwrap();
+        r.grant_chat(&Actor::LocalDevice, "owner-shared", &m, ChatAccess::Read)
+            .unwrap();
+        r.remove_member(&Actor::LocalDevice, Path::new("/d"), &m)
+            .unwrap();
+        // Only the private chat is retired; shared owner chats are untouched.
+        assert_eq!(r.retired_chats().len(), 1);
+        assert!(r.is_retired("ada-private") && !r.is_retired("owner-shared"));
+        assert!(r.grants().is_empty());
+        let owner = admit(&r, recognised(&r.owner().clone()));
+        let g = GlobalChatMode::WhenAsked;
+        for op in [
+            ChatOp::Discover,
+            ChatOp::Read,
+            ChatOp::Status,
+            ChatOp::Send,
+            ChatOp::Steer,
+            ChatOp::Stop,
+        ] {
+            assert!(!r.chat_allowed(&owner, "ada-private", op, g), "{op:?}");
+        }
+        assert!(
+            r.filter_chats(&owner, vec!["ada-private", "owner-shared"], |c| c)
+                == vec!["owner-shared"]
+        );
+        // Re-adding the same name starts completely fresh.
+        let again = r.add_member(&Actor::LocalDevice, "Ada").unwrap();
+        assert_ne!(again, m);
+        let p = r.profile(&again).unwrap();
+        assert!(
+            !p.voice_enrolled && p.companion_thread.is_none() && p.voice_consent_unix_ms.is_none()
+        );
+        assert!(
+            r.grant_chat(&Actor::LocalDevice, "ada-private", &again, ChatAccess::Read)
+                .is_err()
+        );
+        assert!(r.set_companion_thread(&again, "ada-private", None).is_err());
+        // Durable across restart.
+        r.save(&path).unwrap();
+        let LoadOutcome::Loaded(back) = Roster::load(&path, "x") else {
+            panic!()
+        };
+        assert!(back.is_retired("ada-private"));
+        // A hand-edited file that shares a retired chat is refused.
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        v["grants"] = serde_json::json!([{"chat_id":"ada-private","member":again,"access":"read","granted_unix_ms":1}]);
+        std::fs::write(&path, v.to_string()).unwrap();
+        assert!(matches!(Roster::load(&path, "x"), LoadOutcome::Damaged(..)));
+    }
+
+    #[test]
+    fn archive_attempts_back_off_and_never_unretire() {
+        let (mut r, m) = roster_with_member();
+        r.set_companion_thread(&m, "ada-private", None).unwrap();
+        r.remove_member(&Actor::LocalDevice, Path::new("/d"), &m)
+            .unwrap();
+        assert_eq!(r.archives_due(0), vec!["ada-private"]);
+        r.record_archive("ada-private", false, 1_000);
+        assert!(r.archives_due(1_000).is_empty());
+        assert_eq!(r.archives_due(31_000), vec!["ada-private"]);
+        for i in 0..20 {
+            r.record_archive("ada-private", false, i);
+        }
+        assert!(
+            matches!(r.retired_chats()[0].archive, ArchiveState::Pending { attempts: 21, next_attempt_unix_ms } if next_attempt_unix_ms == 19 + 3_600_000)
+        );
+        r.record_archive("ada-private", true, 5);
+        r.record_archive("ada-private", false, 6);
+        assert!(matches!(
+            r.retired_chats()[0].archive,
+            ArchiveState::Archived {
+                archived_unix_ms: 5
+            }
+        ));
+        assert!(r.archives_due(u64::MAX).is_empty());
+        assert!(r.is_retired("ada-private"));
+        assert_eq!(
+            r.summary()["removed_chats"],
+            serde_json::json!({"archived":1,"pending":0})
+        );
+    }
+
+    #[test]
+    fn owner_can_never_be_removed_even_by_recorded_removal() {
+        let (mut r, _) = roster_with_member();
+        let owner = r.owner().clone();
+        assert!(r.remove_member_recorded(Path::new("/d"), &owner).is_err());
+        assert!(
+            r.remove_member(&Actor::LocalDevice, Path::new("/d"), &owner)
+                .is_err()
+        );
+        assert!(r.profile(&owner).is_some());
+    }
+
+    #[test]
+    fn consent_is_recorded_locally_and_cleared_with_the_voice() {
+        let (mut r, m) = roster_with_member();
+        let voice = Actor::Voice(admit(&r, recognised(&m)));
+        assert!(r.record_voice_consent(&voice, &m).is_err());
+        r.record_voice_consent(&Actor::LocalDevice, &m).unwrap();
+        assert!(r.profile(&m).unwrap().voice_consent_unix_ms.is_some());
+        r.set_voice_enrolled(&Actor::LocalDevice, &m, false)
+            .unwrap();
+        assert!(r.profile(&m).unwrap().voice_consent_unix_ms.is_none());
+        let fresh = Roster::new(OWNER_PLACEHOLDER_NAME).unwrap();
+        assert!(!fresh.profile(fresh.owner()).unwrap().named());
+        assert!(r.profile(&m).unwrap().named());
     }
 
     #[test]

@@ -570,8 +570,16 @@ fn message(error: impl AsRef<str>) {
         reply.set_text_content(Some(error.as_ref()));
     }
 }
+/// Text for a rejected call: the string itself, or an Error's message.
+/// Never a debug dump or stack trace, which would end up on screen.
 fn js_error(v: JsValue) -> String {
-    v.as_string().unwrap_or_else(|| format!("{v:?}"))
+    if let Some(text) = v.as_string() {
+        return text;
+    }
+    v.dyn_ref::<js_sys::Error>()
+        .map(|e| String::from(e.message()))
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| "Something went wrong. Please try again.".to_owned())
 }
 async fn call(command: &str, args: Value) -> Result<JsValue, String> {
     let args = args
@@ -709,9 +717,15 @@ fn wake_ready(view: &Shared, snapshot: &Snapshot) -> bool {
         && v.audio.as_ref().is_none_or(|a| a.paused() || a.ended())
 }
 async fn wake_request(view: Shared, id: u64, generation: u64) -> Result<(), String> {
-    let text = call("transcribe_wake", json!({"id":id}))
-        .await?
-        .as_string()
+    let heard: Value =
+        serde_wasm_bindgen::from_value(call("transcribe_wake", json!({"id":id})).await?)
+            .map_err(|e| e.to_string())?;
+    if let Some(line) = heard["refusal"].as_str() {
+        return say_refusal(view, line.to_owned(), generation).await;
+    }
+    let text = heard
+        .as_str()
+        .map(str::to_owned)
         .ok_or("Transcription returned no text")?;
     if text.trim().is_empty() {
         if view.borrow().generation == generation {
@@ -720,6 +734,44 @@ async fn wake_request(view: Shared, id: u64, generation: u64) -> Result<(), Stri
         return Ok(());
     }
     submit_transcript(view, text, generation).await
+}
+/// Answer a capture that notdot refused on this computer (for example "I
+/// didn't catch enough of that") in the assistant's voice. It is an ordinary
+/// answer, so Settings stays closed; the person can simply ask again.
+async fn say_refusal(view: Shared, line: String, generation: u64) -> Result<(), String> {
+    if view.borrow().generation != generation {
+        return Ok(());
+    }
+    {
+        let mut v = view.borrow_mut();
+        v.capture_token = None;
+        v.native_manual = false;
+        v.local_phase = Some("synthesizing");
+    }
+    message(&line);
+    let spoken = async {
+        let audio = call("speak", json!({"text":line})).await?;
+        if view.borrow().generation != generation {
+            return Ok(());
+        }
+        play_encoded(view.clone(), audio, generation).await?;
+        let playback = view.borrow().audio.clone();
+        if let Some(audio) = playback {
+            wait_for_audio(&view, generation, &audio).await?;
+        }
+        Ok::<(), String>(())
+    }
+    .await;
+    if view.borrow().generation == generation {
+        view.borrow_mut().local_phase = None;
+    }
+    // If the voice itself is unavailable, the line stays on screen without
+    // opening Settings.
+    if spoken.is_err() && view.borrow().generation == generation {
+        stop_audio(&view);
+        message(&line);
+    }
+    Ok(())
 }
 fn close_intelligence_picker() {
     let _ = element("intelligence-section").remove_attribute("open");
@@ -2767,6 +2819,7 @@ pub fn start() -> Result<(), JsValue> {
                             }
                         });
                     } else {
+                        let ready = ready || speakers::recording();
                         let _ = call("wake_activity", json!({"ready":ready})).await;
                     }
                     let speak = {

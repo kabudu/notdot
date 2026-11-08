@@ -13,6 +13,9 @@ pub enum VoiceErrorKind {
     InvalidInput,
     Provider,
     Unsupported,
+    /// notdot refused the capture on this computer (trusted-voice checks)
+    /// before or instead of using the provider. Never a provider fault.
+    Refused,
 }
 #[derive(Clone, Debug)]
 pub struct VoiceError {

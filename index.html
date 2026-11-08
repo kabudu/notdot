@@ -342,17 +342,24 @@
       <p id="speaker-status" role="status" aria-live="polite"></p>
       <div class="speaker-actions"><button id="speaker-reset-voices" type="button" hidden>Reset voice recognition</button><button id="speaker-recover" type="button" hidden>Recover people setup</button></div>
       <p id="speaker-active"></p><button id="speaker-use-owner" type="button" hidden>Use my profile</button>
+      <p id="speaker-removed-chats" class="hint" hidden></p>
+      <section id="speaker-leave" aria-labelledby="speaker-leave-title" hidden>
+       <h3 id="speaker-leave-title">Remove a profile</h3>
+       <p id="speaker-leave-text"></p>
+       <div id="speaker-leave-confirm" hidden><label id="speaker-leave-name-label" for="speaker-leave-name">Type your name to confirm</label><input id="speaker-leave-name" maxlength="80" autocomplete="off"></div>
+       <div class="speaker-actions"><button id="speaker-leave-yes" type="button" hidden>Remove my profile</button><button id="speaker-leave-cancel" type="button">Keep my profile</button></div>
+      </section>
       <div id="speaker-people" class="speaker-people"></div>
       <p id="speaker-add-guidance" class="hint">Teach your voice first so notdot can keep everyone’s context separate.</p>
       <div class="speaker-add"><label for="speaker-new-name">Add a person</label><input id="speaker-new-name" maxlength="80" placeholder="Their name"><button id="speaker-add" type="button" disabled>Add person</button></div>
       <section id="speaker-enrol" aria-labelledby="speaker-enrol-title" hidden>
        <h3 id="speaker-enrol-title">Teach notdot a voice</h3>
-       <label class="speaker-consent"><input id="speaker-consent" type="checkbox">The person is here and agrees to have their voice recognised on this computer.</label>
+       <label class="speaker-consent"><input id="speaker-consent" type="checkbox"><span id="speaker-consent-text">The person is here and agrees that notdot can recognise their voice on this computer.</span></label>
        <p>Read four short phrases. Recordings stay on this computer and are discarded after voice matching is prepared.</p>
        <p id="speaker-phrase" class="speaker-phrase"></p><p id="speaker-enrol-status" role="status" aria-live="polite"></p>
        <div class="speaker-actions"><button id="speaker-record" type="button" disabled>Record phrase</button><button id="speaker-enrol-save" type="button" hidden>Save voice</button><button id="speaker-enrol-cancel" type="button">Cancel</button></div>
       </section>
-      <section id="speaker-confirm" aria-labelledby="speaker-confirm-title" hidden><h3 id="speaker-confirm-title">Check this change</h3><p id="speaker-confirm-text"></p><div class="speaker-actions"><button id="speaker-confirm-yes" type="button">Confirm</button><button id="speaker-confirm-no" type="button">Cancel</button></div></section>
+      <section id="speaker-confirm" aria-labelledby="speaker-confirm-title" hidden><h3 id="speaker-confirm-title">Check this change</h3><p id="speaker-confirm-text"></p><div id="speaker-confirm-named" hidden><label id="speaker-confirm-name-label" for="speaker-confirm-name">Type the name to confirm</label><input id="speaker-confirm-name" maxlength="80" autocomplete="off"></div><div class="speaker-actions"><button id="speaker-confirm-yes" type="button">Confirm</button><button id="speaker-confirm-no" type="button">Cancel</button></div></section>
      </div>
     </details>
     <details class="settings-section usage-card" id="usage-section" data-settings-category="voice" hidden>

@@ -113,26 +113,16 @@ impl ProfileContexts {
             contexts,
         })
     }
-    /// Revoke in the roster and switch away before calling. A durable marker
-    /// makes interrupted removal retryable on startup without deleting orphans.
+    /// Close a removed member's live stores and delete their private folder.
+    /// Callers record the durable marker with [`record_removal`] *before*
+    /// revoking the member in the roster, so a crash at any point is finished
+    /// at the next startup. Recording again here keeps direct callers safe.
     pub async fn remove_member(&self, id: &ProfileId) -> Result<(), String> {
         if id == &self.owner_id {
             return Err("The owner cannot be removed".into());
         }
-        let markers = self.base.join("profile-deletions");
-        private_directory(&markers)?;
-        let marker = markers.join(id.as_str());
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        options
-            .open(&marker)
-            .and_then(|f| f.sync_all())
-            .map_err(|e| format!("Record profile removal: {e}"))?;
+        record_removal(&self.base, id)?;
+        let marker = self.base.join("profile-deletions").join(id.as_str());
         let context = self
             .contexts
             .lock()
@@ -230,6 +220,51 @@ impl ProfileContexts {
         self.get_or_open(roster, &admission.profile, enabled, selection)
     }
 }
+/// Durably record that a member's removal was authorised. Written before the
+/// roster changes; startup completes every recorded removal.
+pub fn record_removal(base: &Path, id: &ProfileId) -> Result<(), String> {
+    let markers = base.join("profile-deletions");
+    private_directory(&markers)?;
+    let marker = markers.join(id.as_str());
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+        .open(&marker)
+        .and_then(|f| f.sync_all())
+        .map_err(|e| format!("Record profile removal: {e}"))?;
+    // Make the new directory entry itself durable.
+    #[cfg(unix)]
+    std::fs::File::open(&markers)
+        .and_then(|d| d.sync_all())
+        .map_err(|e| format!("Record profile removal: {e}"))?;
+    Ok(())
+}
+
+/// Profiles whose removal was recorded but not finished.
+pub fn pending_removals(base: &Path) -> Result<Vec<ProfileId>, String> {
+    let markers = base.join("profile-deletions");
+    let entries = match std::fs::read_dir(&markers) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("Read profile removals: {e}")),
+    };
+    Ok(entries
+        .flatten()
+        .take(64)
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|e| {
+            e.file_name()
+                .to_str()
+                .and_then(|n| ProfileId::parse(n).ok())
+        })
+        .collect())
+}
+
 fn delete_member_directory(base: &Path, id: &ProfileId) -> Result<(), String> {
     private_directory(&base.join("profiles"))?;
     let path = base.join("profiles").join(id.as_str());
@@ -267,6 +302,15 @@ fn cleanup_removed(base: &Path, owner: &ProfileId) -> Result<(), String> {
         };
         if &id == owner {
             return Err("Refusing to remove owner data".into());
+        }
+        // Delete only once the roster no longer has this person. If finishing
+        // the roster change failed, keep their data and the marker for the
+        // next attempt instead of leaving an active person without data.
+        if let notdot_core::profiles::LoadOutcome::Loaded(roster) =
+            notdot_core::profiles::Roster::load(&base.join("profiles.json"), "Owner")
+            && roster.profile(&id).is_some()
+        {
+            continue;
         }
         if !entry.file_type().map_err(|e| e.to_string())?.is_file() {
             return Err("Invalid profile removal marker".into());
@@ -538,6 +582,113 @@ mod tests {
         );
         assert!(contexts.remove_member(roster.owner()).await.is_err());
         contexts.owner().learning.shutdown().await.unwrap();
+    }
+
+    /// A removal recorded before a crash is finished at the next start,
+    /// whichever step the crash interrupted, and the owner's data is kept.
+    #[tokio::test]
+    async fn interrupted_removal_is_finished_at_restart_at_every_crash_point() {
+        use crate::speakers::{RemovalRoute, Speakers};
+        use notdot_speakers::store::{Key, KeyStore, MemoryKeyStore};
+        #[derive(Clone, Default)]
+        struct Keys(Arc<MemoryKeyStore>);
+        impl KeyStore for Keys {
+            fn load(&self) -> Result<Option<Key>, String> {
+                self.0.load()
+            }
+            fn store(&self, key: &Key) -> Result<(), String> {
+                self.0.store(key)
+            }
+            fn delete(&self) -> Result<(), String> {
+                self.0.delete()
+            }
+        }
+        let _stores = STORES.lock().await;
+        for crash_point in ["after_marker", "after_roster", "after_folder"] {
+            let directory = tempfile::tempdir().unwrap();
+            let base = directory.path();
+            let keys = Keys::default();
+            let open = || {
+                Speakers::with_keys(
+                    base.into(),
+                    base.join("m.onnx"),
+                    Box::new(keys.clone()),
+                    "Owner",
+                )
+            };
+            let speakers = open();
+            let mut roster = speakers.roster().unwrap();
+            let ada = roster.add_member(&Actor::LocalDevice, "Ada").unwrap();
+            roster
+                .set_companion_thread(&ada, "ada-private", Some("owner-thread"))
+                .unwrap();
+            roster
+                .grant_chat(&Actor::LocalDevice, "owner-shared", &ada, ChatAccess::Read)
+                .unwrap();
+            speakers.save_roster(roster).unwrap();
+            let ada_dir = base.join("profiles").join(ada.as_str());
+            std::fs::create_dir_all(ada_dir.join("memory")).unwrap();
+            std::fs::write(ada_dir.join("memory/notes"), "Ada's private note").unwrap();
+            std::fs::create_dir_all(base.join("memory")).unwrap();
+            std::fs::write(base.join("memory/owner-notes"), "owner note").unwrap();
+            // The removal was authorised and recorded, then the app stopped.
+            let ticket = speakers
+                .authorise_removal(&Actor::LocalDevice, &ada, "Ada", RemovalRoute::Owner)
+                .unwrap();
+            record_removal(base, &ada).unwrap();
+            if crash_point != "after_marker" {
+                speakers.remove_member(ticket).unwrap();
+            }
+            if crash_point == "after_folder" {
+                delete_member_directory(base, &ada).unwrap();
+            }
+            drop(speakers);
+            // Restart.
+            let speakers = open();
+            crate::speakers::resume_offboarding(&speakers).unwrap();
+            let roster = speakers.roster().unwrap();
+            let contexts = ProfileContexts::open(
+                base.into(),
+                "unused-runtime".into(),
+                roster.owner().clone(),
+                true,
+                Selection::default(),
+            )
+            .unwrap();
+            assert!(roster.profile(&ada).is_none(), "{crash_point}");
+            assert!(roster.grants().is_empty(), "{crash_point}");
+            assert!(roster.is_retired("ada-private"), "{crash_point}");
+            assert!(!ada_dir.exists(), "{crash_point}");
+            assert!(pending_removals(base).unwrap().is_empty(), "{crash_point}");
+            assert_eq!(
+                std::fs::read_to_string(base.join("memory/owner-notes")).unwrap(),
+                "owner note"
+            );
+            // Re-adding the same name starts fresh.
+            let again = speakers.add_member(&Actor::LocalDevice, "Ada").unwrap();
+            assert_ne!(again, ada);
+            assert!(!base.join("profiles").join(again.as_str()).exists());
+            contexts.owner().learning.shutdown().await.unwrap();
+        }
+    }
+
+    #[test]
+    fn cleanup_keeps_data_while_the_roster_still_has_the_person() {
+        let directory = tempfile::tempdir().unwrap();
+        let base = directory.path();
+        let mut roster = Roster::new("Owner").unwrap();
+        let ada = roster.add_member(&Actor::LocalDevice, "Ada").unwrap();
+        roster.save(&base.join("profiles.json")).unwrap();
+        std::fs::create_dir_all(base.join("profiles").join(ada.as_str())).unwrap();
+        record_removal(base, &ada).unwrap();
+        // Finishing the roster change failed: do not leave an active person
+        // without their data; keep the marker for the next attempt.
+        cleanup_removed(base, roster.owner()).unwrap();
+        assert!(base.join("profiles").join(ada.as_str()).is_dir());
+        assert_eq!(pending_removals(base).unwrap(), vec![ada.clone()]);
+        // A marker naming the owner is refused outright.
+        record_removal(base, roster.owner()).unwrap();
+        assert!(cleanup_removed(base, roster.owner()).is_err());
     }
 
     #[test]

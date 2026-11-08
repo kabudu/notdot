@@ -232,6 +232,15 @@ async fn unique_title(
     }
     Ok(false)
 }
+/// Arguments for one page of recent chats (every title, newest first). Pass
+/// the previous page's `next_cursor` to continue.
+pub fn recent_chats_arguments(cursor: Option<&str>) -> Value {
+    match cursor {
+        Some(cursor) => json!({ "cursor": cursor }),
+        None => json!({}),
+    }
+}
+
 pub async fn call(bridge: &Bridge, name: &str, arguments: Value) -> Result<Value, String> {
     call_with_policy(bridge, name, arguments, None).await
 }
@@ -554,6 +563,16 @@ pub fn serve_with_profile(
 #[cfg(test)]
 mod settings_reader_tests {
     use super::*;
+    #[test]
+    fn recent_chat_arguments_match_the_search_contract() {
+        for cursor in [None, Some("abc")] {
+            let args: Find = serde_json::from_value(recent_chats_arguments(cursor)).unwrap();
+            assert!(args.query.is_empty() && !args.archived);
+            assert_eq!(args.cursor.as_deref(), cursor);
+        }
+        // Unknown fields such as a page size are refused.
+        assert!(serde_json::from_value::<Find>(json!({"limit":40})).is_err());
+    }
     #[test]
     fn configured_settings_projection_is_read_only_and_excludes_private_fields() {
         let dir = tempfile::tempdir().unwrap();

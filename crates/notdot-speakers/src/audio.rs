@@ -3,8 +3,14 @@ use serde::Serialize;
 
 /// Longest audio considered for one embedding.
 pub const MAX_SECONDS: f32 = 8.0;
-/// Minimum voiced speech for a usable sample.
+/// Minimum voiced speech for an enrolment sample or a continuity window.
 pub const MIN_VOICED_SECONDS: f32 = 1.2;
+/// Minimum voiced speech to identify a request. Short spoken commands ("what
+/// is seven plus five") at desk distance reach only about 0.6 s of frames above
+/// [`VOICED_RMS`]. On the evaluation voices, shorter audio turned uncertain
+/// matches into refusals (ambiguous or unknown) without adding false accepts,
+/// so the accept threshold, not this floor, stays the security boundary.
+pub const MIN_IDENTIFY_VOICED_SECONDS: f32 = 0.5;
 const FRAME_MS: u32 = 20;
 /// Frames below this RMS (about −42 dBFS) are treated as silence.
 const VOICED_RMS: f32 = 0.008;
@@ -63,6 +69,15 @@ pub fn decode_s16le(pcm: &[u8]) -> Vec<f32> {
 /// kept, which measured better than splicing), bounded to the last
 /// [`MAX_SECONDS`].
 pub fn voiced(rate: u32, samples: &[f32]) -> Result<(Vec<f32>, Quality), SampleIssue> {
+    voiced_for(rate, samples, MIN_VOICED_SECONDS)
+}
+
+/// [`voiced`] with a caller-chosen minimum of voiced seconds.
+pub fn voiced_for(
+    rate: u32,
+    samples: &[f32],
+    min_seconds: f32,
+) -> Result<(Vec<f32>, Quality), SampleIssue> {
     if !supported_rate(rate) {
         return Err(SampleIssue::UnsupportedRate);
     }
@@ -105,7 +120,7 @@ pub fn voiced(rate: u32, samples: &[f32]) -> Result<(Vec<f32>, Quality), SampleI
     if kept.len() > max {
         kept.drain(..kept.len() - max);
     }
-    if quality.voiced_seconds < MIN_VOICED_SECONDS {
+    if quality.voiced_seconds < min_seconds {
         return Err(SampleIssue::TooShort);
     }
     if quality.voiced_rms < MIN_VOICED_RMS {
@@ -117,6 +132,29 @@ pub fn voiced(rate: u32, samples: &[f32]) -> Result<(Vec<f32>, Quality), SampleI
     Ok((kept, quality))
 }
 
+/// Split a capture into half-overlapping windows of `seconds` for
+/// continuity checks, so a change of speaker always falls well inside at
+/// least one window. The last window is aligned to the end of the capture.
+/// At most `max_windows` are returned; for long captures the hop widens so
+/// the whole capture is still covered. Captures shorter than one window are
+/// returned whole.
+pub fn windows(rate: u32, samples: &[f32], seconds: f32, max_windows: usize) -> Vec<&[f32]> {
+    let size = ((rate as f32 * seconds) as usize).max(1);
+    if samples.len() <= size {
+        return vec![samples];
+    }
+    let span = samples.len() - size;
+    let max_windows = max_windows.max(2);
+    let hop = (size / 2).max(span.div_ceil(max_windows - 1)).max(1);
+    let mut out: Vec<&[f32]> = (0..=span / hop)
+        .map(|i| &samples[i * hop..i * hop + size])
+        .collect();
+    if !span.is_multiple_of(hop) {
+        out.push(&samples[span..]);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,6 +162,42 @@ mod tests {
         (0..(rate as f32 * seconds) as usize)
             .map(|i| amp * (i as f32 * 220.0 * std::f32::consts::TAU / rate as f32).sin())
             .collect()
+    }
+    #[test]
+    fn windows_cover_the_whole_capture_within_bounds() {
+        let s: Vec<f32> = (0..16_000 * 10).map(|i| i as f32).collect();
+        let w = windows(16_000, &s, 3.0, 40);
+        assert!(w.iter().all(|w| w.len() == 16_000 * 3));
+        assert_eq!(w[0][0], 0.0);
+        assert_eq!(*w.last().unwrap().last().unwrap(), s[s.len() - 1]);
+        // Half overlap: consecutive windows start 1.5 s apart.
+        assert_eq!(w[1][0], 24_000.0);
+        assert_eq!(w.len(), 6);
+        // Bounded, still covering start and end.
+        let long = vec![0.0f32; 16_000 * 600];
+        let w = windows(16_000, &long, 3.0, 40);
+        assert!(w.len() <= 41);
+        assert_eq!(windows(16_000, &s[..16_000], 3.0, 40).len(), 1);
+        assert_eq!(windows(16_000, &[], 3.0, 40).len(), 1);
+    }
+    #[test]
+    fn requests_may_be_shorter_than_enrolment_samples() {
+        let short = tone(16_000, 0.8, 0.3);
+        assert_eq!(voiced(16_000, &short).unwrap_err(), SampleIssue::TooShort);
+        assert!(voiced_for(16_000, &short, MIN_IDENTIFY_VOICED_SECONDS).is_ok());
+        assert_eq!(
+            voiced_for(16_000, &tone(16_000, 0.4, 0.3), MIN_IDENTIFY_VOICED_SECONDS).unwrap_err(),
+            SampleIssue::TooShort
+        );
+        assert_eq!(
+            voiced_for(
+                16_000,
+                &tone(16_000, 0.8, 0.012),
+                MIN_IDENTIFY_VOICED_SECONDS
+            )
+            .unwrap_err(),
+            SampleIssue::TooQuiet
+        );
     }
     #[test]
     fn decodes_little_endian_pcm() {

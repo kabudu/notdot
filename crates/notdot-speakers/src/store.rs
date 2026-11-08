@@ -24,6 +24,8 @@ pub const MAX_FILE_BYTES: u64 = 256 * 1024;
 pub const MAX_PROFILES: usize = 8;
 
 pub type Key = Zeroizing<[u8; 32]>;
+/// Model ID and voiceprints from a decrypted store.
+type Stored = ([u8; 32], Vec<Voiceprint>);
 
 /// OS-protected key storage (Keychain, Windows Credential Manager, Secret
 /// Service). Implemented in the app with the `keyring` crate.
@@ -180,8 +182,42 @@ impl VoiceprintStore {
 
     /// Read all voiceprints. No file means nobody is enrolled.
     pub fn load(&self, model: &[u8; 32]) -> Result<Vec<Voiceprint>, StoreError> {
+        match self.load_any()? {
+            None => Ok(Vec::new()),
+            Some((stored, prints)) if &stored == model => Ok(prints),
+            Some(_) => Err(StoreError::ModelChanged),
+        }
+    }
+
+    /// Keep only the voiceprints whose profile passes `keep`, rewriting the
+    /// file atomically. Works without the speaker model, so a removal can
+    /// delete a voice even when the model is unavailable. Returns how many
+    /// voiceprints were removed.
+    pub fn retain_profiles(&self, keep: impl Fn(&str) -> bool) -> Result<usize, StoreError> {
+        let Some((model, prints)) = self.load_any()? else {
+            return Ok(0);
+        };
+        let before = prints.len();
+        let kept: Vec<_> = prints.into_iter().filter(|p| keep(&p.profile)).collect();
+        let removed = before - kept.len();
+        if removed > 0 {
+            if kept.is_empty() {
+                match std::fs::remove_file(&self.path) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(StoreError::Io(e.kind().to_string())),
+                }
+            } else {
+                self.save(&model, &kept)?;
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Decrypt the file and return its model ID and voiceprints.
+    fn load_any(&self) -> Result<Option<Stored>, StoreError> {
         let meta = match std::fs::symlink_metadata(&self.path) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(StoreError::Io(e.kind().to_string())),
             Ok(m) => m,
         };
@@ -208,7 +244,12 @@ impl VoiceprintStore {
         let plain = sealing_key(&key)
             .open_in_place(nonce, Aad::from(header), &mut bytes[HEADER + NONCE_LEN..])
             .map_err(|_| StoreError::Tampered)?;
-        decode(model, plain)
+        let model: [u8; 32] = plain
+            .get(..32)
+            .ok_or(StoreError::Tampered)?
+            .try_into()
+            .expect("32 bytes");
+        Ok(Some((model, decode(&model, plain)?)))
     }
 
     /// Replace all voiceprints atomically. Creates the device key on first use.
@@ -397,6 +438,22 @@ mod tests {
         assert_eq!(store.load(&MODEL).unwrap(), vec![]);
         store.save(&MODEL, &prints()[..1]).unwrap();
         assert_eq!(store.load(&MODEL).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn retain_removes_one_voice_without_the_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v.bin");
+        let store = VoiceprintStore::new(path.clone(), Box::new(MemoryKeyStore::default()));
+        assert_eq!(store.retain_profiles(|_| false).unwrap(), 0);
+        store.save(&MODEL, &prints()).unwrap();
+        let first = prints()[0].profile.clone();
+        assert_eq!(store.retain_profiles(|p| p != first).unwrap(), 1);
+        let left = store.load(&MODEL).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_ne!(left[0].profile, first);
+        assert_eq!(store.retain_profiles(|_| false).unwrap(), 1);
+        assert!(!path.exists());
     }
 
     #[test]
