@@ -2715,6 +2715,7 @@ dependencies = [
  "chrono",
  "cpal",
  "dbus-secret-service",
+ "gtk",
  "hound",
  "keyring",
  "notdot-core",

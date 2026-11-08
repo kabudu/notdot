@@ -15,6 +15,9 @@ assert.equal(sent.filter(p=>p.action==='click').length,1);assert.equal(positions
 // Drag follows physical display coordinates and cannot also activate speech.
 dispatch('pointerdown',event(20,20));await dispatch('pointermove',event(50,40));dispatch('pointerup',event(50,40));dispatch('click',event(50,40));await flush();
 assert.deepEqual({...positions.at(-1)},{x:160,y:240});assert.equal(sent.filter(p=>p.action==='click').length,1);
+// Remote desktops may coalesce the last move. Release must land at its position.
+dispatch('pointerdown',event(20,20));await dispatch('pointermove',event(35,30));dispatch('pointerup',event(80,60));dispatch('click',event(80,60));await flush();
+assert.deepEqual({...positions.at(-1)},{x:220,y:280});assert.equal(sent.filter(p=>p.action==='click').length,1);
 // Movement after release never drags, and cancellation clears a pending gesture.
 const count=positions.length;await dispatch('pointermove',event(90,90));dispatch('pointerdown',event(20,20));dispatch('pointercancel',event(20,20));await dispatch('pointermove',event(90,90));await flush();assert.equal(positions.length,count);
 // Right-click is reserved for Settings.

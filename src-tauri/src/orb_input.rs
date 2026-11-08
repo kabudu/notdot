@@ -7,6 +7,48 @@ use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 pub struct InputWindow {
     collapsed: AtomicBool,
 }
+#[cfg(not(target_os = "linux"))]
+fn set_main_input(main: &WebviewWindow, ignore: bool) -> Result<(), String> {
+    main.set_ignore_cursor_events(ignore)
+        .map_err(|e| e.to_string())
+}
+#[cfg(target_os = "linux")]
+fn set_main_input(main: &WebviewWindow, ignore: bool) -> Result<(), String> {
+    let window = main.clone();
+    main.run_on_main_thread(move || {
+        use gtk::prelude::*;
+        // Ignore stale queued layouts after a dialog opens/closes. GTK must be
+        // touched on its main thread, including obtaining the native window.
+        if window
+            .app_handle()
+            .state::<InputWindow>()
+            .collapsed
+            .load(Ordering::Relaxed)
+            != ignore
+        {
+            return;
+        }
+        if let Ok(gtk) = window.gtk_window()
+            && let Some(gdk) = gtk.window()
+        {
+            // Tao currently sets the GDK input shape when ignoring pointers,
+            // but clears the GTK shape when restoring them. Restore the same
+            // GDK surface explicitly so the entire Settings panel is usable.
+            let region = if ignore {
+                gtk::cairo::Region::create()
+            } else {
+                gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(
+                    0,
+                    0,
+                    gdk.width(),
+                    gdk.height(),
+                ))
+            };
+            gdk.input_shape_combine_region(&region, 0, 0);
+        }
+    })
+    .map_err(|e| e.to_string())
+}
 fn geometry(width: f64, height: f64) -> (f64, f64, f64) {
     // Leave room for physical-pixel rounding at fractional display scales.
     let side = (width.min(height) * 0.17 * std::f64::consts::SQRT_2)
@@ -20,14 +62,12 @@ fn sync(app: &tauri::AppHandle) -> Result<(), String> {
         return Ok(());
     };
     let Some(input) = app.get_webview_window("orb-input") else {
-        main.set_ignore_cursor_events(false)
-            .map_err(|e| e.to_string())?;
+        set_main_input(&main, false)?;
         return Err("Orb input window is unavailable".into());
     };
     let collapsed = app.state::<InputWindow>().collapsed.load(Ordering::Relaxed);
     if !collapsed || !main.is_visible().unwrap_or(false) || main.is_minimized().unwrap_or(true) {
-        main.set_ignore_cursor_events(false)
-            .map_err(|e| e.to_string())?;
+        set_main_input(&main, false)?;
         return input.hide().map_err(|e| e.to_string());
     }
     let position = main.inner_position().map_err(|e| e.to_string())?;
@@ -52,8 +92,7 @@ fn sync(app: &tauri::AppHandle) -> Result<(), String> {
         ))
         .map_err(|e| e.to_string())?;
     input.show().map_err(|e| e.to_string())?;
-    main.set_ignore_cursor_events(true)
-        .map_err(|e| e.to_string())
+    set_main_input(&main, true)
 }
 pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(InputWindow {
@@ -123,8 +162,11 @@ pub fn refresh(app: &tauri::AppHandle) {
     }
 }
 fn rollback(app: &tauri::AppHandle) {
+    if let Some(state) = app.try_state::<InputWindow>() {
+        state.collapsed.store(false, Ordering::Relaxed);
+    }
     if let Some(main) = app.get_webview_window("main") {
-        let _ = main.set_ignore_cursor_events(false);
+        let _ = set_main_input(&main, false);
     }
     if let Some(input) = app.get_webview_window("orb-input") {
         let _ = input.hide();

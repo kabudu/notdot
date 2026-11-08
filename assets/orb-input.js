@@ -19,7 +19,7 @@ control.addEventListener('pointerdown',event=>{
  point.base=mainWindow.then(async main=>main?{position:await main.outerPosition(),scale:await main.scaleFactor()}:null).catch(error=>{console.warn('Unable to start orb drag',error);return null;});
  origin=point;control.setPointerCapture(event.pointerId);
 });
-control.addEventListener('pointermove',async event=>{
+async function movePointer(event){
  const point=origin;if(!point)return;
  const dx=event.screenX-point.x,dy=event.screenY-point.y;
  if(!dragged&&Math.hypot(dx,dy)<=5)return;
@@ -27,8 +27,9 @@ control.addEventListener('pointermove',async event=>{
  const base=await point.base;if(!base||point.generation!==generation)return;
  pendingPosition=new api.dpi.PhysicalPosition(Math.round(base.position.x+dx*base.scale),Math.round(base.position.y+dy*base.scale));
  void moveMain();
-});
-control.addEventListener('pointerup',()=>{origin=null;});
+}
+control.addEventListener('pointermove',movePointer);
+control.addEventListener('pointerup',event=>{void movePointer(event);origin=null;});
 control.addEventListener('pointercancel',()=>{origin=null;});
 control.addEventListener('click',event=>{if(!dragged&&event.button===0&&!event.ctrlKey)send({action:'click'});origin=null;});
 control.addEventListener('contextmenu',event=>{event.preventDefault();send({action:'settings'});});
