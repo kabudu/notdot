@@ -1580,11 +1580,39 @@ async fn speaker_available_chats(
     }
     let roster = state.speakers.roster()?;
     let bridge = Bridge::connect(&startup::runtime()).await?;
-    let result = notdot_core::chat_tools::call(&bridge, "find_chats", json!({"limit":40})).await;
+    // Up to four pages of ten: the 40 most recent chats.
+    let mut chats = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut failure = None;
+    for _ in 0..4 {
+        match notdot_core::chat_tools::call(
+            &bridge,
+            "find_chats",
+            notdot_core::chat_tools::recent_chats_arguments(cursor.as_deref()),
+        )
+        .await
+        {
+            Ok(page) => {
+                chats.extend(page["chats"].as_array().cloned().unwrap_or_default());
+                cursor = page["next_cursor"].as_str().map(str::to_owned);
+                if cursor.is_none() {
+                    break;
+                }
+            }
+            Err(e) => {
+                failure = Some(e);
+                break;
+            }
+        }
+    }
     bridge.shutdown().await;
-    let result = result?;
-    // Return the same bounded tool response, with every private member companion removed.
-    let mut result = result;
+    if chats.is_empty()
+        && let Some(e) = failure
+    {
+        return Err(e);
+    }
+    // Every private member companion and retired chat is removed.
+    let mut result = json!({ "chats": chats });
     if let Some(chats) = result.get_mut("chats").and_then(Value::as_array_mut) {
         chats.retain(|chat| {
             let id = chat["id"].as_str().unwrap_or_default();
