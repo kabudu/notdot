@@ -28,3 +28,16 @@ The v0.5.0 appearance changes use the production Rust/WASM renderer and the exis
 ## Limits
 
 The browser harness uses real WASM with simulated native IPC and audio. Packaged native webview appearance, real audio playback, screen-reader operation and OS accessibility media settings still need platform acceptance. The fallback CSS was source-reviewed; forced colours and reduced transparency were not enabled at OS level during this check. CSS backdrop filtering can blur content within the webview; desktop blur depends on the platform compositor. The package version is left for the v0.5.0 release preparation.
+
+### Native macOS WebKit acceptance
+
+The compiled production WASM UI also ran in a temporary, nonpersistent native
+`WKWebView` host at 450 × 680 CSS pixels. This uses the same browser engine as
+macOS Tauri, with a synthetic IPC adapter and no microphone, provider requests,
+Keychain access or personal app data. The glass panel, clear text and control
+surfaces rendered correctly. The native accessibility tree exposed the Settings
+heading, labelled search field, category tabs, named inputs, switches, radio
+choices, voice picker and preview button. Searching for “quiet” returned the two
+matching settings sections while retaining Close and Save. This verifies native
+WebKit rendering and accessibility exposure, not a VoiceOver listening session
+or the packaged Tauri window's operating-system behaviour.
