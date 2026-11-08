@@ -14,7 +14,7 @@ Preparation does not change repository visibility or enable automation. The curr
 
 ## Preview the website locally
 
-Run `python3 -m http.server 8080 --directory docs` from the repository and open http://localhost:8080/. There is no Node dependency, build step, third-party JavaScript, analytics or remote font. The site uses relative asset paths so the `/notdot/` Pages prefix works. Original SVG artwork is Apache-2.0.
+Run `python3 -m http.server 8080 --directory docs` from the repository and open http://localhost:8080/. There is no Node dependency, build step, third-party JavaScript, analytics or remote font. The site uses relative asset paths so the `/notdot/` Pages prefix works. Original SVG artwork is Apache-2.0. The one local orb script uses the app’s fluid material, pauses when off-screen or hidden, respects reduced motion and falls back to SVG. It does not access a microphone or send visitor data.
 
 Run `python3 scripts/check_site.py` for structural/local-asset checks. This does not replace browser, keyboard, screen-reader or actual media checks.
 

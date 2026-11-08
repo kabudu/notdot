@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- **A fluid, luminous orb.** A dark core stays clear over other apps, with themed waves, a travelling thinking light and a smooth speech-led pulse.
+- **A fluid, luminous orb.** A dark core stays clear over other apps, with themed waves, a travelling thinking light, a smooth speech-led pulse and matching app icons.
 - **Clearer glass settings.** A subtle themed backdrop keeps labels and controls readable, with solid surfaces when reduced transparency or high contrast is preferred.
 
 ## [0.4.0] - 2026-11-07

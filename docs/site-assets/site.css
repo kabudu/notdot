@@ -13,3 +13,5 @@
 
 /* Give chat controls their own space without adding interactive setup steps. */
 .chat-feature{border-top:1px solid #263341}.chat-feature h2{max-width:20ch;margin-bottom:20px}.chat-feature>.intro{max-width:48rem;margin-bottom:36px}.chat-feature article{border-top:2px solid #385971;padding-top:8px;min-width:0}.chat-feature blockquote{margin:0;color:var(--accent);font-size:19px;line-height:1.5}.chat-feature .chat-permissions{margin-top:36px;max-width:55rem}.chat-permissions strong{color:var(--text)}
+
+.app-orb[hidden]{display:none}

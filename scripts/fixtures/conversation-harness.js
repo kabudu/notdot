@@ -30,7 +30,7 @@
   put(0,'RIFF');v.setUint32(4,38,true);put(8,'WAVEfmt ');v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);v.setUint32(24,16000,true);v.setUint32(28,32000,true);v.setUint16(32,2,true);v.setUint16(34,16,true);put(36,'data');v.setUint32(40,2,true);
   const audio={data:btoa(String.fromCharCode(...wav)),mime:'audio/wav'};
   const windowApi={startDragging:async()=>{},setSize:async()=>{},outerPosition:async()=>({x:0,y:0}),outerSize:async()=>({width:360,height:360}),setPosition:async()=>{}};
-  window.__TAURI__={event:{listen:async(name,cb)=>{if(name==='voice-capture')callbacks.push(cb);if(name==='speaker-enrol-progress')speakerCallbacks.push(cb);return()=>{};}},window:{getCurrentWindow:()=>windowApi,currentMonitor:async()=>null},dpi:{LogicalSize:class{},PhysicalSize:class{},PhysicalPosition:class{}},core:{invoke:async(cmd,args={})=>{
+  window.__TAURI__={event:{emitTo:async()=>{},listen:async(name,cb)=>{if(name==='voice-capture')callbacks.push(cb);if(name==='speaker-enrol-progress')speakerCallbacks.push(cb);return()=>{};}},window:{getCurrentWindow:()=>windowApi,currentMonitor:async()=>null},dpi:{LogicalSize:class{},PhysicalSize:class{},PhysicalPosition:class{}},core:{invoke:async(cmd,args={})=>{
     if(cmd==='speaker_forget_all_voices'){for(const p of people.people)p.voice_enrolled=false;people.mode='open';people.health={state:'idle'};record('speaker-reset');return null;}
     if(cmd==='speaker_recover'){people.people=[people.people[0]];people.people[0].shared_chats=[];people.recovery_required=false;record('speaker-recovered');return [];}
     if(cmd==='speaker_summary')return copy(people);

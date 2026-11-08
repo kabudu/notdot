@@ -21,11 +21,31 @@ use web_sys::{
 export function listenCapture(f){return window.__TAURI__.event.listen('voice-capture',e=>f(e.payload))}
 export function invoke(c,a){return window.__TAURI__.core.invoke(c,a)}
 export function drag(){return window.__TAURI__.window.getCurrentWindow().startDragging()}
+export function installOrbControls(){
+const orb=document.getElementById('orb');
+const notify=()=>window.__TAURI__.event.emitTo('orb-input','orb-visual-state',{
+    mode:orb.dataset.state||'idle',help:orb.title,pressed:orb.getAttribute('aria-pressed')
+}).catch(()=>{});
+new MutationObserver(notify).observe(orb,{attributes:true,attributeFilter:['data-state','title','aria-pressed']});
+return window.__TAURI__.event.listen('orb-control',e=>{
+    const c=document.getElementById('orb'),p=e.payload;
+    if(!c||!p||typeof p!=='object')return;
+    if(p.action==='state'){notify();}
+    else if(p.action==='click'){
+        c.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));
+        c.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,clientX:1,clientY:1,button:0}));
+        c.dispatchEvent(new MouseEvent('click',{bubbles:true,clientX:1,clientY:1,button:0}));
+    }else if(p.action==='settings')c.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));
+    else if(p.action==='key'){c.focus();c.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:p.key,metaKey:p.meta,ctrlKey:p.ctrl,repeat:p.repeat}));}
+    else if(p.action==='blur')c.blur();
+})}
 export async function resize(w,h){
     const api=window.__TAURI__, win=api.window.getCurrentWindow();
+    await api.core.invoke('orb_input_mode',{collapsed:false}).catch(()=>{});
     const monitor=await api.window.currentMonitor();
     if(!monitor){
         await win.setSize(new api.dpi.LogicalSize(Math.min(w,screen.availWidth-32),Math.min(h,screen.availHeight-64)));
+        await api.core.invoke('orb_input_mode',{collapsed:w===360&&h===360}).catch(()=>{});
         return;
     }
     const area=monitor.workArea, margin=Math.round(16*monitor.scaleFactor);
@@ -36,12 +56,15 @@ export async function resize(w,h){
     const x=Math.max(area.position.x+margin,Math.min(position.x,area.position.x+area.size.width-size.width-margin));
     const y=Math.max(area.position.y+margin,Math.min(position.y,area.position.y+area.size.height-size.height-margin));
     if(x!==position.x || y!==position.y) await win.setPosition(new api.dpi.PhysicalPosition(x,y));
+    await api.core.invoke('orb_input_mode',{collapsed:w===360&&h===360}).catch(()=>{});
 }
 "#)]
 extern "C" {
     fn invoke(c: &str, a: JsValue) -> js_sys::Promise;
     #[wasm_bindgen(js_name=listenCapture)]
     fn listen_capture(f: &js_sys::Function) -> js_sys::Promise;
+    #[wasm_bindgen(js_name=installOrbControls)]
+    fn install_orb_controls() -> js_sys::Promise;
     fn drag() -> js_sys::Promise;
     fn resize(w: f64, h: f64) -> js_sys::Promise;
 }
@@ -1824,6 +1847,7 @@ async fn browser_voice(view: Shared) -> Result<(), String> {
 }
 #[wasm_bindgen(start)]
 pub fn start() -> Result<(), JsValue> {
+    let _ = install_orb_controls();
     settings_navigation::install()?;
     speakers::install()?;
     let view = Rc::new(RefCell::new(View {
@@ -3007,6 +3031,9 @@ pub fn start() -> Result<(), JsValue> {
                         apply_theme(target.borrow().snapshot.settings.hue);
                         target.borrow_mut().initialized = true;
                         let _ = element("orb").set_attribute("data-ready", "true");
+                        // Expose the native input centre only after the saved
+                        // appearance has arrived, including on first launch.
+                        let _ = call("orb_input_mode", json!({"collapsed": !onboard && document().query_selector("dialog[open]").ok().flatten().is_none()})).await;
                     }
                     if *first.borrow() {
                         *first.borrow_mut() = false;

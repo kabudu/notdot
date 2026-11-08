@@ -92,3 +92,11 @@ python3 -m http.server 8101 --bind 127.0.0.1 --directory .local/settings-qa
 Open `http://localhost:8101/runner.html` and select **Run all layouts**.
 Screenshot evidence and the native JSON report were retained locally under
 `.local/settings-evidence/`; they contain synthetic profiles only.
+
+## Native input layer and branding
+
+The collapsed visual window is wholly click-through. A separate, smaller input window sits inside the core; the remaining decoration does not intercept pointers. Opening Settings hides the small window and makes the main window interactive. Layout follows window movement and display scaling without pointer polling. The centre stays hidden until the saved appearance is ready. A layout failure restores the original main-window interaction. Keyboard actions and state labels pass through the same WASM controls.
+
+The isolated `orb-input-acceptance` example registers only input layout. Its UI adapter simulates services, profiles and audio, so it cannot access saved keys or initiate a real model/voice request. Native Mac checks have exercised centre activation, Escape cancellation, Settings opening and return to the centre. Full drag and outer click-through acceptance, Windows native input acceptance and Linux native input acceptance remain merge gates. Engine-level shader lifecycle checks passed on macOS WebKit, Windows Edge and Ubuntu ARM64 WebKitGTK; those are distinct from native OS-window tests.
+
+The app icon, About image, README mark, site header and favicon use the dark-core identity. `scripts/sync_brand_assets.py --icons` synchronises the shared artwork and rebuilds the desktop formats. The website uses the app fragment shader with a larger illustration footprint, a reduced-motion/off-screen pause and an SVG fallback. The site check allows only that one deferred local script and rejects inline or third-party scripts. The old demo remains unchanged until a fresh real-app recording is made; it is not a recording of the new appearance.

@@ -4,6 +4,7 @@ mod credentials;
 mod initiative;
 mod learning;
 mod memory_confirmation;
+mod orb_input;
 mod profile_access;
 mod profile_context;
 mod quota;
@@ -1790,11 +1791,13 @@ fn main() {
             }
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
+                orb_input::refresh(w.app_handle());
                 let _ = w.unminimize();
                 let _ = w.set_focus();
             }
         }))
         .invoke_handler(tauri::generate_handler![
+            orb_input::orb_input_mode,
             snapshot,
             save_settings,
             model_catalog,
@@ -1862,6 +1865,11 @@ fn main() {
             speaker_available_chats
         ])
         .setup(|app| {
+            if let Err(error) = orb_input::install(app.handle()) {
+                eprintln!(
+                    "Orb click-through unavailable; keeping the main window interactive: {error}"
+                );
+            }
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             #[cfg(unix)]
@@ -1876,6 +1884,9 @@ fn main() {
                 && settings.startup == notdot_core::settings::Startup::WithCodex;
             if waiting_for_desktop && let Some(w) = app.get_webview_window("main") {
                 w.hide()?;
+                if let Some(input) = app.get_webview_window("orb-input") {
+                    input.hide()?;
+                }
             }
             let updater = Arc::new(updates::Updates::new(dir.join("updates.json")));
             app.manage(updater.clone());
@@ -2089,6 +2100,7 @@ fn main() {
                 "check-updates" => {
                     if let Some(w) = app.get_webview_window("main") {
                         let _ = w.show();
+                        orb_input::refresh(w.app_handle());
                         let _ = w.unminimize();
                         let _ = w.set_focus();
                         let _ = w.eval("window.dispatchEvent(new Event('notdot-updates'))");
@@ -2117,6 +2129,7 @@ fn main() {
                 "about" => {
                     if let Some(w) = app.get_webview_window("main") {
                         let _ = w.show();
+                        orb_input::refresh(w.app_handle());
                         let _ = w.unminimize();
                         let _ = w.set_focus();
                         let _ = w.eval("window.dispatchEvent(new Event('notdot-about'))");
@@ -2125,6 +2138,7 @@ fn main() {
                 "settings" => {
                     if let Some(w) = app.get_webview_window("main") {
                         let _ = w.show();
+                        orb_input::refresh(w.app_handle());
                         let _ = w.unminimize();
                         let _ = w.set_focus();
                         let _ = w.eval("window.dispatchEvent(new Event('notdot-settings'))");
@@ -2159,6 +2173,7 @@ fn main() {
                     }
                     if let Some(w) = app_handle.get_webview_window("main") {
                         let _ = w.show();
+                        orb_input::refresh(w.app_handle());
                     }
                 }
                 if state.snapshot.lock().await.settings.open_desktop
