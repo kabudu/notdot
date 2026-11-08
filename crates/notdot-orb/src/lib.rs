@@ -1326,6 +1326,10 @@ fn stop_audio(view: &Shared) {
     }
     if let Some(audio) = v.audio.take() {
         let _ = audio.pause();
+        // Clear decoded speech on cancellation/profile changes without tearing
+        // down its output graph. At most one empty media element is retained.
+        let _ = audio.remove_attribute("src");
+        audio.load();
     }
     if let Some(url) = v.audio_url.take() {
         let _ = web_sys::Url::revoke_object_url(&url);
@@ -1430,7 +1434,17 @@ async fn play_encoded(view: Shared, value: JsValue, generation: u64) -> Result<(
     let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&array, &options)
         .map_err(js_error)?;
     let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(js_error)?;
-    let audio = web_sys::HtmlAudioElement::new_with_src(&url).map_err(js_error)?;
+    let cached_audio = {
+        let v = view.borrow();
+        v.audio.clone().or_else(|| v.meter.playback_element())
+    };
+    let audio = if let Some(audio) = cached_audio {
+        audio
+    } else {
+        web_sys::HtmlAudioElement::new().map_err(js_error)?
+    };
+    view.borrow_mut().meter.clear_playback();
+    audio.set_src(&url);
     {
         let mut v = view.borrow_mut();
         if let Some(old) = v.audio_url.replace(url) {
