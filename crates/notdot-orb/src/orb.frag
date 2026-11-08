@@ -14,7 +14,7 @@
       float band(float value, float width) { return exp(-value*value/width); }
       void main() {
         vec2 point = (gl_FragCoord.xy-resolution*.5)/min(resolution.x,resolution.y)*2.;
-        
+
         float radius = .34*(1.+(1.-still)*energy*speaking*.075);
         vec2 position = point/radius;
         float radialDistance = length(position);
