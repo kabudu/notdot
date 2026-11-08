@@ -1,4 +1,13 @@
 fn main() {
+    // Tauri embeds its manifest for the application binary, but Cargo examples
+    // do not receive that binary-only resource. Their WebView2 host also needs
+    // Common Controls v6 before the Windows loader resolves TaskDialogIndirect.
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        println!("cargo:rustc-link-arg-examples=/MANIFEST:EMBED");
+        println!(
+            "cargo:rustc-link-arg-examples=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
+        );
+    }
     use sha2::{Digest, Sha256};
     for folder in [
         "resources/wake",
