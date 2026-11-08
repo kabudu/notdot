@@ -12,6 +12,7 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
 // A click speaks once. Small pointer jitter remains a click.
 dispatch('pointerdown',event(20,20));await dispatch('pointermove',event(22,21));dispatch('pointerup',event(22,21));dispatch('click',event(22,21));await flush();
 assert.equal(sent.filter(p=>p.action==='click').length,1);assert.equal(positions.length,0);
+assert.equal(sent.filter(p=>p.action==='blur').length,1,'Pointer use clears the visual keyboard focus cue before a click or drag.');
 // Drag follows physical display coordinates and cannot also activate speech.
 dispatch('pointerdown',event(20,20));await dispatch('pointermove',event(50,40));dispatch('pointerup',event(50,40));dispatch('click',event(50,40));await flush();
 assert.deepEqual({...positions.at(-1)},{x:160,y:240});assert.equal(sent.filter(p=>p.action==='click').length,1);

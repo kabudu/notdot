@@ -14,6 +14,7 @@ async function moveMain(){
 }
 control.addEventListener('pointerdown',event=>{
  if(event.button!==0)return;
+ void send({action:'blur'});
  dragged=false;
  const point={x:event.screenX,y:event.screenY,generation:++generation};
  point.base=mainWindow.then(async main=>main?{position:await main.outerPosition(),scale:await main.scaleFactor()}:null).catch(error=>{console.warn('Unable to start orb drag',error);return null;});
