@@ -8,6 +8,14 @@ pub(crate) enum Mode {
     Speaking,
     Error,
 }
+/// Background task cues yield to every foreground conversation state.
+pub(crate) fn task_cue(mode: Mode, cue: &str) -> &str {
+    if mode == Mode::Idle && matches!(cue, "working" | "attention" | "review" | "finished") {
+        cue
+    } else {
+        "none"
+    }
+}
 impl Mode {
     pub(crate) fn resolve(status: &str, playing: bool, waiting: bool) -> Self {
         if playing {
@@ -57,6 +65,22 @@ pub(crate) fn rms(bytes: &[u8]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn task_cues_never_hide_foreground_audio_or_errors() {
+        for cue in ["working", "attention", "review", "finished"] {
+            assert_eq!(task_cue(Mode::Idle, cue), cue);
+            for mode in [
+                Mode::Listening,
+                Mode::Followup,
+                Mode::Thinking,
+                Mode::Speaking,
+                Mode::Error,
+            ] {
+                assert_eq!(task_cue(mode, cue), "none");
+            }
+        }
+        assert_eq!(task_cue(Mode::Idle, "unknown"), "none");
+    }
     #[test]
     fn all_waiting_stages_are_visibly_thinking_and_playback_overrides_idle() {
         for stage in [

@@ -762,6 +762,8 @@ mod profile_policy_tests {
             title: "Shared".into(),
             status: "completed".into(),
             summary: "Private result".into(),
+            report: None,
+            announce: true,
             origin: Some(policy.clone()),
         };
         assert!(completion.completion_allowed());
@@ -781,6 +783,7 @@ mod profile_policy_tests {
                     delivered: false,
                     dismissed: false,
                     profile_origin: Some(policy.clone()),
+                    task: None,
                 },
                 100,
             )

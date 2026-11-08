@@ -202,6 +202,7 @@ struct View {
     initialized: bool,
     meter: audio_meter::Meter,
     last_mode: visual_state::Mode,
+    last_task_cue: String,
     last_wake_enabled: bool,
     last_wake_status: String,
     last_report: f64,
@@ -3409,6 +3410,30 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                 }
                 context.restore();
             }
+            let cue = visual_state::task_cue(
+                mode,
+                v.snapshot.initiative["tasks"]["cue"]
+                    .as_str()
+                    .unwrap_or("none"),
+            )
+            .to_owned();
+            let task_changed = cue != v.last_task_cue;
+            if task_changed {
+                v.last_task_cue = cue.clone();
+                let _ = canvas.set_attribute("data-task-state", &cue);
+            }
+            orb_renderer::task_cue(
+                &context,
+                &orb_renderer::Frame {
+                    center: (w / 2., h / 2.),
+                    radius,
+                    hue,
+                    energy: v.speech_energy,
+                    reduced,
+                    motion: &v.orb_motion,
+                },
+                &cue,
+            );
             if v.keyboard_navigation
                 && document()
                     .active_element()
@@ -3471,7 +3496,8 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                 v.peak_speaking_rms = v.peak_speaking_rms.max(level.rms);
             }
             v.frames += 1;
-            if mode != v.last_mode
+            if task_changed
+                || mode != v.last_mode
                 || v.frames == 1
                 || v.last_wake_enabled != v.snapshot.settings.wake_enabled
                 || v.last_wake_status != wake_hint(&v.snapshot)
@@ -3502,7 +3528,11 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                     },
                 );
                 let _ = canvas.set_attribute("data-state", mode.name());
+                let task_description = v.snapshot.initiative["tasks"]["description"]
+                    .as_str()
+                    .unwrap_or("Task update available.");
                 element("orb-status").set_text_content(Some(match mode {
+                    visual_state::Mode::Idle if cue != "none" => task_description,
                     visual_state::Mode::Idle if v.snapshot.settings.wake_enabled => {
                         wake_hint(&v.snapshot)
                     }

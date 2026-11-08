@@ -1,4 +1,5 @@
 //! A separate writer runtime for explicitly authorised session actions.
+use crate::task_awareness::{self, Activity, Outcome, Report, Task};
 use crate::{
     bridge::Bridge,
     session_control::{Action, Authorised},
@@ -20,6 +21,8 @@ pub struct Completion {
     pub title: String,
     pub status: String,
     pub summary: String,
+    pub report: Option<Report>,
+    pub announce: bool,
     /// Host-only authority; never include in spoken text or public serialization.
     pub origin: Option<crate::chat_tools::ChatPolicy>,
 }
@@ -34,29 +37,87 @@ impl Completion {
     pub fn key(&self) -> String {
         format!("task:{}:{}", self.thread_id, self.turn_id)
     }
-    pub fn message(&self) -> String {
-        let title: String = self.title.chars().take(64).collect();
-        let summary: String = self.summary.chars().take(180).collect();
-        match self.status.as_str() {
-            "completed" if !summary.is_empty() => {
-                format!("Codex finished its reply in {title}. It said: {summary}")
-            }
-            "completed" => format!(
-                "Codex finished its reply in {title}. Ask me to read that chat for the result."
-            ),
-            "interrupted" => format!(
-                "The Codex turn in {title} was interrupted. Some background work may continue."
-            ),
-            "failed" => {
-                format!("The Codex turn in {title} failed. Ask me to read that chat for details.")
-            }
-            "approval_required" => format!(
-                "{title} needs attention in Codex. notdot could not handle an approval request; no approval was granted."
-            ),
-            _ => format!(
-                "I lost track of the task in {title}. Check that chat before sending it again. Nothing was retried."
-            ),
+    pub fn task(&self) -> Task {
+        Task {
+            key: self.key(),
+            title: task_awareness::clean(&self.title, 64),
+            activity: if self.status == "approval_required"
+                || (self.status == "completed"
+                    && self.report.as_ref().is_some_and(|r| r.attention.is_some()))
+            {
+                Activity::Attention
+            } else {
+                Activity::Finished
+            },
+            attention: if self.status == "approval_required" {
+                Some(task_awareness::Attention::Approval)
+            } else if self.status == "completed" {
+                self.report.as_ref().and_then(|r| r.attention)
+            } else {
+                None
+            },
+            outcome: match self.status.as_str() {
+                "completed" => self
+                    .report
+                    .as_ref()
+                    .map_or(Outcome::Unverified, Report::outcome),
+                "failed" | "interrupted" => Outcome::Failed,
+                _ => Outcome::Unverified,
+            },
         }
+    }
+    pub fn message(&self) -> String {
+        let mut message = self.task().description();
+        if self.status == "interrupted" {
+            message.push_str(" The turn was interrupted; background work may continue.");
+        }
+        if self.status == "unknown" {
+            message.push_str(" The connection was lost. Nothing was retried.");
+        }
+        if let Some(report) = &self.report {
+            // Surface the failed check before a possibly optimistic summary.
+            let check = report
+                .checks
+                .iter()
+                .find(|c| c.result == task_awareness::CheckResult::Failed)
+                .or_else(|| {
+                    report
+                        .checks
+                        .iter()
+                        .find(|c| c.result == task_awareness::CheckResult::NotRun)
+                })
+                .or_else(|| report.checks.first());
+            if let Some(check) = check {
+                message.push_str(&format!(
+                    " Check: {}. {}",
+                    task_awareness::clean(&check.name, 40),
+                    task_awareness::clean(&check.evidence, 80)
+                ));
+            }
+            if let Some(remaining) = report.remaining.first() {
+                message.push_str(&format!(
+                    " Still needed: {}",
+                    task_awareness::clean(remaining, 60)
+                ));
+            }
+            message.push_str(&format!(
+                " Report: {}",
+                task_awareness::clean(&report.summary, 90)
+            ));
+        } else if !self.summary.is_empty() {
+            message.push_str(&format!(
+                " It said: {}",
+                task_awareness::clean(&self.summary, 160)
+            ));
+        }
+        // System speech has a 25-second deadline. Keep automatic reports short;
+        // detailed results remain in the target chat and voice queries.
+        let mut message = task_awareness::clean(&message, 300);
+        if !message.ends_with(['.', '!', '?', '…']) {
+            message.push('.');
+        }
+
+        message
     }
 }
 struct Running {
@@ -65,6 +126,8 @@ struct Running {
     notify: bool,
     summary: String,
     approval_blocked: bool,
+    report_token: String,
+    report: Option<Report>,
     origin: Option<crate::chat_tools::ChatPolicy>,
 }
 pub struct SessionRuntime {
@@ -73,7 +136,7 @@ pub struct SessionRuntime {
     gate: Mutex<()>,
     active: Mutex<HashMap<String, Running>>,
     completions: Mutex<VecDeque<Completion>>,
-    finished: Mutex<VecDeque<(String, String)>>,
+    finished: Mutex<VecDeque<Completion>>,
     releasing: Mutex<HashMap<String, Arc<Notify>>>,
 }
 impl SessionRuntime {
@@ -123,11 +186,9 @@ impl SessionRuntime {
                                 .await
                                 .insert(tid.into(), notify.clone());
                             let task = active.remove(tid).expect("matched owned task");
-                            if task.notify
-                                && task.origin.as_ref().is_none_or(|policy| {
-                                    policy.check(tid, crate::profiles::ChatOp::Read).is_ok()
-                                })
-                            {
+                            if task.origin.as_ref().is_none_or(|policy| {
+                                policy.check(tid, crate::profiles::ChatOp::Read).is_ok()
+                            }) {
                                 let status = if task.approval_blocked {
                                     "approval_required"
                                 } else {
@@ -138,10 +199,12 @@ impl SessionRuntime {
                                 session.completions.lock().await.push_back(Completion {
                                     thread_id: tid.into(),
                                     turn_id: turn.into(),
-                                    title: task.title,
+                                    title: task.title.clone(),
                                     status: status.into(),
-                                    summary: task.summary,
-                                    origin: task.origin,
+                                    summary: task.summary.clone(),
+                                    report: task.report.clone(),
+                                    announce: task.notify,
+                                    origin: task.origin.clone(),
                                 });
                             }
                             // Admission reads active before completions. Publish
@@ -149,14 +212,24 @@ impl SessionRuntime {
                             // concurrent send cannot undercount pending work.
                             drop(active);
                             let mut finished = session.finished.lock().await;
-                            finished.retain(|(id, _)| id != tid);
-                            finished.push_back((
-                                tid.into(),
-                                event["params"]["turn"]["status"]
-                                    .as_str()
-                                    .unwrap_or("finished")
-                                    .into(),
-                            ));
+                            finished.retain(|item| item.thread_id != tid);
+                            finished.push_back(Completion {
+                                thread_id: tid.into(),
+                                turn_id: turn.into(),
+                                title: task.title,
+                                status: if task.approval_blocked {
+                                    "approval_required".into()
+                                } else {
+                                    event["params"]["turn"]["status"]
+                                        .as_str()
+                                        .unwrap_or("unknown")
+                                        .into()
+                                },
+                                summary: task.summary,
+                                report: task.report,
+                                announce: task.notify,
+                                origin: task.origin,
+                            });
                             while finished.len() > 20 {
                                 finished.pop_front();
                             }
@@ -200,7 +273,11 @@ impl SessionRuntime {
                             && (item["phase"].is_null() || item["phase"] == "final_answer")
                             && let Some(text) = item["text"].as_str()
                         {
+                            task.report = task_awareness::extract(text, &task.report_token);
                             task.summary = text
+                                .split("<notdot-result-")
+                                .next()
+                                .unwrap_or("")
                                 .chars()
                                 .map(|c| if c.is_control() { ' ' } else { c })
                                 .take(300)
@@ -208,7 +285,27 @@ impl SessionRuntime {
                         }
                     }
                     Some("notdot/unsupportedRequest") => {
-                        if let Some(task) = session.active.lock().await.get_mut(tid) {
+                        let mut active = session.active.lock().await;
+                        if let Some(task) = active.get_mut(tid)
+                            && event["params"]["turnId"]
+                                .as_str()
+                                .is_none_or(|turn| task.turn.as_deref() == Some(turn))
+                        {
+                            if !task.approval_blocked && task.notify {
+                                session.completions.lock().await.push_back(Completion {
+                                    thread_id: tid.into(),
+                                    turn_id: task
+                                        .turn
+                                        .clone()
+                                        .unwrap_or_else(|| "unconfirmed".into()),
+                                    title: task.title.clone(),
+                                    status: "approval_required".into(),
+                                    summary: String::new(),
+                                    report: None,
+                                    announce: task.notify,
+                                    origin: task.origin.clone(),
+                                });
+                            }
                             task.approval_blocked = true;
                         }
                     }
@@ -235,19 +332,19 @@ impl SessionRuntime {
         let mut active = self.active.lock().await;
         let mut completions = self.completions.lock().await;
         for (thread_id, task) in active.drain() {
-            if task.notify
-                && task.origin.as_ref().is_none_or(|policy| {
-                    policy
-                        .check(&thread_id, crate::profiles::ChatOp::Read)
-                        .is_ok()
-                })
-            {
+            if task.origin.as_ref().is_none_or(|policy| {
+                policy
+                    .check(&thread_id, crate::profiles::ChatOp::Read)
+                    .is_ok()
+            }) {
                 completions.push_back(Completion {
                     thread_id,
                     turn_id: task.turn.unwrap_or_else(|| "unconfirmed".into()),
                     title: task.title,
                     status: "unknown".into(),
                     summary: String::new(),
+                    report: None,
+                    announce: task.notify,
                     origin: task.origin,
                 });
             }
@@ -264,6 +361,34 @@ impl SessionRuntime {
             queue.pop_front();
         }
         queue.front().cloned()
+    }
+    pub async fn working_tasks(&self) -> Vec<Task> {
+        let mut tasks: Vec<_> = self
+            .active
+            .lock()
+            .await
+            .iter()
+            .filter(|(id, t)| {
+                t.origin
+                    .as_ref()
+                    .is_none_or(|p| p.check(id, crate::profiles::ChatOp::Read).is_ok())
+            })
+            .map(|(id, t)| Task {
+                key: format!("task:{id}:{}", t.turn.as_deref().unwrap_or("unconfirmed")),
+                title: task_awareness::clean(&t.title, 64),
+                activity: if t.approval_blocked {
+                    Activity::Attention
+                } else {
+                    Activity::Working
+                },
+                outcome: Outcome::Unverified,
+                attention: t
+                    .approval_blocked
+                    .then_some(task_awareness::Attention::Approval),
+            })
+            .collect();
+        tasks.sort_by(|a, b| a.key.cmp(&b.key));
+        tasks
     }
     pub async fn acknowledge_completion(&self, key: &str) {
         let mut queue = self.completions.lock().await;
@@ -310,32 +435,32 @@ impl SessionRuntime {
             return Err("Members can add messages to shared chats, but cannot start, steer or stop device tasks.".into());
         }
         if plan.action == Action::Status {
-            let result = if self.active.lock().await.contains_key(&plan.thread_id) {
-                format!(
-                    "The task notdot started in {} is still running.",
-                    plan.title
-                )
-            } else if self.releasing.lock().await.contains_key(&plan.thread_id) {
-                format!(
-                    "Codex finished its reply in {}. Its runtime is still releasing, or background work is keeping it open.",
-                    plan.title
-                )
-            } else if let Some((_, status)) = self
+            let result = if let Some(task) = self.active.lock().await.get(&plan.thread_id) {
+                Task {
+                    key: String::new(),
+                    title: task.title.clone(),
+                    activity: if task.approval_blocked {
+                        Activity::Attention
+                    } else {
+                        Activity::Working
+                    },
+                    outcome: Outcome::Unverified,
+                    attention: task
+                        .approval_blocked
+                        .then_some(task_awareness::Attention::Approval),
+                }
+                .description()
+            } else if let Some(task) = self
                 .finished
                 .lock()
                 .await
                 .iter()
-                .find(|(id, _)| id == &plan.thread_id)
+                .rev()
+                .find(|t| t.thread_id == plan.thread_id)
             {
-                format!(
-                    "The last Codex turn notdot started in {} is {status}. Ask me to read that chat for its answer.",
-                    plan.title
-                )
+                task.message()
             } else {
-                format!(
-                    "Notdot is not running {}. I can read its saved messages, but cannot confirm the desktop app's live status.",
-                    plan.title
-                )
+                "I cannot confirm the live status of a desktop-owned chat.".into()
             };
             if let Some(policy) = policy {
                 policy.action(plan)?;
@@ -388,6 +513,8 @@ impl SessionRuntime {
             if releasing.contains_key(&plan.thread_id) {
                 return Err("That chat is releasing its previous turn. Nothing was sent; ask again once it closes.".into());
             }
+            // At most four owned tasks can each add one early attention event,
+            // so this admission bound caps the queue at 28 even before draining.
             if count + self.completions.lock().await.len() >= 24 {
                 return Err("Task reports are waiting to be saved. Review follow-ups before starting more work.".into());
             }
@@ -452,6 +579,12 @@ impl SessionRuntime {
                     plan.title
                 ));
             }
+            let report_token = uuid::Uuid::new_v4().simple().to_string();
+            let message = format!(
+                "{}{}",
+                plan.message,
+                task_awareness::instructions(&report_token)
+            );
             self.active.lock().await.insert(
                 plan.thread_id.clone(),
                 Running {
@@ -460,11 +593,19 @@ impl SessionRuntime {
                     notify,
                     summary: String::new(),
                     approval_blocked: false,
+                    report_token,
+                    report: None,
                     origin: policy.cloned(),
                 },
             );
             // Preserve the target's model, working directory and permission profile.
-            let started=self.bridge.call("turn/start",json!({"threadId":plan.thread_id,"input":[{"type":"text","text":plan.message}]})).await;
+            let started = self
+                .bridge
+                .call(
+                    "turn/start",
+                    json!({"threadId":plan.thread_id,"input":[{"type":"text","text":message}]}),
+                )
+                .await;
             match started {
                 Ok(result) => {
                     let turn = result["turn"]["id"].as_str().ok_or(

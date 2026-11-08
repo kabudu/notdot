@@ -62,7 +62,13 @@ Choose what it may do under **Other Codex chats**:
 
 Add **“and let me know when it’s done”** to a request, for example **“Tell Website to make the button clearer, and let me know when it’s done.”** Or turn on **Report task results** to receive reports for tasks notdot starts from then on. This does not change your chat-control permissions.
 
-notdot reports when the exact Codex turn ends, using a short excerpt of its final reply. A finished reply does not independently prove that a deployment, background process or other external work succeeded. Failures, interruptions and lost connections have different messages; notdot never retries a send automatically.
+notdot separates a task ending from its outcome. Reports distinguish **reported success**, **failure**, **partly complete** and **unverified**. This applies to drafts, research, bookings and coding. The task reports what it checked and what remains; notdot does not independently verify those claims. A success claim with a failed check is reported as failure. Missing or unusable checks stay unverified. Runtime failures and interruptions cannot be overwritten by a success claim. An unsupported request for approval or input is flagged as needing attention, without granting approval or answering it. A task can also report that it needs clarification, sign-in or help with a blocker. notdot tells you to check that chat; the report cannot authorise an action.
+
+Ask **“What needs me?”**, **“What’s still running?”** or **“Read my task updates.”** These cover tasks notdot started, not the live state of every chat open in Codex Desktop. Spoken updates still require your request or **Report task results**; the quiet task cues do not enable announcements.
+
+Inside the orb, a small travelling light means **working**, a gentle glow with an exclamation mark means **needs attention**, a brief tick means **reported success**, and a small diamond means **review the result** (failed, partial or unverified). Cues stay within the dark core and use shapes as well as colour. Listening, thinking and speaking take priority. Reduced motion keeps task cues steady. Review indicators remain until dismissed in **Follow-ups** or by saying **“Clear task updates.”** This clears saved updates, not running work. Successful cues settle after a short interval; their reports remain available.
+
+notdot never retries a send automatically. A finished turn does not prove that background work or external activity succeeded.
 
 Reports wait until you are idle, with Settings closed and the microphone unmuted. They respect your quiet hours. Requested results work even in Reactive mode and do not use the daily allowance for unsolicited check-ins; simultaneous reports are spaced at least five seconds apart. Reports use your computer’s voice, so they do not need another paid voice request.
 

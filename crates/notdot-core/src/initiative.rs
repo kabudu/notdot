@@ -62,6 +62,8 @@ pub struct Entry {
     pub dismissed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_origin: Option<crate::chat_tools::ChatPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<crate::task_awareness::Task>,
 }
 impl Entry {
     /// Check immutable origin again after restart or grant changes. Native
@@ -81,6 +83,17 @@ impl Entry {
     /// Task reports are requested by the user separately from inferred check-ins.
     pub fn task_report(&self) -> bool {
         self.source.starts_with("task:") && self.permitted
+    }
+    /// Successful results settle quietly; attention and review remain until
+    /// acknowledgement or journal expiry. Delivery alone is not acknowledgement.
+    pub fn task_cue(&self, now: u64) -> Option<&crate::task_awareness::Task> {
+        self.task.as_ref().filter(|task| {
+            !self.dismissed
+                && self.expires > now
+                && (task.activity != crate::task_awareness::Activity::Finished
+                    || task.outcome != crate::task_awareness::Outcome::Success
+                    || now < self.created.saturating_add(8))
+        })
     }
 }
 #[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -291,6 +304,7 @@ mod tests {
             delivered: false,
             dismissed: false,
             profile_origin: None,
+            task: None,
         }
     }
     #[test]
@@ -361,6 +375,29 @@ mod tests {
 #[cfg(test)]
 mod task_report_tests {
     use super::*;
+    #[test]
+    fn success_cues_expire_while_review_survives_delivery_until_acknowledged() {
+        use crate::task_awareness::{Activity, Outcome, Task};
+        let mut e = entry("result");
+        e.task = Some(Task {
+            key: e.key.clone(),
+            title: "Draft".into(),
+            activity: Activity::Finished,
+            outcome: Outcome::Success,
+            attention: None,
+        });
+        assert!(e.task_cue(107).is_some());
+        assert!(e.task_cue(108).is_none());
+        for outcome in [Outcome::Failed, Outcome::Partial, Outcome::Unverified] {
+            e.task.as_mut().unwrap().outcome = outcome;
+            e.delivered = true;
+            assert!(e.task_cue(200).is_some());
+            e.dismissed = true;
+            assert!(e.task_cue(200).is_none());
+            e.dismissed = false;
+        }
+        assert!(e.task_cue(e.expires).is_none());
+    }
     fn entry(id: &str) -> Entry {
         Entry {
             id: id.into(),
@@ -375,6 +412,7 @@ mod task_report_tests {
             delivered: false,
             dismissed: false,
             profile_origin: None,
+            task: None,
         }
     }
     #[test]

@@ -114,6 +114,25 @@
     const output=document.getElementById('harness-results'),passed=[];
     function ok(name,condition){if(!condition)throw Error(name);passed.push(name);output.textContent=JSON.stringify({status:'running',passed},null,2);}
     try {
+      if(location.hash==='#tasks-only'){
+        await clean();settings.followup_enabled=false;
+        const orb=document.getElementById('orb');
+        for(const cue of ['working','attention','review','finished']) {
+          state.initiative={tasks:{cue,description:'Synthetic '+cue+' task status.'}};
+          await until(()=>orb.dataset.taskState===cue);
+          ok(cue+' task cue appears inside the production orb',orb.dataset.state==='idle');
+          ok(cue+' task status has a text equivalent',document.getElementById('orb-status').textContent==='Synthetic '+cue+' task status.');
+        }
+        state.initiative={tasks:{cue:'attention',description:'Approval needed.'}};
+        state.phase='thinking';await until(()=>orb.dataset.state==='thinking');
+        ok('foreground thinking takes priority over a background task cue',orb.dataset.taskState==='none');
+        state.phase='idle';await until(()=>orb.dataset.taskState==='attention');
+        ok('attention cue returns after foreground work',document.getElementById('orb-status').textContent==='Approval needed.');
+        state.initiative={};await until(()=>orb.dataset.taskState==='none');
+        ok('acknowledged tasks leave no stale visual cue',orb.dataset.taskState==='none');
+        state.initiative={tasks:{cue:'attention',description:'1 task needs attention in Codex. No approval was granted.'}};
+        output.textContent=JSON.stringify({status:'passed',passed,adapters:'production WASM renderer; synthetic native task snapshot, no providers or audio'},null,2);return;
+      }
       if(location.hash==='#profile-capture'){
         await clean();settings.followup_enabled=false;let captures=count('capture'),cancels=count('cancel'),messages=count('message');orbClick();await until(()=>count('capture')===captures+1);const token=state.wake.capture_token;state.profile_id='member';await sleep(700);ok('identification preserves the same active microphone capture',state.wake.capture_token===token && state.wake.phase==='capturing' && count('cancel')===cancels);submit('Please calculate five plus seven.');await until(()=>count('message')===messages+1);ok('identified first member turn submits exactly once',count('message')===messages+1);pressEscape();output.textContent=JSON.stringify({status:'passed',passed,adapters:'synthetic native-capture IPC/model/audio; no microphone or providers'},null,2);return;
       }

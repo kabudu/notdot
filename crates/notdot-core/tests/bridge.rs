@@ -737,7 +737,8 @@ for line in sys.stdin:
   assert m['params']=={'threadId':'target','excludeTurns':True}
   r={'thread':{'id':'target','name':'Synthetic','status':{'type':'idle'}}}
  elif method=='turn/start':
-  assert m['params']=={'threadId':'target','input':[{'type':'text','text':'Do the staged task'}]}
+  assert set(m['params'])=={'threadId','input'} and m['params']['threadId']=='target'
+  assert m['params']['input'][0]['type']=='text' and m['params']['input'][0]['text'].startswith('Do the staged task\n\nTask reporting for notdot:')
   r={'turn':{'id':'target-turn'}}
  elif method=='turn/steer':
   assert m['params']=={'threadId':'target','expectedTurnId':'target-turn','input':[{'type':'text','text':'Use short sentences'}]};r={'turnId':'target-turn'}
@@ -770,7 +771,7 @@ for line in sys.stdin:
             .execute(request)
             .await
             .unwrap()
-            .contains("still running")
+            .contains("is working")
     );
     let (request, _instruction) = session_authority(Action::Steer, "target", "Use short sentences");
     assert!(session.execute(request).await.unwrap().starts_with("Added"));
@@ -1020,13 +1021,13 @@ for line in sys.stdin:
                 tokio::select!{_ = events.recv()=>{},_ = tokio::time::sleep(std::time::Duration::from_millis(10))=>{}}
             }
         }).await.unwrap();
-        if notify {
-            let report = session.completion().await.unwrap();
-            assert_eq!(report.status, "unknown");
-            assert!(report.message().contains("Nothing was retried"));
-        } else {
-            assert!(session.completion().await.is_none());
-        }
+        let report = session.completion().await.unwrap();
+        assert_eq!(report.status, "unknown");
+        assert_eq!(
+            report.announce, notify,
+            "visual awareness must not opt into speech"
+        );
+        assert!(report.message().contains("Nothing was retried"));
         let (a, _c) = session_authority(Action::Send, "target", "never retry");
         assert!(session.execute(a).await.is_err());
         session.shutdown().await;
@@ -1073,7 +1074,12 @@ for line in sys.stdin:
         assert_eq!(notice.status, status);
         assert!(!notice.message().contains("finished its reply"));
         if status == "approval_required" {
-            assert!(notice.message().contains("no approval was granted"));
+            assert!(
+                notice
+                    .message()
+                    .to_lowercase()
+                    .contains("no approval was granted")
+            );
         }
         runtime.shutdown().await;
     }

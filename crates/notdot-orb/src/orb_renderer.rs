@@ -16,6 +16,63 @@ pub(crate) struct Frame<'a> {
 struct Palette {
     hue: f64,
 }
+/// Draw inside the opaque core, shared by GPU and Canvas modes. Shape carries
+/// meaning without depending on colour; reduced motion keeps each cue steady.
+pub(crate) fn task_cue(context: &Context, frame: &Frame<'_>, cue: &str) {
+    if cue == "none" {
+        return;
+    }
+    let (x, y) = frame.center;
+    let r = frame.radius;
+    let phase = frame.motion.phase;
+    context.save();
+    context.set_stroke_style_str(&format!("hsl({},85%,82%)", frame.hue));
+    context.set_fill_style_str(&format!("hsl({},85%,82%)", frame.hue));
+    context.set_line_width(2.);
+    context.begin_path();
+    match cue {
+        "working" => {
+            let start = if frame.reduced { -1.8 } else { phase * 3. };
+            let _ = context.arc(x, y, r * 0.72, start, start + 0.7);
+        }
+        "attention" => {
+            let alpha = if frame.reduced {
+                0.16
+            } else {
+                0.12 + 0.08 * (phase * 4.).sin().powi(2)
+            };
+            context.set_fill_style_str(&format!("hsla({},85%,75%,{alpha})", frame.hue));
+            let _ = context.arc(x, y, r * 0.72, 0., TAU);
+            context.fill();
+            context.begin_path();
+            context.move_to(x, y - r * 0.16);
+            context.line_to(x, y + r * 0.05);
+            context.stroke();
+            context.begin_path();
+            let _ = context.arc(x, y + r * 0.14, 1.8, 0., TAU);
+            context.set_fill_style_str(&format!("hsl({},85%,82%)", frame.hue));
+            context.fill();
+        }
+        "review" => {
+            let y = y + r * 0.58;
+            let d = r * 0.085;
+            context.move_to(x, y - d);
+            context.line_to(x + d, y);
+            context.line_to(x, y + d);
+            context.line_to(x - d, y);
+            context.close_path();
+        }
+        "finished" => {
+            let y = y + r * 0.58;
+            context.move_to(x - r * 0.08, y);
+            context.line_to(x - r * 0.02, y + r * 0.06);
+            context.line_to(x + r * 0.1, y - r * 0.07);
+        }
+        _ => {}
+    }
+    context.stroke();
+    context.restore();
+}
 impl Palette {
     fn colour(&self, alpha: f64, light: f64) -> String {
         format!("hsla({},85%,{}%,{alpha})", self.hue, light)

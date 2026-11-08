@@ -22,6 +22,7 @@ pub struct Status {
     pub announce: Option<String>,
     pub task_report: bool,
     pub error: Option<String>,
+    pub tasks: notdot_core::task_awareness::Awareness,
 }
 fn visible_to(entry: &Entry, profile: &notdot_core::profiles::ProfileId) -> bool {
     entry.origin_allowed()
@@ -117,6 +118,12 @@ impl Initiative {
             announce: next.map(|e| e.id.clone()),
             task_report: next.is_some_and(|e| e.task_report()),
             error: self.error.lock().await.clone(),
+            tasks: notdot_core::task_awareness::Awareness::new(
+                j.entries
+                    .iter()
+                    .filter_map(|entry| entry.task_cue(now()).cloned())
+                    .collect(),
+            ),
         }
     }
     async fn add(&self, entry: Entry) -> Result<(), String> {
@@ -139,9 +146,95 @@ impl Initiative {
             message: completion.message(), source: completion.key(),
             evidence: "Status from the exact Codex turn started by notdot. A completed turn does not independently verify external work.".into(),
             created: time, due: time, expires: time + 7 * 86400,
-            permitted: true, delivered: false, dismissed: false,
+            permitted: completion.announce, delivered: false, dismissed: false,
             profile_origin: completion.origin.clone(),
+            task: Some(completion.task()),
         }).await
+    }
+    pub async fn task_command(
+        &self,
+        text: &str,
+        live: Vec<notdot_core::task_awareness::Task>,
+    ) -> Option<String> {
+        let request = text
+            .trim()
+            .trim_end_matches(['.', '?'])
+            .to_lowercase()
+            .replace('’', "'");
+        let request = request.strip_prefix("please ").unwrap_or(&request);
+        let filter = match request {
+            "what needs me" | "what needs my attention" | "which tasks need me" => 1,
+            "what's still running"
+            | "what is still running"
+            | "what's running"
+            | "which tasks are still running" => 2,
+            "what are my task updates"
+            | "read my task updates"
+            | "any task updates"
+            | "how are my tasks doing" => 0,
+            "clear task updates"
+            | "dismiss task updates"
+            | "clear my task updates"
+            | "dismiss my task updates" => 3,
+            _ => return None,
+        };
+        let mut journal = self.journal.lock().await;
+        if filter == 3 {
+            let mut updated = journal.clone();
+            for entry in &mut updated.entries {
+                if entry.task.is_some() {
+                    entry.dismissed = true;
+                }
+            }
+            return Some(match self.save(&updated).await {
+                Ok(()) => {
+                    *journal = updated;
+                    "Cleared saved task updates. Running tasks are unchanged.".into()
+                }
+                Err(e) => e,
+            });
+        }
+        let mut tasks = live;
+        for task in journal
+            .entries
+            .iter()
+            .filter(|e| !e.dismissed && e.expires > now() && e.origin_allowed())
+            .filter_map(|e| e.task.clone())
+        {
+            if !tasks.iter().any(|t| t.key == task.key) {
+                tasks.push(task);
+            }
+        }
+        if filter == 2 {
+            tasks.retain(|t| t.activity == notdot_core::task_awareness::Activity::Working);
+        }
+        let messages: Vec<_> = tasks
+            .iter()
+            .filter(|task| {
+                filter != 1
+                    || task.activity == notdot_core::task_awareness::Activity::Attention
+                    || (task.activity == notdot_core::task_awareness::Activity::Finished
+                        && task.outcome != notdot_core::task_awareness::Outcome::Success)
+            })
+            .take(8)
+            .map(|task| {
+                journal
+                    .entries
+                    .iter()
+                    .find(|entry| {
+                        entry.key == task.key
+                            && !entry.dismissed
+                            && entry.expires > now()
+                            && entry.origin_allowed()
+                    })
+                    .map_or_else(|| task.description(), |entry| entry.message.clone())
+            })
+            .collect();
+        Some(if messages.is_empty() {
+            notdot_core::task_awareness::Awareness::new(tasks).answer(filter == 1)
+        } else {
+            messages.join(" ")
+        })
     }
     pub async fn command(&self, text: &str, behaviour: Behaviour) -> Option<String> {
         if [
@@ -191,6 +284,7 @@ impl Initiative {
                 delivered: false,
                 dismissed: false,
                 profile_origin: None,
+                task: None,
             })
             .await;
         Some(match result { Err(e)=>e,Ok(())=>match behaviour { Behaviour::Reactive=>"Reminder saved. Automatic announcements are off in Reactive mode; choose Suggestions or Proactive in Settings to surface it.".into(),Behaviour::Suggestions=>"Reminder saved. It will appear silently on the orb when due. Proactive mode is needed for a spoken reminder.".into(),Behaviour::Proactive=>"Reminder saved. I'll announce it when you're idle, respecting your quiet hours and frequency limits.".into() } })
@@ -484,6 +578,7 @@ pub fn spawn(state: Arc<AppState>) {
                             delivered: false,
                             dismissed: false,
                             profile_origin: None,
+                            task: None,
                         },
                         time,
                     )?;
@@ -545,6 +640,7 @@ mod tests {
                 global_mode: notdot_core::session_control::Mode::ReadOnly,
                 companion_thread: None,
             }),
+            task: None,
         };
         assert!(visible_to(&entry, &owner));
         assert!(!visible_to(&entry, &ProfileId::random()));
@@ -618,6 +714,7 @@ mod tests {
                 delivered: false,
                 dismissed: false,
                 profile_origin: None,
+                task: None,
             })
             .await
             .unwrap();
@@ -668,6 +765,122 @@ mod tests {
 mod task_completion_tests {
     use super::*;
     #[tokio::test]
+    #[ignore = "Plays four short task reports through the computer's system voice"]
+    async fn task_reports_play_through_system_speech_without_provider_keys() {
+        use notdot_core::task_awareness::{Check, CheckResult, Outcome, Report};
+        for (title, outcome, result, reason) in [
+            (
+                "Draft",
+                Outcome::Success,
+                CheckResult::Passed,
+                "The requested draft is prepared.",
+            ),
+            (
+                "Website",
+                Outcome::Failed,
+                CheckResult::Failed,
+                "Two tests failed.",
+            ),
+            (
+                "Research",
+                Outcome::Partial,
+                CheckResult::Passed,
+                "Two of three prices were checked.",
+            ),
+            (
+                "Booking",
+                Outcome::Unverified,
+                CheckResult::NotRun,
+                "No booking receipt is available.",
+            ),
+        ] {
+            let completion = notdot_core::session_runtime::Completion {
+                thread_id: "synthetic".into(),
+                turn_id: title.into(),
+                title: title.into(),
+                status: "completed".into(),
+                summary: String::new(),
+                report: Some(Report {
+                    attention: None,
+                    outcome,
+                    summary: reason.into(),
+                    checks: vec![Check {
+                        name: "Requested result".into(),
+                        result,
+                        evidence: reason.into(),
+                    }],
+                    remaining: if outcome == Outcome::Partial {
+                        vec!["One price still needs checking".into()]
+                    } else {
+                        vec![]
+                    },
+                }),
+                announce: true,
+                origin: None,
+            };
+            let message = completion.message();
+            assert!(message.chars().count() <= 301);
+            super::super::system_speech::speak(&message).await.unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn task_outcomes_persist_without_granting_speech_and_acknowledgement_is_durable() {
+        use notdot_core::task_awareness::{Check, CheckResult, Outcome, Report};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        let initiative = Initiative::open(path.clone()).unwrap();
+        let completion = notdot_core::session_runtime::Completion {
+            thread_id: "draft".into(),
+            turn_id: "one".into(),
+            title: "Draft".into(),
+            status: "completed".into(),
+            summary: String::new(),
+            report: Some(Report {
+                attention: None,
+                outcome: Outcome::Partial,
+                summary: "Draft prepared, delivery not requested".into(),
+                checks: vec![Check {
+                    name: "Draft".into(),
+                    result: CheckResult::Passed,
+                    evidence: "Prepared document".into(),
+                }],
+                remaining: vec!["Review the draft".into()],
+            }),
+            announce: false,
+            origin: None,
+        };
+        initiative.task_completed(&completion).await.unwrap();
+        let restored = Initiative::open(path.clone()).unwrap();
+        let policy = notdot_core::initiative::Policy {
+            quiet_start: 0,
+            quiet_end: 0,
+            ..Default::default()
+        };
+        let profile = notdot_core::profiles::ProfileId::random();
+        let status = restored.status(&policy, &profile).await;
+        assert_eq!(status.tasks.cue, "review");
+        assert!(status.announce.is_none());
+        assert!(
+            restored
+                .task_command("What needs me?", vec![])
+                .await
+                .unwrap()
+                .contains("partly complete")
+        );
+        restored
+            .task_command("clear task updates", vec![])
+            .await
+            .unwrap();
+        let restarted = Initiative::open(path).unwrap();
+        assert_eq!(restarted.status(&policy, &profile).await.tasks.cue, "none");
+        restarted.task_completed(&completion).await.unwrap();
+        assert_eq!(
+            restarted.status(&policy, &profile).await.tasks.cue,
+            "none",
+            "duplicate cannot resurrect an acknowledged report"
+        );
+    }
+    #[tokio::test]
     async fn completed_report_survives_restart_and_duplicate_events_without_redelivery() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("followups.json");
@@ -678,6 +891,8 @@ mod task_completion_tests {
             title: "Synthetic task".into(),
             status: "completed".into(),
             summary: "The synthetic result is ready.".into(),
+            report: None,
+            announce: true,
             origin: None,
         };
         initiative.task_completed(&completion).await.unwrap();

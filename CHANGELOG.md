@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **Keep track of delegated work.** Ask what is running or needs you, hear requested updates, and spot subtle task cues inside the orb.
+- **Know what finished means.** Reports distinguish success, failure, partial results and unverified work, for coding and everyday tasks. Agent-reported checks are labelled as reports, not independent verification.
+
 ## [0.5.0] - 2026-11-08
 
 A new fluid orb and clearer settings make notdot easier to see and use.

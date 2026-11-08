@@ -174,7 +174,7 @@ impl Bridge {
                     if write(&i, &rejection).await.is_err() {
                         break;
                     }
-                    let _=tx.send(json!({"method":"notdot/unsupportedRequest","params":{"method":v["method"],"threadId":v["params"]["threadId"]}}));
+                    let _=tx.send(json!({"method":"notdot/unsupportedRequest","params":{"method":v["method"],"threadId":v["params"]["threadId"],"turnId":v["params"]["turnId"]}}));
                 } else if let Some(id) = v["id"].as_u64() {
                     if let Some(reply) = p.lock().await.remove(&id) {
                         let result = if let Some(error) = v.get("error") {
