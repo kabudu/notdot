@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use std::cell::RefCell;
 use wasm_bindgen::{JsCast, prelude::*};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{Element, HtmlSelectElement};
+use web_sys::{Element, HtmlElement, HtmlSelectElement};
 
 #[wasm_bindgen(
     inline_js = "export function listenSpeakerProgress(f){return window.__TAURI__.event.listen('speaker-enrol-progress',e=>f(e.payload))}"
@@ -14,6 +14,7 @@ extern "C" {
     fn listenSpeakerProgress(f: &js_sys::Function) -> Result<js_sys::Promise, JsValue>;
 }
 thread_local! {
+    static ACTION_ORIGIN: RefCell<Option<HtmlElement>> = const { RefCell::new(None) };
     static OWNER_NAME: RefCell<String> = const { RefCell::new(String::new()) };
     static ACTIVE: RefCell<bool> = const { RefCell::new(false) };
     static EPOCH: RefCell<u64> = const { RefCell::new(0) };
@@ -53,7 +54,7 @@ fn status(text: &str) {
 fn button(
     parent: &Element,
     label: &str,
-    f: impl FnMut(web_sys::Event) + 'static,
+    mut f: impl FnMut(web_sys::Event) + 'static,
 ) -> Result<(), JsValue> {
     let b = web_sys::window()
         .unwrap()
@@ -62,9 +63,25 @@ fn button(
         .create_element("button")?;
     b.set_attribute("type", "button")?;
     b.set_text_content(Some(label));
-    on(b.unchecked_ref(), "click", f);
+    on(b.unchecked_ref(), "click", move |event| {
+        let origin = event
+            .current_target()
+            .and_then(|target| target.dyn_into::<HtmlElement>().ok());
+        ACTION_ORIGIN.with(|saved| *saved.borrow_mut() = origin);
+        f(event);
+    });
     parent.append_child(&b)?;
     Ok(())
+}
+fn restore_action_focus() {
+    let origin = ACTION_ORIGIN.with(|saved| saved.borrow_mut().take());
+    if let Some(origin) = origin.filter(|element| element.is_connected()) {
+        let _ = origin.focus();
+    } else {
+        let _ = element("speaker-mode")
+            .unchecked_into::<HtmlElement>()
+            .focus();
+    }
 }
 fn confirm(command: &str, args: Value, text: &str) {
     CONFIRM.with(|c| *c.borrow_mut() = Some((command.into(), args)));
@@ -140,6 +157,10 @@ fn progress(v: &Value) {
     CAPTURE.with(|c| *c.borrow_mut() = None);
     let p = v.get("progress").unwrap_or(v);
     let step = p["step"].as_str().unwrap_or("failed");
+    let focus_save = step == "ready"
+        && super::document()
+            .active_element()
+            .is_none_or(|element| element.id() == "speaker-record" || element.tag_name() == "BODY");
     hidden("speaker-enrol", false);
     hidden("speaker-enrol-save", step != "ready");
     hidden("speaker-record", step == "ready" || step == "failed");
@@ -166,6 +187,11 @@ fn progress(v: &Value) {
     };
     element("speaker-enrol-status").set_text_content(Some(&text));
     input("speaker-record").set_disabled(!input("speaker-consent").checked());
+    if focus_save {
+        let _ = element("speaker-enrol-save")
+            .unchecked_into::<HtmlElement>()
+            .focus();
+    }
 }
 /// A phrase is being recorded for enrolment. The microphone lease must be
 /// renewed for it although Settings is open.
@@ -491,6 +517,7 @@ fn render_person(list: &Element, p: &Value) -> Result<(), JsValue> {
                     }
                     // The panel sits below the people list; bring it into view.
                     element("speaker-enrol").scroll_into_view();
+                    let _ = input("speaker-consent").focus();
                 }
                 Err(e) => status(&e),
             }
@@ -716,6 +743,7 @@ pub(crate) fn install() -> Result<(), JsValue> {
             CONFIRM.with(|c| *c.borrow_mut() = None);
             CONFIRM_NAME.with(|c| *c.borrow_mut() = None);
             hidden("speaker-confirm", true);
+            restore_action_focus();
         },
     );
     on(
@@ -784,7 +812,10 @@ pub(crate) fn install() -> Result<(), JsValue> {
     on(
         element("speaker-enrol-cancel").unchecked_ref(),
         "click",
-        |_| cancel(),
+        |_| {
+            cancel();
+            restore_action_focus();
+        },
     );
     on(
         element("speaker-enrol-save").unchecked_ref(),

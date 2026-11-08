@@ -152,7 +152,6 @@ impl Meter {
         Ok(())
     }
     pub fn playback(&mut self, audio: &HtmlAudioElement) -> Result<bool, JsValue> {
-        self.playback = None;
         // Linux WebKit's MediaElementAudioSourceNode truncated sentence tails
         // in native output tests. Preserve ordinary HTML media output there;
         // the orb still uses its smooth, unmetered speaking animation.
@@ -166,6 +165,18 @@ impl Meter {
         if context.state() != AudioContextState::Running {
             return Ok(false);
         }
+        // Keep the output graph attached to the same media element across
+        // sentences and turns. Rebuilding the destination is unnecessary and
+        // avoids disconnecting and reconnecting the output at every reply.
+        if let Some(playback) = &self.playback
+            && playback.audio == *audio
+        {
+            let now = context.current_time();
+            playback.gain.gain().cancel_scheduled_values(now)?;
+            playback.gain.gain().set_value_at_time(0., now)?;
+            return Ok(true);
+        }
+        self.playback = None;
         let source = context.create_media_element_source(audio.unchecked_ref())?;
         let analyser = Self::analyser(context)?;
         let gain = context.create_gain()?;
@@ -196,8 +207,17 @@ impl Meter {
     pub fn clear_microphone(&mut self) {
         self.microphone = None;
     }
+    pub fn playback_element(&self) -> Option<HtmlAudioElement> {
+        self.playback
+            .as_ref()
+            .map(|playback| playback.audio.clone())
+    }
     pub fn clear_playback(&mut self) {
-        self.playback = None;
+        if let (Some(playback), Some(context)) = (&self.playback, &self.context) {
+            let now = context.current_time();
+            let _ = playback.gain.gain().cancel_scheduled_values(now);
+            let _ = playback.gain.gain().set_value_at_time(0., now);
+        }
     }
     pub fn sample(&self, listening: bool) -> Level {
         let analyser = if listening {

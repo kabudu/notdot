@@ -87,3 +87,209 @@ input:not([type=range]):not([type=checkbox]),select,.voice-control{height:40px;b
 .time-fields{align-items:end}
 /* A section body that starts with actions needs the same top gap as one that starts with a field. */
 .settings-body>.tool-actions:first-child{margin-top:12px}
+
+/* Glass surfaces keep text and form controls opaque and readable. The solid
+   base also covers webviews without backdrop filtering. */
+:root {
+  --panel-solid: hsl(var(--hue), 28%, 9%);
+  --panel-edge: hsl(var(--hue), 26%, 34%);
+  --control-solid: hsl(var(--hue), 28%, 13%);
+  --control-edge: hsl(var(--hue), 16%, 50%);
+  --surface-text: #e9f2fa;
+  --secondary-text: #b9cada;
+}
+dialog {
+  background: var(--panel-solid);
+  border-color: var(--panel-edge);
+  box-shadow: 0 22px 64px #0005, inset 0 1px 0 #ffffff0d;
+}
+dialog::backdrop { background: #0002; }
+#panel { border-radius: 24px; }
+#panel .panel-drag,
+#panel .settings-footer {
+  background: transparent;
+  border-color: hsla(var(--hue), 30%, 72%, .17);
+}
+#panel .panel-drag { padding-top: 20px; padding-bottom: 16px; }
+#panel .panel-drag h1 { font-weight: 600; letter-spacing: -.7px; }
+#panel .panel-drag .eyebrow { letter-spacing: 2px; }
+#panel .settings-footer { padding-top: 16px; padding-bottom: 16px; }
+.settings-categories {
+  padding-bottom: 12px;
+  border-bottom: 1px solid hsla(var(--hue), 30%, 72%, .14);
+}
+.settings-categories button {
+  color: var(--secondary-text);
+  border-radius: 9px;
+  min-height: 40px;
+}
+.settings-categories button[aria-selected=true] {
+  color: var(--surface-text);
+  background: hsl(var(--hue), 30%, 23%);
+  border-color: hsl(var(--hue), 32%, 45%);
+}
+.settings-section {
+  margin-block: 10px;
+  border-color: hsla(var(--hue), 30%, 72%, .22);
+  background: hsla(var(--hue), 24%, 15%, .5);
+  border-radius: 15px;
+}
+.settings-section>summary { min-height: 62px; padding: 14px 15px; }
+.settings-section[open]>summary {
+  background: hsla(var(--hue), 28%, 24%, .22);
+  border-color: hsla(var(--hue), 30%, 72%, .15);
+}
+.settings-body { padding: 4px 15px 16px; }
+.settings-body label { line-height: 1.5; }
+.settings-body>.switch-row { margin-block: 22px; }
+.hint,
+.switch-description,
+.settings-section>summary small,
+.settings-help,
+.intelligence-summary,
+.model-card>span,
+.session-modes small,
+.usage-card p { color: var(--secondary-text); }
+input:not([type=range]):not([type=checkbox]):not([type=radio]),
+select,
+textarea,
+.voice-control {
+  color: var(--surface-text);
+  background-color: var(--control-solid);
+  border-color: var(--control-edge);
+}
+input::placeholder,
+textarea::placeholder { color: #a9bbcd; opacity: 1; }
+#settings-search { height: 42px; border-radius: 12px; }
+button { min-height: 40px; border-color: var(--control-edge); }
+.settings-footer .primary-action {
+  background: hsl(var(--hue), 42%, 26%);
+  border-color: hsl(var(--hue), 48%, 56%);
+}
+button:hover:not(:disabled) { border-color: hsl(var(--hue), 44%, 64%); }
+button:disabled { cursor: default; }
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid hsl(var(--hue), 78%, 79%);
+  outline-offset: 3px;
+}
+.settings-categories button:focus-visible { outline-offset: -3px; }
+.voice-control button { min-height: 38px; }
+.speaker-person,
+#speaker-enrol,
+#speaker-confirm,
+#speaker-leave,
+#notes article,
+.usage-card {
+  background: hsla(var(--hue), 26%, 17%, .35);
+  border-color: hsla(var(--hue), 30%, 72%, .24);
+}
+.tool-actions button,
+.session-modes label {
+  background: hsla(var(--hue), 25%, 19%, .55);
+  border-color: hsla(var(--hue), 30%, 72%, .25);
+}
+.reset-confirm { background: #f08c7a0a; }
+
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  dialog {
+    background:
+      radial-gradient(ellipse at 5% 0%, hsla(var(--hue), 50%, 58%, .13), transparent 65%),
+      hsla(var(--hue), 28%, 9%, .92);
+    -webkit-backdrop-filter: blur(24px) saturate(125%);
+    backdrop-filter: blur(24px) saturate(125%);
+  }
+}
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  dialog {
+    background: var(--panel-solid);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .settings-section,
+  .speaker-person,
+  #speaker-enrol,
+  #speaker-confirm,
+  #speaker-leave,
+  #notes article,
+  .usage-card,
+  .tool-actions button,
+  .session-modes label { background: var(--control-solid); }
+}
+@media (forced-colors: active) {
+  dialog,
+  .settings-section,
+  .speaker-person,
+  #speaker-enrol,
+  #speaker-confirm,
+  #speaker-leave,
+  #notes article,
+  .usage-card {
+    background: Canvas;
+    color: CanvasText;
+    border-color: CanvasText;
+    box-shadow: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .hint,
+  .switch-description,
+  .settings-section>summary small,
+  .settings-help,
+  .intelligence-summary,
+  .model-card>span,
+  .session-modes small,
+  .usage-card p { color: CanvasText; }
+  .settings-categories button[aria-selected=true] {
+    background: Highlight;
+    border-color: Highlight;
+    color: HighlightText;
+  }
+  .switch-track { forced-color-adjust: none; background: Canvas; border-color: CanvasText; }
+  .switch-track::after { background: CanvasText; box-shadow: none; }
+  .switch-row input:checked+.switch-track { background: Highlight; border-color: Highlight; }
+  .switch-row input:checked+.switch-track::after { background: HighlightText; }
+  button:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible,
+  .switch-row input:focus-visible+.switch-track { outline-color: Highlight; }
+}
+@media (max-width: 380px) {
+  .settings-categories { padding-bottom: 10px; }
+  .settings-categories button { min-height: 38px; }
+  .settings-section>summary { padding-inline: 13px; }
+  .settings-body { padding-inline: 13px; }
+}
+@media (max-height: 500px) {
+  #panel .panel-drag { margin-bottom: 10px; padding-top: 10px; padding-bottom: 10px; }
+  #panel .panel-drag .eyebrow { display: none; }
+  #panel .panel-drag h1 { font-size: 22px; }
+  #panel .settings-footer { margin-top: 8px; padding-top: 10px; padding-bottom: 10px; }
+  #panel .settings-footer button { min-height: 36px; }
+  #settings-search { height: 36px; }
+  .settings-categories { grid-template-columns: repeat(5, minmax(0, 1fr)); margin-block: 8px; padding-bottom: 8px; }
+  .settings-categories button { min-height: 32px; font-size: 10px; padding-inline: 1px; }
+}
+
+/* Names and service errors may contain long, unbroken text. Keep actions on
+   their card's grid without truncating a person's name or hiding an error. */
+dialog { overflow-wrap: anywhere; }
+.speaker-actions button { min-width: 0; }
+
+/* A verbose service error must not displace Settings or its actions. The full
+   message remains available to keyboard users and assistive technology. */
+.settings-footer #error { max-height: 3em; overflow: auto; line-height: 1.5; }
+.settings-footer #error:focus-visible {
+  outline: 2px solid hsl(var(--hue), 78%, 79%);
+  outline-offset: 2px;
+}
+
+@media (forced-colors: active) {
+  .settings-footer #error:focus-visible { outline-color: Highlight; }
+}
+
+/* Shader pixels never replace the accessible interaction/status canvas. */
+#orb-gl{position:absolute;inset:0;pointer-events:none;cursor:default}#orb{position:relative}

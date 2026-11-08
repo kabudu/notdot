@@ -14,6 +14,8 @@ import subprocess
 import tarfile
 import tempfile
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
+import time
 import zipfile
 
 VERSIONS = {'trunk': '0.22.1', 'cargo-tauri': '2.12.4'}
@@ -28,9 +30,18 @@ def host_platform():
     return f'{platform.system()}-{machine}'
 
 
-def download(url):
-    with urlopen(Request(url, headers={'User-Agent': 'notdot-release-tools'}), timeout=60) as response:
-        return response.read(MAX_ARCHIVE + 1)
+def download(url, limit=MAX_ARCHIVE, timeout=60):
+    for attempt in range(3):
+        try:
+            with urlopen(Request(url, headers={'User-Agent': 'notdot-release-tools'}), timeout=timeout) as response:
+                return response.read(limit + 1)
+        except HTTPError as error:
+            if error.code not in (429, 500, 502, 503, 504) or attempt == 2:
+                raise
+        except (URLError, TimeoutError):
+            if attempt == 2:
+                raise
+        time.sleep(2 ** attempt)
 
 
 def executable_bytes(data, entry):

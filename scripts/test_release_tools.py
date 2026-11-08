@@ -7,7 +7,9 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
+from urllib.error import HTTPError
+from install_release_tools import download
 import zipfile
 from install_release_tools import executable_bytes, prepare_tool, verify_path, VERSIONS
 
@@ -84,3 +86,24 @@ class ReleaseToolAcceptance(unittest.TestCase):
                 self.assertRegex(descriptor['sha256'], '^[0-9a-f]{64}$')
                 self.assertGreater(descriptor['archive_bytes'], 1000000)
                 self.assertTrue(descriptor['url'].startswith('https://github.com/'))
+
+
+class ReleaseToolNetworkAcceptance(unittest.TestCase):
+    @patch('install_release_tools.time.sleep')
+    @patch('install_release_tools.urlopen')
+    def test_gateway_failure_retries_without_changing_verification(self, opening, sleep):
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b'official archive'
+        opening.side_effect = [HTTPError('https://example.test', 504, 'timeout', {}, None), response]
+        self.assertEqual(download('https://example.test'), b'official archive')
+        self.assertEqual(opening.call_count, 2)
+        sleep.assert_called_once_with(1)
+
+    @patch('install_release_tools.time.sleep')
+    @patch('install_release_tools.urlopen')
+    def test_missing_asset_is_not_retried(self, opening, sleep):
+        opening.side_effect = HTTPError('https://example.test', 404, 'missing', {}, None)
+        with self.assertRaises(HTTPError):
+            download('https://example.test')
+        self.assertEqual(opening.call_count, 1)
+        sleep.assert_not_called()

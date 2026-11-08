@@ -4,6 +4,8 @@ Completed work and the next additions planned for notdot. Priorities may change 
 
 ## Implemented
 
+- **Translucent appearance.** A fluid dark-core orb and themed glass settings, with an inner listening glow, distinct conversation states, keyboard focus and reduced-motion support.
+
 - **Trusted voices.** Keep separate conversations and memories for people you add. Share chosen Codex chats for reading, with messages allowed separately. Voice matching runs locally and is not authentication. [Settings guide](docs/settings.md#people-and-voices).
 
 - **Change settings by voice.** Ask for a change, hear it read back and approve before it is saved. Settings also has focused categories and search. [Settings guide](docs/settings.md#change-settings-by-speaking).
@@ -12,7 +14,7 @@ Completed work and the next additions planned for notdot. Priorities may change 
 
 - **Use other Codex chats.** Find and read local chats, with optional controls to send work, add instructions and stop tasks notdot started. Choose Read only, Confirm before sending or Send when asked. Desktop-owned chats still require a handoff. [Settings guide](docs/settings.md).
 
-- **Conversation continuity.** Turn on an optional 3–20 second listening window after spoken replies. Two soft orb rings show when you can answer; say “That’s all”, press Escape or stay silent to stop. The microphone pauses while notdot speaks. [Implementation and tests](https://github.com/kabudu/notdot/pull/22) · [Settings guide](docs/settings.md).
+- **Conversation continuity.** Turn on an optional 3–20 second listening window after spoken replies. An inner glow shows when you can answer; say “That’s all”, press Escape or stay silent to stop. The microphone pauses while notdot speaks. [Implementation and tests](https://github.com/kabudu/notdot/pull/22) · [Settings guide](docs/settings.md).
 
 ## More voice choices
 

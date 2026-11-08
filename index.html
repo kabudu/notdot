@@ -9,8 +9,11 @@
   <link data-trunk="" href="crates/notdot-orb/Cargo.toml" rel="rust"/>
   <link data-trunk="" href="style.css" rel="css"/>
   <link data-trunk="" href="assets/logomark.svg" rel="copy-file"/>
+  <link data-trunk="" href="assets/orb-input.html" rel="copy-file"/>
+  <link data-trunk="" href="assets/orb-input.js" rel="copy-file"/>
  </head>
  <body>
+  <canvas id="orb-gl" aria-hidden="true"></canvas>
   <canvas aria-keyshortcuts="Enter Space Meta+, Control+," aria-label="notdot voice companion. Enter or Space to speak. Command or Control plus comma opens Settings. Escape stops." aria-pressed="false" id="orb" role="button" tabindex="0">
   </canvas>
   <p aria-live="polite" class="sr-only" id="orb-status" role="status">
@@ -620,7 +623,7 @@
     </details>
     </div>
     <div class="actions settings-footer">
-     <p id="error" role="status">
+     <p id="error" role="status" tabindex="0">
      </p>
      <button id="close" type="button">
       Close

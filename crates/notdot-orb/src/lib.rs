@@ -2,7 +2,9 @@
 mod audio_meter;
 mod conversation;
 mod interaction;
+mod orb_renderer;
 mod settings_navigation;
+mod shader_renderer;
 mod speakers;
 mod speech_queue;
 mod visual_state;
@@ -19,11 +21,31 @@ use web_sys::{
 export function listenCapture(f){return window.__TAURI__.event.listen('voice-capture',e=>f(e.payload))}
 export function invoke(c,a){return window.__TAURI__.core.invoke(c,a)}
 export function drag(){return window.__TAURI__.window.getCurrentWindow().startDragging()}
+export function installOrbControls(){
+const orb=document.getElementById('orb');
+const notify=()=>window.__TAURI__.event.emitTo('orb-input','orb-visual-state',{
+    mode:orb.dataset.state||'idle',help:orb.title,pressed:orb.getAttribute('aria-pressed')
+}).catch(()=>{});
+new MutationObserver(notify).observe(orb,{attributes:true,attributeFilter:['data-state','title','aria-pressed']});
+return window.__TAURI__.event.listen('orb-control',e=>{
+    const c=document.getElementById('orb'),p=e.payload;
+    if(!c||!p||typeof p!=='object')return;
+    if(p.action==='state'){notify();}
+    else if(p.action==='click'){
+        c.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));
+        c.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,clientX:1,clientY:1,button:0}));
+        c.dispatchEvent(new MouseEvent('click',{bubbles:true,clientX:1,clientY:1,button:0}));
+    }else if(p.action==='settings')c.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));
+    else if(p.action==='key'){c.focus();c.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:p.key,metaKey:p.meta,ctrlKey:p.ctrl,repeat:p.repeat}));}
+    else if(p.action==='blur')c.blur();
+})}
 export async function resize(w,h){
     const api=window.__TAURI__, win=api.window.getCurrentWindow();
+    await api.core.invoke('orb_input_mode',{collapsed:false}).catch(()=>{});
     const monitor=await api.window.currentMonitor();
     if(!monitor){
         await win.setSize(new api.dpi.LogicalSize(Math.min(w,screen.availWidth-32),Math.min(h,screen.availHeight-64)));
+        await api.core.invoke('orb_input_mode',{collapsed:w===360&&h===360}).catch(()=>{});
         return;
     }
     const area=monitor.workArea, margin=Math.round(16*monitor.scaleFactor);
@@ -34,12 +56,15 @@ export async function resize(w,h){
     const x=Math.max(area.position.x+margin,Math.min(position.x,area.position.x+area.size.width-size.width-margin));
     const y=Math.max(area.position.y+margin,Math.min(position.y,area.position.y+area.size.height-size.height-margin));
     if(x!==position.x || y!==position.y) await win.setPosition(new api.dpi.PhysicalPosition(x,y));
+    await api.core.invoke('orb_input_mode',{collapsed:w===360&&h===360}).catch(()=>{});
 }
 "#)]
 extern "C" {
     fn invoke(c: &str, a: JsValue) -> js_sys::Promise;
     #[wasm_bindgen(js_name=listenCapture)]
     fn listen_capture(f: &js_sys::Function) -> js_sys::Promise;
+    #[wasm_bindgen(js_name=installOrbControls)]
+    fn install_orb_controls() -> js_sys::Promise;
     fn drag() -> js_sys::Promise;
     fn resize(w: f64, h: f64) -> js_sys::Promise;
 }
@@ -161,9 +186,10 @@ struct View {
     capture_feedback_events: u64,
     last_poll_at: f64,
     generation: u64,
-    last_frame: f64,
-    amplitude: f64,
+    frame_clock: visual_state::FrameClock,
+    orb_motion: visual_state::OrbMotion,
     speech_energy: f64,
+    listening_cue: visual_state::ListeningCue,
     keyboard_navigation: bool,
     local_phase: Option<&'static str>,
     voices: Vec<VoiceChoice>,
@@ -1300,6 +1326,10 @@ fn stop_audio(view: &Shared) {
     }
     if let Some(audio) = v.audio.take() {
         let _ = audio.pause();
+        // Clear decoded speech on cancellation/profile changes without tearing
+        // down its output graph. At most one empty media element is retained.
+        let _ = audio.remove_attribute("src");
+        audio.load();
     }
     if let Some(url) = v.audio_url.take() {
         let _ = web_sys::Url::revoke_object_url(&url);
@@ -1404,7 +1434,17 @@ async fn play_encoded(view: Shared, value: JsValue, generation: u64) -> Result<(
     let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&array, &options)
         .map_err(js_error)?;
     let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(js_error)?;
-    let audio = web_sys::HtmlAudioElement::new_with_src(&url).map_err(js_error)?;
+    let cached_audio = {
+        let v = view.borrow();
+        v.audio.clone().or_else(|| v.meter.playback_element())
+    };
+    let audio = if let Some(audio) = cached_audio {
+        audio
+    } else {
+        web_sys::HtmlAudioElement::new().map_err(js_error)?
+    };
+    view.borrow_mut().meter.clear_playback();
+    audio.set_src(&url);
     {
         let mut v = view.borrow_mut();
         if let Some(old) = v.audio_url.replace(url) {
@@ -1822,6 +1862,7 @@ async fn browser_voice(view: Shared) -> Result<(), String> {
 }
 #[wasm_bindgen(start)]
 pub fn start() -> Result<(), JsValue> {
+    let _ = install_orb_controls();
     settings_navigation::install()?;
     speakers::install()?;
     let view = Rc::new(RefCell::new(View {
@@ -3005,6 +3046,9 @@ pub fn start() -> Result<(), JsValue> {
                         apply_theme(target.borrow().snapshot.settings.hue);
                         target.borrow_mut().initialized = true;
                         let _ = element("orb").set_attribute("data-ready", "true");
+                        // Expose the native input centre only after the saved
+                        // appearance has arrived, including on first launch.
+                        let _ = call("orb_input_mode", json!({"collapsed": !onboard && document().query_selector("dialog[open]").ok().flatten().is_none()})).await;
                     }
                     if *first.borrow() {
                         *first.borrow_mut() = false;
@@ -3211,6 +3255,8 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
         .get_context("2d")?
         .ok_or("Canvas 2D unavailable")?
         .dyn_into()?;
+    let shader_canvas: HtmlCanvasElement = element("orb-gl").unchecked_into();
+    let mut shader = shader_renderer::Shader::new(&shader_canvas).ok();
     type Frame = Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>>;
     let callback: Frame = Rc::new(RefCell::new(None));
     let next = callback.clone();
@@ -3219,10 +3265,8 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
         let mut v = view.borrow_mut();
         if v.initialized
             && v.snapshot.window_visible
-            && now - v.last_frame >= if reduced { 100. } else { 33. }
+            && let Some(frame_seconds) = v.frame_clock.tick(now, reduced)
         {
-            let frame_seconds = (now - v.last_frame) / 1000.;
-            v.last_frame = now;
             let w = canvas.client_width() as f64;
             let h = canvas.client_height() as f64;
             let dpr = window().device_pixel_ratio().min(2.);
@@ -3231,6 +3275,8 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
             if canvas.width() != width || canvas.height() != height {
                 canvas.set_width(width);
                 canvas.set_height(height);
+                shader_canvas.set_width(width);
+                shader_canvas.set_height(height);
             }
             let _ = context.set_transform(dpr, 0., 0., dpr, 0., 0.);
             context.clear_rect(0., 0., w, h);
@@ -3306,69 +3352,76 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
             };
             v.speech_energy =
                 visual_state::smooth_speech(v.speech_energy, speech_target, frame_seconds);
-            let target = match mode {
-                visual_state::Mode::Thinking => 0.65,
-                visual_state::Mode::Speaking => 0.22 + v.speech_energy * 0.78,
-                visual_state::Mode::Listening | visual_state::Mode::Followup => {
-                    0.22 + v.speech_energy * 0.78
-                }
-                _ => 0.08,
-            };
-            v.amplitude += (target - v.amplitude) * 0.22;
-            let hue = if mode == visual_state::Mode::Error {
-                12.
-            } else {
-                v.preview_hue.unwrap_or(v.snapshot.settings.hue) as f64
-            };
-            let time = if reduced { 0. } else { now / 1000. };
-            let scale = match mode {
-                visual_state::Mode::Speaking => {
-                    1. + v.speech_energy * if reduced { 0.01 } else { 0.07 }
-                }
-                visual_state::Mode::Listening | visual_state::Mode::Followup => {
-                    1. + v.speech_energy * if reduced { 0.01 } else { 0.07 }
-                }
-                visual_state::Mode::Thinking => {
-                    1. + if reduced {
-                        0.
-                    } else {
-                        0.045 * (time * 3.).sin()
-                    }
-                }
-                _ => 1.,
-            };
+            v.orb_motion.advance(mode, frame_seconds, reduced);
+            let hue = v.preview_hue.unwrap_or(v.snapshot.settings.hue) as f64;
             let radius = w.min(h) * 0.17;
-            draw(
-                &context,
-                w / 2.,
-                h / 2.,
-                radius * scale,
-                time,
+            let frame = orb_renderer::Frame {
+                center: (w / 2., h / 2.),
+                radius,
                 hue,
-                v.amplitude,
-            );
-            draw_activity(
-                &context,
-                ActivityFrame {
-                    center: (w / 2., h / 2.),
-                    radius,
-                    time,
-                    hue,
-                    mode,
-                    reduced,
-                    speech_energy: v.speech_energy,
-                },
-            );
+                energy: v.speech_energy,
+                reduced,
+                motion: &v.orb_motion,
+            };
+            let gpu = shader
+                .as_mut()
+                .is_some_and(|shader| shader.draw(&shader_canvas, &frame));
+            let renderer = if gpu { "webgl" } else { "canvas" };
+            if canvas.get_attribute("data-renderer").as_deref() != Some(renderer) {
+                let _ = shader_canvas.set_attribute("data-ready", "true");
+                let _ = shader_canvas.set_attribute(
+                    "style",
+                    if gpu {
+                        "visibility:visible"
+                    } else {
+                        "visibility:hidden"
+                    },
+                );
+                let _ = canvas.set_attribute("data-renderer", renderer);
+            }
+            if !gpu {
+                orb_renderer::draw(&context, frame);
+            }
+            // Keep acknowledgement within the dark core so a light desktop
+            // cannot wash it out. This overlay also works with Canvas fallback.
+            let acknowledgement = v.listening_cue.advance(mode, frame_seconds, reduced);
+            if acknowledgement > 0. {
+                context.save();
+                if let Ok(glow) = context.create_radial_gradient(
+                    w / 2.,
+                    h / 2.,
+                    0.,
+                    w / 2.,
+                    h / 2.,
+                    radius * 0.94,
+                ) {
+                    let _ =
+                        glow.add_color_stop(0., &format!("hsla({hue},95%,86%,{acknowledgement})"));
+                    let _ = glow.add_color_stop(
+                        0.55,
+                        &format!("hsla({hue},90%,74%,{})", acknowledgement * 0.65),
+                    );
+                    let _ = glow.add_color_stop(1., "rgba(0,0,0,0)");
+                    context.set_fill_style_canvas_gradient(&glow);
+                    context.begin_path();
+                    let _ = context.arc(w / 2., h / 2., radius * 0.94, 0., TAU);
+                    context.fill();
+                }
+                context.restore();
+            }
             if v.keyboard_navigation
                 && document()
                     .active_element()
                     .is_some_and(|e| e == canvas.clone().into())
             {
                 context.save();
-                context.set_line_width(1.5);
-                context.set_stroke_style_str("rgba(220,245,255,.7)");
                 context.begin_path();
-                let _ = context.arc(w / 2., h / 2., radius * 1.24, 0., TAU);
+                let _ = context.arc(w / 2., h / 2., radius * 0.92, 0., TAU);
+                context.set_line_width(3.);
+                context.set_stroke_style_str("rgba(1,6,16,.65)");
+                context.stroke();
+                context.set_line_width(1.25);
+                context.set_stroke_style_str("rgba(220,245,255,.8)");
                 context.stroke();
                 context.restore();
             }
@@ -3509,85 +3562,6 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
     )?;
     Ok(())
 }
-fn draw(c: &Context, x: f64, y: f64, r: f64, t: f64, hue: f64, amp: f64) {
-    let color = |alpha: f64| format!("hsla({hue},85%,70%,{alpha})");
-    if let Ok(g) = c.create_radial_gradient(x, y, r * 0.1, x, y, r * 2.9) {
-        let _ = g.add_color_stop(0., &color(0.18));
-        let _ = g.add_color_stop(1., &color(0.));
-        c.set_fill_style_canvas_gradient(&g);
-        c.fill_rect(x - r * 3., y - r * 3., r * 6., r * 6.);
-    }
-    for i in 0..70 {
-        let a = i as f64 * 2.39996 + t * 0.025;
-        let radius = r * (1.3 + ((i * 37 % 67) as f64 / 67.) * 1.15);
-        let sparkle = 0.2 + ((t * 0.6 + i as f64).sin() + 1.) * 0.22;
-        c.set_fill_style_str(&color(sparkle));
-        c.begin_path();
-        let _ = c.arc(
-            x + a.cos() * radius,
-            y + a.sin() * radius,
-            if i % 7 == 0 { 1.2 } else { 0.65 },
-            0.,
-            TAU,
-        );
-        c.fill();
-    }
-    c.set_stroke_style_str(&color(0.45));
-    c.set_line_width(1.);
-    c.begin_path();
-    for i in 0..=180 {
-        let a = i as f64 / 180. * TAU;
-        let rr =
-            r * (1.85 + 0.035 * (a * 3. + t * 0.7).sin() + amp * 0.06 * (a * 2. - t * 0.8).sin());
-        let (px, py) = (x + a.cos() * rr, y + a.sin() * rr);
-        if i == 0 {
-            c.move_to(px, py)
-        } else {
-            c.line_to(px, py)
-        }
-    }
-    c.close_path();
-    c.stroke();
-    c.save();
-    let _ = c.translate(x, y);
-    c.begin_path();
-    for i in 0..=120 {
-        let a = i as f64 / 120. * TAU;
-        let rr =
-            r * (1. + amp * (0.08 * (a * 2. + t * 0.7).sin() + 0.05 * (a * 3. - t * 0.8).cos()));
-        let (px, py) = (a.cos() * rr, a.sin() * rr);
-        if i == 0 {
-            c.move_to(px, py)
-        } else {
-            c.line_to(px, py)
-        }
-    }
-    c.close_path();
-    if let Ok(g) = c.create_radial_gradient(-r * 0.28, -r * 0.35, r * 0.1, 0., 0., r * 1.15) {
-        let _ = g.add_color_stop(0., "rgba(255,255,255,.94)");
-        let _ = g.add_color_stop(0.4, &color(0.7));
-        let _ = g.add_color_stop(1., &format!("hsla({},80%,30%,.15)", hue + 40.));
-        c.set_fill_style_canvas_gradient(&g);
-        c.set_shadow_blur(30. + amp * 40.);
-        c.set_shadow_color(&color(0.65));
-        c.fill();
-    }
-    c.set_shadow_blur(0.);
-    c.begin_path();
-    let _ = c.arc(0., 0., r * 0.65, 0., TAU);
-    if let Ok(g) = c.create_radial_gradient(-r * 0.1, -r * 0.1, r * 0.05, 0., 0., r * 0.8) {
-        let _ = g.add_color_stop(0., &color(0.2));
-        let _ = g.add_color_stop(1., "rgba(0,0,0,.68)");
-        c.set_fill_style_canvas_gradient(&g);
-        c.fill();
-    }
-    c.begin_path();
-    let _ = c.arc(-r * 0.18, -r * 0.18, r * 0.18, 0., TAU);
-    c.set_fill_style_str("rgba(255,255,255,.22)");
-    c.fill();
-    c.restore();
-}
-
 #[cfg(feature = "debug-ui")]
 fn mount_debug(view: &Shared) {
     let node = document().create_element("div").expect("debug container");
@@ -3791,67 +3765,4 @@ async fn review_memories() -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-struct ActivityFrame {
-    center: (f64, f64),
-    radius: f64,
-    time: f64,
-    hue: f64,
-    mode: visual_state::Mode,
-    reduced: bool,
-    speech_energy: f64,
-}
-fn draw_activity(c: &Context, frame: ActivityFrame) {
-    let ActivityFrame {
-        center: (x, y),
-        radius: r,
-        time: t,
-        hue,
-        mode,
-        reduced,
-        speech_energy,
-    } = frame;
-    use visual_state::Mode;
-    c.save();
-    c.set_line_cap("round");
-    if mode == Mode::Thinking {
-        for i in 0..28 {
-            let a = t * 2.9 + i as f64 * 0.075;
-            let alpha = (i as f64 / 27.).powf(1.5) * 0.9 + 0.05;
-            c.set_line_width(3. + i as f64 / 28.);
-            c.set_stroke_style_str(&format!("hsla({hue},95%,47%,{alpha})"));
-            c.begin_path();
-            let _ = c.arc(x, y, r * 2.02, a, a + 0.06);
-            c.stroke();
-        }
-    } else if matches!(mode, Mode::Speaking | Mode::Listening | Mode::Followup) {
-        let layers = if mode == Mode::Listening { 1 } else { 2 };
-        for layer in 0..layers {
-            c.set_line_width(if layer == 0 { 2.2 } else { 1.2 });
-            c.set_shadow_color(&format!("hsla({hue},85%,65%,.4)"));
-            c.set_shadow_blur(if reduced { 0. } else { 10. });
-            c.set_stroke_style_str(&format!(
-                "hsla({hue},85%,65%,{})",
-                0.30 + speech_energy * 0.25
-            ));
-            c.set_fill_style_str(&format!("hsla({hue},75%,60%,.025)"));
-            c.begin_path();
-            for i in 0..=180 {
-                let angle = i as f64 / 180. * TAU;
-                let radius =
-                    r * visual_state::speaking_shell(angle, t, speech_energy, layer, reduced);
-                let (px, py) = (x + angle.cos() * radius, y + angle.sin() * radius);
-                if i == 0 {
-                    c.move_to(px, py);
-                } else {
-                    c.line_to(px, py);
-                }
-            }
-            c.close_path();
-            c.fill();
-            c.stroke();
-        }
-    }
-    c.restore();
 }

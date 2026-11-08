@@ -52,6 +52,7 @@ jobs:
       - run: python3 scripts/check_content_links.py
       - run: python3 scripts/distribution_notices.py
       - run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - run: node scripts/test_orb_input.mjs
       - name: Check committed whitespace
         env:
           CI_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -117,6 +118,8 @@ jobs:
           save-if: ${{ github.event_name == 'pull_request' }}
       - name: Repair pruned Sherpa native library cache
         run: python scripts/repair_sherpa_cache.py --target x86_64-pc-windows-msvc
+      - name: Verify native archives before Cargo profiles
+        run: python scripts/prepare_sherpa_archives.py --target x86_64-pc-windows-msvc --output "${{ runner.temp }}/notdot-sherpa-archives"
       # A cached debug rlib already embeds its native libraries. Compile a fresh
       # explicit-target release rlib too, matching the real packaging boundary.
       - name: Verify Windows release-mode static library binding
@@ -130,6 +133,33 @@ jobs:
         run: cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-speakers -p notdot-orb -p notdot --release --target x86_64-pc-windows-msvc --locked -- --test-threads=1
       - name: Check Windows-specific Rust code
         run: cargo clippy -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-speakers -p notdot --all-targets --locked -- -D warnings
+      - name: Build isolated Windows input acceptance host
+        run: cargo build -p notdot --example orb-input-acceptance --release --target x86_64-pc-windows-msvc --locked
+      - name: Check isolated input host loads on Windows
+        shell: pwsh
+        run: |
+          $env:NOTDOT_INPUT_TEST_URL = 'http://127.0.0.1:9'
+          $log = Join-Path $env:RUNNER_TEMP 'input-host-startup.log'
+          $process = Start-Process -FilePath 'target/x86_64-pc-windows-msvc/release/examples/orb-input-acceptance.exe' -PassThru -RedirectStandardError $log
+          try {
+            $deadline = (Get-Date).AddSeconds(30)
+            do {
+              Start-Sleep -Milliseconds 250
+              $output = Get-Content $log -Raw -ErrorAction SilentlyContinue
+              $ready = $output -match 'geometry core=Ok'
+            } while (-not $ready -and -not $process.HasExited -and (Get-Date) -lt $deadline)
+            if (-not $ready) { throw "Input host did not create its native windows: $output" }
+          } finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id }
+            Remove-Item Env:NOTDOT_INPUT_TEST_URL
+          }
+      - name: Retain isolated Windows input acceptance host
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-input-acceptance
+          path: target/x86_64-pc-windows-msvc/release/examples/orb-input-acceptance.exe
+          if-no-files-found: error
+          retention-days: 7
       - name: Install verified prebuilt release tools
         run: python scripts/install_release_tools.py
       - name: Verify packaging commands select the pinned tools
@@ -197,6 +227,8 @@ jobs:
           NOTDOT_NATIVE_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
           test -n "$NOTDOT_NATIVE_TARGET"
           python3 scripts/repair_sherpa_cache.py --target "$NOTDOT_NATIVE_TARGET"
+      - name: Verify native archives before Cargo profiles
+        run: python3 scripts/prepare_sherpa_archives.py --output "${{ runner.temp }}/notdot-sherpa-archives"
       - name: Run complete local validation
         run: sh scripts/ci-local.sh
       # macOS ships the in-process decoder, not the Windows helper executable.
@@ -212,6 +244,9 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
           toolchain: 1.97.0
@@ -227,6 +262,8 @@ jobs:
           cache-on-failure: true
       - name: Repair pruned Sherpa native library cache
         run: python3 scripts/repair_sherpa_cache.py --target x86_64-unknown-linux-gnu
+      - name: Verify native archives before Cargo profiles
+        run: python3 scripts/prepare_sherpa_archives.py --target x86_64-unknown-linux-gnu --output "${{ runner.temp }}/notdot-sherpa-archives"
       # The pinned whisper-rs-sys build script does not track CXXFLAGS changes.
       # Rebuild this small native package so restored caches cannot mix string ABIs.
       - name: Rebuild the native C++ boundary
@@ -244,7 +281,7 @@ jobs:
         run: |
           mkdir -p .local
           set +e
-          cargo test -p notdot --bin notdot --locked wake::tests::bundled_detector_accepts_48khz_wake_fixture -- --ignored --exact --nocapture 2>&1 | tee .local/linux-wake-48k.log
+          cargo test -p notdot --bin notdot --release --locked wake::tests::bundled_detector_accepts_48khz_wake_fixture -- --ignored --exact --nocapture 2>&1 | tee .local/linux-wake-48k.log
           statuses=("${PIPESTATUS[@]}")
           result="${statuses[0]}"
           if [ "${statuses[1]}" -ne 0 ]; then result=125; fi

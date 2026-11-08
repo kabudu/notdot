@@ -109,6 +109,8 @@ jobs:
           cache-on-failure: true
       - name: Repair pruned Sherpa native library cache
         run: python scripts/repair_sherpa_cache.py --target "${{ matrix.target }}"
+      - name: Verify native archives before Cargo profiles
+        run: python scripts/prepare_sherpa_archives.py --target "${{ matrix.target }}" --output "${{ runner.temp }}/notdot-sherpa-archives"
       # whisper-rs-sys does not track changed CXXFLAGS. Clear both Cargo target
       # layouts before tests so the release cannot restore a mixed-ABI library.
       - name: Rebuild the Linux native C++ boundary

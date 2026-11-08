@@ -26,7 +26,7 @@
       "source_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
     }
   ],
-  "cargo_lock_sha256": "071d99707125623eec28ba969c6069dd52c02749075e35aaf354d835b2d6749c",
+  "cargo_lock_sha256": "d61e85a863c0b04de562943f6cbc0e6a4a80b39a5197d6e8e61a5ca611acd98b",
   "first_party_license": "Apache-2.0",
   "native_source_components": [
     {

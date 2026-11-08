@@ -116,26 +116,6 @@ pub(crate) fn smooth_speech(current: f64, target: f64, seconds: f64) -> f64 {
     let tau = if target > current { 0.10 } else { 0.32 };
     current + (target - current) * (1. - (-seconds.clamp(0., 0.1) / tau).exp())
 }
-/// A closed, low-frequency shell: broad waves rather than individual audio spikes.
-pub(crate) fn speaking_shell(
-    angle: f64,
-    time: f64,
-    energy: f64,
-    layer: usize,
-    reduced: bool,
-) -> f64 {
-    let base = 1.82 + layer as f64 * 0.11;
-    if reduced {
-        return base;
-    }
-    let phase = layer as f64 * 0.8;
-    base + energy * 0.065
-        + 0.016 * (time * 1.6 + phase).sin()
-        + (0.3 + energy * 0.7)
-            * (0.022 * (angle * 2. + time * 0.9 + phase).sin()
-                + 0.012 * (angle * 3. - time * 0.55 + phase).sin())
-}
-
 #[cfg(test)]
 mod speech_tests {
     use super::*;
@@ -152,33 +132,184 @@ mod speech_tests {
         }
         assert!((value - 1.).abs() < 1e-9);
     }
-    #[test]
-    fn shell_is_closed_bounded_and_static_with_reduced_motion() {
-        use std::f64::consts::TAU;
-        for layer in 0..2 {
-            for step in 0..200 {
-                let t = step as f64 * 0.17;
-                for energy in [0., 0.5, 1.] {
-                    assert!(
-                        (speaking_shell(0., t, energy, layer, false)
-                            - speaking_shell(TAU, t, energy, layer, false))
-                        .abs()
-                            < 1e-12
-                    );
-                    for i in 0..180 {
-                        let a = i as f64 / 180. * TAU;
-                        let r = speaking_shell(a, t, energy, layer, false);
-                        assert!((1.7..2.1).contains(&r));
-                        assert!(
-                            (r - speaking_shell(a + 0.01, t, energy, layer, false)).abs() < 0.002
-                        );
-                    }
-                }
-                assert_eq!(
-                    speaking_shell(1., t, 1., layer, true),
-                    speaking_shell(0., 0., 0., layer, true)
-                );
-            }
+}
+
+/// Smooth transitions share one bounded clock, so returning from a hidden
+/// window never jumps a surface ribbon or changes the orb's size abruptly.
+#[derive(Default)]
+pub(crate) struct OrbMotion {
+    pub phase: f64,
+    pub listening: f64,
+    pub followup: f64,
+    pub thinking: f64,
+    pub speaking: f64,
+    pub error: f64,
+}
+impl OrbMotion {
+    pub fn advance(&mut self, mode: Mode, seconds: f64, reduced: bool) {
+        let seconds = if seconds.is_finite() {
+            seconds.clamp(0., 0.1)
+        } else {
+            0.
+        };
+        let ease = 1. - (-seconds / 0.24).exp();
+        for (value, active) in [
+            (&mut self.listening, mode == Mode::Listening),
+            (&mut self.followup, mode == Mode::Followup),
+            (&mut self.thinking, mode == Mode::Thinking),
+            (&mut self.speaking, mode == Mode::Speaking),
+            (&mut self.error, mode == Mode::Error),
+        ] {
+            *value += (f64::from(active) - *value) * ease;
         }
+        if !reduced {
+            self.phase += seconds * (0.18 + self.thinking * 0.5 + self.speaking * 0.24);
+        }
+    }
+}
+
+#[cfg(test)]
+mod motion_tests {
+    use super::*;
+
+    #[test]
+    fn transitions_ease_without_jumps_and_pause_motion_when_requested() {
+        let mut motion = OrbMotion::default();
+        motion.advance(Mode::Thinking, 1. / 30., false);
+        assert!(motion.thinking > 0. && motion.thinking < 0.2);
+        let phase = motion.phase;
+        motion.advance(Mode::Speaking, 30., true);
+        assert_eq!(motion.phase, phase);
+        assert!(motion.speaking > 0. && motion.speaking < 0.4);
+        motion.advance(Mode::Error, f64::NAN, false);
+        assert_eq!(motion.phase, phase);
+        for _ in 0..300 {
+            motion.advance(Mode::Followup, 1. / 30., false);
+        }
+        assert!(motion.followup > 0.999);
+        assert!(motion.speaking < 0.001);
+    }
+}
+
+/// Keep a rendering deadline rather than sleeping a full interval after each
+/// delivered frame. The latter halves cadence on 30-32 Hz remote displays.
+#[derive(Default)]
+pub(crate) struct FrameClock {
+    deadline: Option<f64>,
+    previous: Option<f64>,
+    reduced: bool,
+}
+impl FrameClock {
+    pub fn tick(&mut self, now: f64, reduced: bool) -> Option<f64> {
+        if !now.is_finite() || now < 0. {
+            return None;
+        }
+        let interval = if reduced { 100. } else { 1000. / 30. };
+        let reset = self.previous.is_none_or(|previous| now < previous) || self.reduced != reduced;
+        if !reset && self.deadline.is_some_and(|deadline| now + 0.25 < deadline) {
+            return None;
+        }
+        let seconds = if reset {
+            0.
+        } else {
+            (now - self.previous.unwrap_or(now)) / 1000.
+        };
+        let next = self.deadline.unwrap_or(now) + interval;
+        self.deadline = Some(if reset || now - next > interval {
+            now + interval
+        } else {
+            next
+        });
+        self.previous = Some(now);
+        self.reduced = reduced;
+        Some(seconds)
+    }
+}
+#[cfg(test)]
+mod frame_clock_tests {
+    use super::*;
+    #[test]
+    fn near_target_displays_do_not_halve_rendering_cadence() {
+        for source in [10, 24, 30, 32, 60, 120] {
+            let mut clock = FrameClock::default();
+            let rendered = (0..source * 2)
+                .filter(|frame| {
+                    clock
+                        .tick(f64::from(*frame) * 1000. / f64::from(source), false)
+                        .is_some()
+                })
+                .count();
+            let expected = source.min(30) * 2;
+            assert!(
+                rendered.abs_diff(expected as usize) <= 1,
+                "{source} Hz source delivered {rendered} frames in two seconds"
+            );
+        }
+    }
+    #[test]
+    fn reduced_motion_and_long_hidden_gaps_do_not_create_catch_up_bursts() {
+        let mut clock = FrameClock::default();
+        let rendered = (0..120)
+            .filter(|frame| clock.tick(f64::from(*frame) * 1000. / 60., true).is_some())
+            .count();
+        assert_eq!(rendered, 20);
+        assert!(clock.tick(30_000., true).is_some());
+        assert!(clock.tick(30_001., true).is_none());
+        assert!(clock.tick(30_002., false).is_some());
+        assert!(clock.tick(f64::NAN, false).is_none());
+        assert!(clock.tick(f64::INFINITY, false).is_none());
+    }
+}
+
+/// A single acknowledgement inside the opaque core, independent of desktop
+/// contrast. Remaining in capture never retriggers the entry bloom.
+#[derive(Default)]
+pub(crate) struct ListeningCue {
+    active: bool,
+    elapsed: f64,
+}
+impl ListeningCue {
+    pub(crate) fn advance(&mut self, mode: Mode, seconds: f64, reduced: bool) -> f64 {
+        let active = matches!(mode, Mode::Listening | Mode::Followup);
+        if !active {
+            self.active = false;
+            self.elapsed = 0.;
+            return 0.;
+        }
+        if self.active {
+            self.elapsed += seconds.clamp(0., 0.1);
+        } else {
+            self.active = true;
+            self.elapsed = 0.;
+        }
+        if reduced {
+            return 0.24;
+        }
+        let entry = (1. - self.elapsed / 0.9).clamp(0., 1.).powi(2);
+        0.18 + entry * 0.52 + (self.elapsed * 3.).sin() * 0.025
+    }
+}
+#[cfg(test)]
+mod listening_cue_tests {
+    use super::*;
+    #[test]
+    fn entry_is_obvious_and_does_not_retrigger_during_capture() {
+        let mut cue = ListeningCue::default();
+        assert!(cue.advance(Mode::Listening, 0.033, false) > 0.65);
+        let mut settled = 0.;
+        for _ in 0..60 {
+            settled = cue.advance(Mode::Listening, 0.033, false);
+        }
+        assert!((0.15..0.21).contains(&settled));
+        assert_eq!(cue.advance(Mode::Speaking, 0.033, false), 0.);
+        assert!(cue.advance(Mode::Followup, 0.033, false) > 0.65);
+    }
+    #[test]
+    fn reduced_motion_is_steady_and_ends_with_listening() {
+        let mut cue = ListeningCue::default();
+        for _ in 0..100 {
+            assert_eq!(cue.advance(Mode::Listening, 0.033, true), 0.24);
+        }
+        assert_eq!(cue.advance(Mode::Idle, 0.033, true), 0.);
     }
 }

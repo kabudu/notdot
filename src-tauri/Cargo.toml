@@ -46,3 +46,4 @@ security-framework = "3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 dbus-secret-service = "4.1"
+gtk = "0.18"
