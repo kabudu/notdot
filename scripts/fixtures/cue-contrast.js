@@ -16,6 +16,7 @@ async function run(){
    const renderer=new w.wasmBindings.CueAcceptance(canvas),ctx=canvas.getContext('2d',{willReadFrequently:true});
    const c=size/2,r=size*.17,b=Math.min(Math.max(r*.23,11),20,r*.28);
    const pixel=(x,y)=>ctx.getImageData(Math.round(x),Math.round(y),1,1).data;
+   const darkest=(x,y)=>{const p=ctx.getImageData(Math.round(x)-1,Math.round(y)-1,3,3).data;let best=p.slice(0,4);for(let i=4;i<p.length;i+=4){const q=p.slice(i,i+4);if(lum(q)<lum(best))best=q;}return best;};
    const light=(x,y)=>{const p=ctx.getImageData(Math.round(x)-1,Math.round(y)-1,3,3).data;let n=0;for(let i=0;i<p.length;i+=4)n=Math.max(n,lum(p.slice(i,i+4)));return n;};
    for(const hue of hues){
     for(let frame=0;frame<24;frame++)for(const reduced of [false,true])for(const background of ['shader','canvas','white']){
@@ -25,13 +26,17 @@ async function run(){
      for(let y=edge;y<c+r;y+=3)for(let x=edge;x<c+r;x+=3){if((x-c)**2+(y-c)**2<r*r*.9){const i=((y-edge)*width+x-edge)*4;result.brightestObserved[background]=Math.max(result.brightestObserved[background],lum(image.slice(i,i+4)));}}
      for(const cue of cues){
       renderer.draw(hue,phase,cue,reduced,background);
-      let points,back;
-      if(cue==='working'){const a=(reduced?-1.8:phase*3)+.35;points=[[c+Math.cos(a)*r*.72,c+Math.sin(a)*r*.72]];back=[c+Math.cos(a)*(r*.72+5),c+Math.sin(a)*(r*.72+5)];}
+      let points,back,workingBacks=[];
+      if(cue==='working'){
+       const p=reduced?0:phase,center=.5+.22*Math.sin(p*3.6);points=[];
+       for(const u of [.25,.5,.75]){const t=center+(u-.5)*.42,angle=t*Math.PI*2-p*.7,dx=1.45,dy=.48+.12*Math.PI*2*Math.cos(angle),length=Math.hypot(dx,dy),nx=-dy/length,ny=dx/length,e=Math.sin(Math.PI*u)**.75;
+        const x=c+(t-.5)*r*dx,y=c+(.48*(t-.5)+.12*Math.sin(angle))*r;points.push([x,y]);workingBacks.push([x+nx*3.7*e,y+ny*3.7*e]);}
+       back=workingBacks[1];
+      }
       else if(cue==='attention'){points=[[c,c-b*.2],[c,c+b*.48]];back=[c+b*.65,c-b*.1];}
       else if(cue==='finished'){points=[[c+b*.19,c+r*.56-b*.02]];back=[c-b*.55,c+r*.56-b*.4];}
       else{points=[[c+b*.24,c+r*.56-b*.24]];back=[c,c+r*.56];}
-      const backing=pixel(...back),dark=lum(backing);
-      for(const point of points){const ratio=contrast(light(...point),dark);result.samples++;if(ratio<result.minimumContrast){result.minimumContrast=ratio;result.worstCase={size,hue,phase,reduced,background,cue};}if((ratio<3||dark>.03||backing[3]!==255)&&result.failures.length<12)result.failures.push({size,hue,phase,reduced,background,cue,ratio,backing:Array.from(backing)});}
+      for(const [index,point] of points.entries()){const backing=workingBacks[index]?darkest(...workingBacks[index]):pixel(...back),dark=lum(backing);const ratio=contrast(light(...point),dark);result.samples++;if(ratio<result.minimumContrast){result.minimumContrast=ratio;result.worstCase={size,hue,phase,reduced,background,cue};}if((ratio<3||dark>.03||backing[3]!==255)&&result.failures.length<12)result.failures.push({size,hue,phase,reduced,background,cue,ratio,backing:Array.from(backing)});}
      }
     }
     output.textContent=JSON.stringify({...result,current:{size,hue}},null,2);await pause();

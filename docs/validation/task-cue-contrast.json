@@ -1,7 +1,7 @@
 {
   "passed": true,
-  "samples": 23040,
-  "minimumContrast": 17.68361029042323,
+  "samples": 32256,
+  "minimumContrast": 11.39962386237822,
   "brightestObserved": {
     "shader": 1,
     "canvas": 0.43963362218717006,
@@ -10,9 +10,9 @@
   "failures": [],
   "target": 3,
   "worstCase": {
-    "size": 320,
-    "hue": 0,
-    "phase": 0,
+    "size": 480,
+    "hue": 240,
+    "phase": 88,
     "reduced": false,
     "background": "shader",
     "cue": "working"

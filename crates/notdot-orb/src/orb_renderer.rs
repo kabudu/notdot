@@ -16,6 +16,62 @@ pub(crate) struct Frame<'a> {
 struct Palette {
     hue: f64,
 }
+/// A tapered filament follows a softly bending interior wave instead of an
+/// orbital spinner. Three whole-path fills bound per-frame Canvas work.
+fn working_filament(context: &Context, frame: &Frame<'_>) {
+    let phase = if frame.reduced {
+        0.
+    } else {
+        frame.motion.phase
+    };
+    let center = 0.5 + 0.22 * (phase * 3.6).sin();
+    let points: [(f64, f64, f64, f64, f64); 33] = std::array::from_fn(|i| {
+        let u = i as f64 / 32.;
+        let t = center + (u - 0.5) * 0.42;
+        let angle = t * TAU - phase * 0.7;
+        let dx = 1.45_f64;
+        let dy = 0.48 + 0.12 * TAU * angle.cos();
+        let length = dx.hypot(dy);
+        (
+            frame.center.0 + (t - 0.5) * frame.radius * dx,
+            frame.center.1 + (0.48 * (t - 0.5) + 0.12 * angle.sin()) * frame.radius,
+            -dy / length,
+            dx / length,
+            (std::f64::consts::PI * u).sin().max(0.).powf(0.75),
+        )
+    });
+    for (half_width, colour) in [(6.5, "#07111f"), (4.5, "#02060c"), (2.1, "#f1f8ff")] {
+        context.begin_path();
+        for (i, &(x, y, nx, ny, envelope)) in points.iter().enumerate() {
+            let w = half_width * envelope;
+            if i == 0 {
+                context.move_to(x + nx * w, y + ny * w);
+            } else {
+                context.line_to(x + nx * w, y + ny * w);
+            }
+        }
+        for &(x, y, nx, ny, envelope) in points.iter().rev() {
+            let w = half_width * envelope;
+            context.line_to(x - nx * w, y - ny * w);
+        }
+        context.close_path();
+        if half_width == 2.1 {
+            let gradient = context.create_linear_gradient(
+                points[0].0,
+                points[0].1,
+                points[32].0,
+                points[32].1,
+            );
+            let _ = gradient.add_color_stop(0., &format!("hsl({},80%,76%)", frame.hue));
+            let _ = gradient.add_color_stop(0.55, "#f1f8ff");
+            let _ = gradient.add_color_stop(1., &format!("hsl({},85%,86%)", frame.hue));
+            context.set_fill_style_canvas_gradient(&gradient);
+        } else {
+            context.set_fill_style_str(colour);
+        }
+        context.fill();
+    }
+}
 /// Draw inside the opaque core, shared by GPU and Canvas modes. Shape carries
 /// meaning without depending on colour; reduced motion keeps each cue steady.
 pub(crate) fn task_cue(context: &Context, frame: &Frame<'_>, cue: &str) {
@@ -49,11 +105,9 @@ pub(crate) fn task_cue(context: &Context, frame: &Frame<'_>, cue: &str) {
     }
     context.begin_path();
     if cue == "working" {
-        let start = if frame.reduced { -1.8 } else { phase * 3. };
-        let _ = context.arc(x, center_y, r * 0.72, start, start + 0.7);
-        context.set_stroke_style_str("#07111f");
-        context.set_line_width(13.);
-        context.stroke();
+        working_filament(context, frame);
+        context.restore();
+        return;
     } else {
         let _ = context.arc(x, y, badge, 0., TAU);
         context.set_fill_style_str("#07111f");
