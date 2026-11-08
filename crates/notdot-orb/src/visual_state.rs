@@ -260,3 +260,56 @@ mod frame_clock_tests {
         assert!(clock.tick(f64::INFINITY, false).is_none());
     }
 }
+
+/// A single acknowledgement inside the opaque core, independent of desktop
+/// contrast. Remaining in capture never retriggers the entry bloom.
+#[derive(Default)]
+pub(crate) struct ListeningCue {
+    active: bool,
+    elapsed: f64,
+}
+impl ListeningCue {
+    pub(crate) fn advance(&mut self, mode: Mode, seconds: f64, reduced: bool) -> f64 {
+        let active = matches!(mode, Mode::Listening | Mode::Followup);
+        if !active {
+            self.active = false;
+            self.elapsed = 0.;
+            return 0.;
+        }
+        if self.active {
+            self.elapsed += seconds.clamp(0., 0.1);
+        } else {
+            self.active = true;
+            self.elapsed = 0.;
+        }
+        if reduced {
+            return 0.24;
+        }
+        let entry = (1. - self.elapsed / 0.9).clamp(0., 1.).powi(2);
+        0.18 + entry * 0.52 + (self.elapsed * 3.).sin() * 0.025
+    }
+}
+#[cfg(test)]
+mod listening_cue_tests {
+    use super::*;
+    #[test]
+    fn entry_is_obvious_and_does_not_retrigger_during_capture() {
+        let mut cue = ListeningCue::default();
+        assert!(cue.advance(Mode::Listening, 0.033, false) > 0.65);
+        let mut settled = 0.;
+        for _ in 0..60 {
+            settled = cue.advance(Mode::Listening, 0.033, false);
+        }
+        assert!((0.15..0.21).contains(&settled));
+        assert_eq!(cue.advance(Mode::Speaking, 0.033, false), 0.);
+        assert!(cue.advance(Mode::Followup, 0.033, false) > 0.65);
+    }
+    #[test]
+    fn reduced_motion_is_steady_and_ends_with_listening() {
+        let mut cue = ListeningCue::default();
+        for _ in 0..100 {
+            assert_eq!(cue.advance(Mode::Listening, 0.033, true), 0.24);
+        }
+        assert_eq!(cue.advance(Mode::Idle, 0.033, true), 0.);
+    }
+}

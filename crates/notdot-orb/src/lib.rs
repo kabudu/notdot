@@ -189,6 +189,7 @@ struct View {
     frame_clock: visual_state::FrameClock,
     orb_motion: visual_state::OrbMotion,
     speech_energy: f64,
+    listening_cue: visual_state::ListeningCue,
     keyboard_navigation: bool,
     local_phase: Option<&'static str>,
     voices: Vec<VoiceChoice>,
@@ -3366,6 +3367,33 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
             }
             if !gpu {
                 orb_renderer::draw(&context, frame);
+            }
+            // Keep acknowledgement within the dark core so a light desktop
+            // cannot wash it out. This overlay also works with Canvas fallback.
+            let acknowledgement = v.listening_cue.advance(mode, frame_seconds, reduced);
+            if acknowledgement > 0. {
+                context.save();
+                if let Ok(glow) = context.create_radial_gradient(
+                    w / 2.,
+                    h / 2.,
+                    0.,
+                    w / 2.,
+                    h / 2.,
+                    radius * 0.94,
+                ) {
+                    let _ =
+                        glow.add_color_stop(0., &format!("hsla({hue},95%,86%,{acknowledgement})"));
+                    let _ = glow.add_color_stop(
+                        0.55,
+                        &format!("hsla({hue},90%,74%,{})", acknowledgement * 0.65),
+                    );
+                    let _ = glow.add_color_stop(1., "rgba(0,0,0,0)");
+                    context.set_fill_style_canvas_gradient(&glow);
+                    context.begin_path();
+                    let _ = context.arc(w / 2., h / 2., radius * 0.94, 0., TAU);
+                    context.fill();
+                }
+                context.restore();
             }
             if v.keyboard_navigation
                 && document()
