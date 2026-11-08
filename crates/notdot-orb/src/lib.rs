@@ -4,6 +4,7 @@ mod conversation;
 mod interaction;
 mod orb_renderer;
 mod settings_navigation;
+mod shader_renderer;
 mod speakers;
 mod speech_queue;
 mod visual_state;
@@ -3212,6 +3213,8 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
         .get_context("2d")?
         .ok_or("Canvas 2D unavailable")?
         .dyn_into()?;
+    let shader_canvas: HtmlCanvasElement = element("orb-gl").unchecked_into();
+    let mut shader = shader_renderer::Shader::new(&shader_canvas).ok();
     type Frame = Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>>;
     let callback: Frame = Rc::new(RefCell::new(None));
     let next = callback.clone();
@@ -3232,6 +3235,8 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
             if canvas.width() != width || canvas.height() != height {
                 canvas.set_width(width);
                 canvas.set_height(height);
+                shader_canvas.set_width(width);
+                shader_canvas.set_height(height);
             }
             let _ = context.set_transform(dpr, 0., 0., dpr, 0., 0.);
             context.clear_rect(0., 0., w, h);
@@ -3310,17 +3315,30 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
             v.orb_motion.advance(mode, frame_seconds, reduced);
             let hue = v.preview_hue.unwrap_or(v.snapshot.settings.hue) as f64;
             let radius = w.min(h) * 0.17;
-            orb_renderer::draw(
-                &context,
-                orb_renderer::Frame {
-                    center: (w / 2., h / 2.),
-                    radius,
-                    hue,
-                    energy: v.speech_energy,
-                    reduced,
-                    motion: &v.orb_motion,
+            let frame = orb_renderer::Frame {
+                center: (w / 2., h / 2.),
+                radius,
+                hue,
+                energy: v.speech_energy,
+                reduced,
+                motion: &v.orb_motion,
+            };
+            let gpu = shader
+                .as_mut()
+                .is_some_and(|shader| shader.draw(&shader_canvas, &frame));
+            let _ = shader_canvas.set_attribute("data-ready", "true");
+            let _ = shader_canvas.set_attribute(
+                "style",
+                if gpu {
+                    "visibility:visible"
+                } else {
+                    "visibility:hidden"
                 },
             );
+            let _ = canvas.set_attribute("data-renderer", if gpu { "webgl" } else { "canvas" });
+            if !gpu {
+                orb_renderer::draw(&context, frame);
+            }
             if v.keyboard_navigation
                 && document()
                     .active_element()

@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- **A softer, translucent orb.** Flowing light and a glass-like shell show listening, thinking and speech, with smooth transitions that follow your chosen colour.
+- **A fluid, luminous orb.** A dark core stays clear over other apps, with themed waves, a travelling thinking light and a smooth speech-led pulse.
 - **Clearer glass settings.** A subtle themed backdrop keeps labels and controls readable, with solid surfaces when reduced transparency or high contrast is preferred.
 
 ## [0.4.0] - 2026-11-07

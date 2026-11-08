@@ -2,7 +2,13 @@
 
 The v0.5.0 appearance changes use the production Rust/WASM renderer and the existing voice state and audio meter. Service, capture and task behaviour is unchanged by this change.
 
-## Rendering and interaction
+## Updated dark-core shader integration
+
+The initial Canvas appearance below is superseded by the Rust/WASM WebGL renderer in this PR. The core is almost opaque, with translucent perimeter light. Speech drives stronger wave brightness, a 7.5% maximum body expansion and an outward, brighter shell; thinking retains a travelling arc. Geometry remains frozen under reduced motion. The original accessible Canvas remains above the shader for keyboard focus and quota, mute and wake indicators, and provides a dark-core fallback if WebGL cannot start or loses its context. A failed restoration stays on Canvas rather than retrying compilation every frame.
+
+`python3 scripts/prepare_shader_harness.py` wraps a fresh release Trunk build in reproducible state, theme, error, context-loss and recovery checks. Native window click-through and packaged-platform acceptance remain required before merge. Earlier JavaScript prototype benchmark numbers are not measurements of this integrated renderer.
+
+## Initial Canvas rendering and interaction
 
 - The orb has a translucent body, curved surface light, star points and a soft outer shell. Listening opens one shell, follow-up listening shows two, thinking adds a travelling arc and speech gently moves the light and shell using the existing smoothed audio level. Errors blend towards a warm colour.
 - Canvas work is bounded to eight 97-point ribbons, 42 stars and whole-path strokes. Rendering retains the existing 30 fps limit, 2× pixel-density cap and hidden-window pause. The animation clock clamps long frame gaps to avoid jumps after a window is restored.

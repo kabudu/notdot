@@ -248,6 +248,8 @@ pub(crate) fn draw(context: &Context, frame: Frame<'_>) {
     context.save();
     circle(context, radius);
     context.clip();
+    context.set_fill_style_str("#050c17");
+    context.fill_rect(-radius, -radius, radius * 2., radius * 2.);
     if let Ok(gradient) = context.create_radial_gradient(
         -radius * 0.42,
         -radius * 0.42,

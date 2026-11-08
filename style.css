@@ -290,3 +290,6 @@ dialog { overflow-wrap: anywhere; }
 @media (forced-colors: active) {
   .settings-footer #error:focus-visible { outline-color: Highlight; }
 }
+
+/* Shader pixels never replace the accessible interaction/status canvas. */
+#orb-gl{position:absolute;inset:0;pointer-events:none;cursor:default}#orb{position:relative}
