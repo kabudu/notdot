@@ -34,6 +34,12 @@ fn sync(app: &tauri::AppHandle) -> Result<(), String> {
     let size = main.inner_size().map_err(|e| e.to_string())?;
     let (x, y, side) = geometry(f64::from(size.width), f64::from(size.height));
     input
+        .set_max_size(Some(tauri::PhysicalSize::new(
+            side.round() as u32,
+            side.round() as u32,
+        )))
+        .map_err(|e| e.to_string())?;
+    input
         .set_size(tauri::PhysicalSize::new(
             side.round() as u32,
             side.round() as u32,
@@ -61,11 +67,15 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
             .parent(&main)?
             .title("notdot voice control")
             .inner_size(86., 86.)
+            .min_inner_size(1., 1.)
+            .max_inner_size(86., 86.)
             .decorations(false)
             .transparent(true)
             .shadow(false)
             .always_on_top(true)
-            .resizable(false)
+            // GTK otherwise imposes WebKit's 200px natural minimum.
+            // Explicit size constraints still prevent user resizing.
+            .resizable(cfg!(target_os = "linux"))
             .minimizable(false)
             .maximizable(false)
             .skip_taskbar(true)

@@ -30,7 +30,7 @@ def prepare(target, output, manifest=MANIFEST, fetch=download):
         if destination.is_symlink():raise ValueError('Refusing a symlinked archive')
         if destination.is_file() and destination.stat().st_size==size and hashlib.sha256(destination.read_bytes()).hexdigest()==entry['sha256']:
             continue
-        payload=fetch(f'https://github.com/k2-fsa/sherpa-onnx/releases/download/v{version}/{name}',limit=size)
+        payload=fetch(f'https://github.com/k2-fsa/sherpa-onnx/releases/download/v{version}/{name}',limit=size,timeout=180)
         if len(payload)!=size or hashlib.sha256(payload).hexdigest()!=entry['sha256']:raise ValueError('Native archive size or SHA-256 mismatch')
         temporary=None
         try:

@@ -1,11 +1,35 @@
 'use strict';
 const api=window.__TAURI__, control=document.querySelector('#control');
 const send=payload=>api.event.emitTo('main','orb-control',payload);
-let origin=null,dragged=false;
-control.addEventListener('pointerdown',event=>{origin={x:event.screenX,y:event.screenY};dragged=false;});
-control.addEventListener('pointermove',event=>{
- if(origin&&event.buttons===1&&!dragged&&Math.hypot(event.screenX-origin.x,event.screenY-origin.y)>5){dragged=true;api.window.Window.getByLabel('main').then(main=>main?.startDragging());}
+let origin=null,dragged=false,positioning=false,pendingPosition=null,generation=0;
+const mainWindow=api.window.Window.getByLabel('main');
+async function moveMain(){
+ if(positioning)return;
+ positioning=true;
+ try{
+  const main=await mainWindow;
+  while(pendingPosition){const position=pendingPosition;pendingPosition=null;await main?.setPosition(position);}
+ }catch(error){console.warn('Unable to move orb',error);pendingPosition=null;}
+ finally{positioning=false;}
+}
+control.addEventListener('pointerdown',event=>{
+ if(event.button!==0)return;
+ dragged=false;
+ const point={x:event.screenX,y:event.screenY,generation:++generation};
+ point.base=mainWindow.then(async main=>main?{position:await main.outerPosition(),scale:await main.scaleFactor()}:null).catch(error=>{console.warn('Unable to start orb drag',error);return null;});
+ origin=point;control.setPointerCapture(event.pointerId);
 });
+control.addEventListener('pointermove',async event=>{
+ const point=origin;if(!point)return;
+ const dx=event.screenX-point.x,dy=event.screenY-point.y;
+ if(!dragged&&Math.hypot(dx,dy)<=5)return;
+ dragged=true;
+ const base=await point.base;if(!base||point.generation!==generation)return;
+ pendingPosition=new api.dpi.PhysicalPosition(Math.round(base.position.x+dx*base.scale),Math.round(base.position.y+dy*base.scale));
+ void moveMain();
+});
+control.addEventListener('pointerup',()=>{origin=null;});
+control.addEventListener('pointercancel',()=>{origin=null;});
 control.addEventListener('click',event=>{if(!dragged&&event.button===0&&!event.ctrlKey)send({action:'click'});origin=null;});
 control.addEventListener('contextmenu',event=>{event.preventDefault();send({action:'settings'});});
 document.addEventListener('keydown',event=>{

@@ -30,10 +30,10 @@ def host_platform():
     return f'{platform.system()}-{machine}'
 
 
-def download(url, limit=MAX_ARCHIVE):
+def download(url, limit=MAX_ARCHIVE, timeout=60):
     for attempt in range(3):
         try:
-            with urlopen(Request(url, headers={'User-Agent': 'notdot-release-tools'}), timeout=60) as response:
+            with urlopen(Request(url, headers={'User-Agent': 'notdot-release-tools'}), timeout=timeout) as response:
                 return response.read(limit + 1)
         except HTTPError as error:
             if error.code not in (429, 500, 502, 503, 504) or attempt == 2:
