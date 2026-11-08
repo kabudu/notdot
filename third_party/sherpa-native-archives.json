@@ -1,0 +1,25 @@
+{
+  "version": "2.0.0",
+  "targets": {
+    "x86_64-unknown-linux-gnu": {
+      "archive": "sherpa-onnx-v2.0.0-linux-x64-static-lib.tar.bz2",
+      "bytes": 22661633,
+      "sha256": "d9879a4b8b6abc6ad4168887d7428776c2eb04646b19b744e1307a597555bc17"
+    },
+    "aarch64-apple-darwin": {
+      "archive": "sherpa-onnx-v2.0.0-osx-arm64-static-lib.tar.bz2",
+      "bytes": 20789947,
+      "sha256": "5e5bdce1d7fc834857278d8bb26f878de6a55c7085e589ed1e41a00baca643ec"
+    },
+    "x86_64-apple-darwin": {
+      "archive": "sherpa-onnx-v2.0.0-osx-x64-static-lib.tar.bz2",
+      "bytes": 20405650,
+      "sha256": "a6096bb89cb92e071f5fca4a9a869f7251587b707dd52852adc1a8ad6ace9051"
+    },
+    "x86_64-pc-windows-msvc": {
+      "archive": "sherpa-onnx-v2.0.0-win-x64-static-MT-Release-lib.tar.bz2",
+      "bytes": 122697732,
+      "sha256": "13cbef1926eea3bc01c8eb59bbfa3806f02f904a76664c215c4e20989866704a"
+    }
+  }
+}

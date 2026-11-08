@@ -7,6 +7,10 @@ use tauri::Manager;
 fn record_orb_input_mode(window: tauri::WebviewWindow, collapsed: bool) -> Result<(), String> {
     let result = orb_input::orb_input_mode(window.clone(), collapsed);
     let input = window.app_handle().get_webview_window("orb-input");
+    eprintln!(
+        "layout collapsed={collapsed} size={:?} result={result:?}",
+        input.as_ref().map(|w| w.inner_size())
+    );
     let _ = window.set_title(&format!(
         "Input test: collapsed={collapsed}, visible={:?}, focused={:?}, result={result:?}",
         input.as_ref().map(|w| w.is_visible()),
@@ -14,11 +18,21 @@ fn record_orb_input_mode(window: tauri::WebviewWindow, collapsed: bool) -> Resul
     ));
     result
 }
+#[tauri::command]
+fn record_visual_report(report: serde_json::Value) {
+    eprintln!("visual {report}");
+}
 fn report(app: &tauri::AppHandle) {
     if let (Some(main), Some(input)) = (
         app.get_webview_window("main"),
         app.get_webview_window("orb-input"),
     ) {
+        eprintln!(
+            "geometry core={:?} size={:?}; visual={:?}",
+            input.inner_position(),
+            input.inner_size(),
+            main.inner_position()
+        );
         let _ = input.set_title(&format!(
             "Core {:?}; visual {:?}",
             input.inner_position(),
@@ -45,7 +59,7 @@ fn main() {
     context.config_mut().build.dev_url = Some(url);
     let fixture_scope = format!("{}/*", address.trim_end_matches('/'));
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![record_orb_input_mode])
+        .invoke_handler(tauri::generate_handler![record_orb_input_mode,record_visual_report])
         .setup(move |app| {
             app.add_capability(serde_json::json!({
                 "identifier":"local-input-acceptance",

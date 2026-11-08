@@ -8,7 +8,11 @@ pub struct InputWindow {
     collapsed: AtomicBool,
 }
 fn geometry(width: f64, height: f64) -> (f64, f64, f64) {
-    let side = width.min(height) * 0.17 * std::f64::consts::SQRT_2;
+    // Leave room for physical-pixel rounding at fractional display scales.
+    let side = (width.min(height) * 0.17 * std::f64::consts::SQRT_2)
+        .floor()
+        .max(3.)
+        - 2.;
     ((width - side) / 2., (height - side) / 2., side)
 }
 fn sync(app: &tauri::AppHandle) -> Result<(), String> {
@@ -16,7 +20,9 @@ fn sync(app: &tauri::AppHandle) -> Result<(), String> {
         return Ok(());
     };
     let Some(input) = app.get_webview_window("orb-input") else {
-        return Ok(());
+        main.set_ignore_cursor_events(false)
+            .map_err(|e| e.to_string())?;
+        return Err("Orb input window is unavailable".into());
     };
     let collapsed = app.state::<InputWindow>().collapsed.load(Ordering::Relaxed);
     if !collapsed || !main.is_visible().unwrap_or(false) || main.is_minimized().unwrap_or(true) {
@@ -35,8 +41,8 @@ fn sync(app: &tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     input
         .set_position(tauri::PhysicalPosition::new(
-            position.x + x.round() as i32,
-            position.y + y.round() as i32,
+            position.x.saturating_add(x.round() as i32),
+            position.y.saturating_add(y.round() as i32),
         ))
         .map_err(|e| e.to_string())?;
     input.show().map_err(|e| e.to_string())?;
@@ -47,26 +53,46 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
     app.manage(InputWindow {
         collapsed: AtomicBool::new(false),
     });
-    WebviewWindowBuilder::new(app, "orb-input", WebviewUrl::App("orb-input.html".into()))
-        .title("notdot voice control")
-        .inner_size(86., 86.)
-        .decorations(false)
-        .transparent(true)
-        .shadow(false)
-        .always_on_top(true)
-        .resizable(false)
-        .skip_taskbar(true)
-        .visible(false)
-        .focused(false)
-        .build()?;
+    let main = app
+        .get_webview_window("main")
+        .ok_or("Companion window unavailable")?;
+    let input =
+        WebviewWindowBuilder::new(app, "orb-input", WebviewUrl::App("orb-input.html".into()))
+            .parent(&main)?
+            .title("notdot voice control")
+            .inner_size(86., 86.)
+            .decorations(false)
+            .transparent(true)
+            .shadow(false)
+            .always_on_top(true)
+            .resizable(false)
+            .minimizable(false)
+            .maximizable(false)
+            .skip_taskbar(true)
+            .visible(false)
+            .focused(false)
+            .build()?;
+    let handle = app.clone();
+    input.on_window_event(move |event| match event {
+        tauri::WindowEvent::CloseRequested { api, .. } => {
+            api.prevent_close();
+            handle.exit(0);
+        }
+        tauri::WindowEvent::ScaleFactorChanged { .. } => refresh(&handle),
+        _ => {}
+    });
     if let Some(main) = app.get_webview_window("main") {
         let handle = app.clone();
         main.on_window_event(move |event| {
-            if matches!(
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                handle.exit(0);
+            } else if matches!(
                 event,
                 tauri::WindowEvent::Moved(_)
                     | tauri::WindowEvent::Resized(_)
                     | tauri::WindowEvent::ScaleFactorChanged { .. }
+                    | tauri::WindowEvent::Focused(true)
             ) && let Err(error) = sync(&handle)
             {
                 rollback(&handle);
@@ -123,12 +149,22 @@ mod tests {
     #[test]
     fn input_corners_stay_inside_body_at_all_densities() {
         for scale in [1., 1.25, 1.5, 2.] {
-            let w = 360. * scale;
-            let (x, y, side) = geometry(w, w);
-            assert!((x + side / 2. - w / 2.).abs() < 1e-9);
-            assert!((y + side / 2. - w / 2.).abs() < 1e-9);
-            assert!((side / std::f64::consts::SQRT_2 - w * 0.17).abs() < 1e-9);
-            assert!(side / scale > 44.);
+            for base in [360_f64, 361., 450., 901.] {
+                let w = (base * scale).round();
+                let (x, y, side) = geometry(w, w);
+                assert!((x.round() + side / 2. - w / 2.).abs() <= 0.5);
+                assert!((y.round() + side / 2. - w / 2.).abs() <= 0.5);
+                for dx in [0., side] {
+                    for dy in [0., side] {
+                        let distance = (x.round() + dx - w / 2.).hypot(y.round() + dy - w / 2.);
+                        assert!(
+                            distance <= w * 0.17,
+                            "Input corner must stay inside the opaque body"
+                        );
+                    }
+                }
+                assert!(side / scale > 44.);
+            }
         }
     }
 }

@@ -19,7 +19,7 @@ control.addEventListener('blur',()=>send({action:'blur'}));
 api.event.listen('orb-visual-state',event=>{
  const p=event.payload;
  if(!p||typeof p.mode!=='string')return;
- const state=p.mode==='followup'?'Ready for your reply':p.mode;
+ const state={idle:'Ready',listening:'Listening',followup:'Ready for your reply',thinking:'Thinking',speaking:'Speaking',error:'Needs attention'}[p.mode]||'Ready';
  control.setAttribute('aria-label','notdot voice companion. '+state+'. '+(p.help||''));
  if(p.pressed===null)control.removeAttribute('aria-pressed');
  else control.setAttribute('aria-pressed',p.pressed);

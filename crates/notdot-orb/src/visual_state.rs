@@ -190,3 +190,73 @@ mod motion_tests {
         assert!(motion.speaking < 0.001);
     }
 }
+
+/// Keep a rendering deadline rather than sleeping a full interval after each
+/// delivered frame. The latter halves cadence on 30-32 Hz remote displays.
+#[derive(Default)]
+pub(crate) struct FrameClock {
+    deadline: Option<f64>,
+    previous: Option<f64>,
+    reduced: bool,
+}
+impl FrameClock {
+    pub fn tick(&mut self, now: f64, reduced: bool) -> Option<f64> {
+        if !now.is_finite() || now < 0. {
+            return None;
+        }
+        let interval = if reduced { 100. } else { 1000. / 30. };
+        let reset = self.previous.is_none_or(|previous| now < previous) || self.reduced != reduced;
+        if !reset && self.deadline.is_some_and(|deadline| now + 0.25 < deadline) {
+            return None;
+        }
+        let seconds = if reset {
+            0.
+        } else {
+            (now - self.previous.unwrap_or(now)) / 1000.
+        };
+        let next = self.deadline.unwrap_or(now) + interval;
+        self.deadline = Some(if reset || now - next > interval {
+            now + interval
+        } else {
+            next
+        });
+        self.previous = Some(now);
+        self.reduced = reduced;
+        Some(seconds)
+    }
+}
+#[cfg(test)]
+mod frame_clock_tests {
+    use super::*;
+    #[test]
+    fn near_target_displays_do_not_halve_rendering_cadence() {
+        for source in [10, 24, 30, 32, 60, 120] {
+            let mut clock = FrameClock::default();
+            let rendered = (0..source * 2)
+                .filter(|frame| {
+                    clock
+                        .tick(f64::from(*frame) * 1000. / f64::from(source), false)
+                        .is_some()
+                })
+                .count();
+            let expected = source.min(30) * 2;
+            assert!(
+                rendered.abs_diff(expected as usize) <= 1,
+                "{source} Hz source delivered {rendered} frames in two seconds"
+            );
+        }
+    }
+    #[test]
+    fn reduced_motion_and_long_hidden_gaps_do_not_create_catch_up_bursts() {
+        let mut clock = FrameClock::default();
+        let rendered = (0..120)
+            .filter(|frame| clock.tick(f64::from(*frame) * 1000. / 60., true).is_some())
+            .count();
+        assert_eq!(rendered, 20);
+        assert!(clock.tick(30_000., true).is_some());
+        assert!(clock.tick(30_001., true).is_none());
+        assert!(clock.tick(30_002., false).is_some());
+        assert!(clock.tick(f64::NAN, false).is_none());
+        assert!(clock.tick(f64::INFINITY, false).is_none());
+    }
+}

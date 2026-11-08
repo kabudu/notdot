@@ -186,7 +186,7 @@ struct View {
     capture_feedback_events: u64,
     last_poll_at: f64,
     generation: u64,
-    last_frame: f64,
+    frame_clock: visual_state::FrameClock,
     orb_motion: visual_state::OrbMotion,
     speech_energy: f64,
     keyboard_navigation: bool,
@@ -3250,10 +3250,8 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
         let mut v = view.borrow_mut();
         if v.initialized
             && v.snapshot.window_visible
-            && now - v.last_frame >= if reduced { 100. } else { 33. }
+            && let Some(frame_seconds) = v.frame_clock.tick(now, reduced)
         {
-            let frame_seconds = (now - v.last_frame) / 1000.;
-            v.last_frame = now;
             let w = canvas.client_width() as f64;
             let h = canvas.client_height() as f64;
             let dpr = window().device_pixel_ratio().min(2.);
@@ -3353,16 +3351,19 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
             let gpu = shader
                 .as_mut()
                 .is_some_and(|shader| shader.draw(&shader_canvas, &frame));
-            let _ = shader_canvas.set_attribute("data-ready", "true");
-            let _ = shader_canvas.set_attribute(
-                "style",
-                if gpu {
-                    "visibility:visible"
-                } else {
-                    "visibility:hidden"
-                },
-            );
-            let _ = canvas.set_attribute("data-renderer", if gpu { "webgl" } else { "canvas" });
+            let renderer = if gpu { "webgl" } else { "canvas" };
+            if canvas.get_attribute("data-renderer").as_deref() != Some(renderer) {
+                let _ = shader_canvas.set_attribute("data-ready", "true");
+                let _ = shader_canvas.set_attribute(
+                    "style",
+                    if gpu {
+                        "visibility:visible"
+                    } else {
+                        "visibility:hidden"
+                    },
+                );
+                let _ = canvas.set_attribute("data-renderer", renderer);
+            }
             if !gpu {
                 orb_renderer::draw(&context, frame);
             }
@@ -3372,10 +3373,13 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                     .is_some_and(|e| e == canvas.clone().into())
             {
                 context.save();
-                context.set_line_width(1.5);
-                context.set_stroke_style_str("rgba(220,245,255,.7)");
                 context.begin_path();
-                let _ = context.arc(w / 2., h / 2., radius * 1.52, 0., TAU);
+                let _ = context.arc(w / 2., h / 2., radius * 0.92, 0., TAU);
+                context.set_line_width(3.);
+                context.set_stroke_style_str("rgba(1,6,16,.65)");
+                context.stroke();
+                context.set_line_width(1.25);
+                context.set_stroke_style_str("rgba(220,245,255,.8)");
                 context.stroke();
                 context.restore();
             }
