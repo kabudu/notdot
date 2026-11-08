@@ -2,6 +2,8 @@
 mod audio_meter;
 mod conversation;
 mod interaction;
+mod settings_navigation;
+mod speakers;
 mod speech_queue;
 mod visual_state;
 use serde::{Deserialize, Serialize};
@@ -58,6 +60,8 @@ struct Settings {
     memory_enabled: bool,
     #[serde(default)]
     session_control: String,
+    #[serde(default)]
+    task_notifications: bool,
     initiative: Value,
     onboarding_complete: bool,
     thread_id: Option<String>,
@@ -74,9 +78,13 @@ struct Settings {
 }
 #[derive(Clone, Default, Deserialize)]
 struct Snapshot {
+    #[serde(default)]
+    profile_id: String,
     settings: Settings,
     #[serde(default)]
     session_pending: Option<String>,
+    #[serde(default)]
+    settings_pending: Option<String>,
     phase: String,
     reply: String,
     #[serde(default)]
@@ -146,6 +154,9 @@ struct View {
     polling: bool,
     native_manual: bool,
     capture_token: Option<String>,
+    /// The capture this window just ended. The native status can report it as
+    /// capturing for one more poll; that stale report must not show as listening.
+    ended_capture: Option<String>,
     last_capture_cue: String,
     capture_feedback_events: u64,
     last_poll_at: f64,
@@ -559,8 +570,16 @@ fn message(error: impl AsRef<str>) {
         reply.set_text_content(Some(error.as_ref()));
     }
 }
+/// Text for a rejected call: the string itself, or an Error's message.
+/// Never a debug dump or stack trace, which would end up on screen.
 fn js_error(v: JsValue) -> String {
-    v.as_string().unwrap_or_else(|| format!("{v:?}"))
+    if let Some(text) = v.as_string() {
+        return text;
+    }
+    v.dyn_ref::<js_sys::Error>()
+        .map(|e| String::from(e.message()))
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| "Something went wrong. Please try again.".to_owned())
 }
 async fn call(command: &str, args: Value) -> Result<JsValue, String> {
     let args = args
@@ -650,6 +669,7 @@ fn followup_allowed(view: &Shared, snapshot: &Snapshot) -> bool {
     let v = view.borrow();
     snapshot.settings.followup_enabled
         && snapshot.session_pending.is_none()
+        && snapshot.settings_pending.is_none()
         && snapshot.phase == "idle"
         && snapshot.window_visible
         && snapshot.settings.onboarding_complete
@@ -697,9 +717,15 @@ fn wake_ready(view: &Shared, snapshot: &Snapshot) -> bool {
         && v.audio.as_ref().is_none_or(|a| a.paused() || a.ended())
 }
 async fn wake_request(view: Shared, id: u64, generation: u64) -> Result<(), String> {
-    let text = call("transcribe_wake", json!({"id":id}))
-        .await?
-        .as_string()
+    let heard: Value =
+        serde_wasm_bindgen::from_value(call("transcribe_wake", json!({"id":id})).await?)
+            .map_err(|e| e.to_string())?;
+    if let Some(line) = heard["refusal"].as_str() {
+        return say_refusal(view, line.to_owned(), generation).await;
+    }
+    let text = heard
+        .as_str()
+        .map(str::to_owned)
         .ok_or("Transcription returned no text")?;
     if text.trim().is_empty() {
         if view.borrow().generation == generation {
@@ -708,6 +734,44 @@ async fn wake_request(view: Shared, id: u64, generation: u64) -> Result<(), Stri
         return Ok(());
     }
     submit_transcript(view, text, generation).await
+}
+/// Answer a capture that notdot refused on this computer (for example "I
+/// didn't catch enough of that") in the assistant's voice. It is an ordinary
+/// answer, so Settings stays closed; the person can simply ask again.
+async fn say_refusal(view: Shared, line: String, generation: u64) -> Result<(), String> {
+    if view.borrow().generation != generation {
+        return Ok(());
+    }
+    {
+        let mut v = view.borrow_mut();
+        v.capture_token = None;
+        v.native_manual = false;
+        v.local_phase = Some("synthesizing");
+    }
+    message(&line);
+    let spoken = async {
+        let audio = call("speak", json!({"text":line})).await?;
+        if view.borrow().generation != generation {
+            return Ok(());
+        }
+        play_encoded(view.clone(), audio, generation).await?;
+        let playback = view.borrow().audio.clone();
+        if let Some(audio) = playback {
+            wait_for_audio(&view, generation, &audio).await?;
+        }
+        Ok::<(), String>(())
+    }
+    .await;
+    if view.borrow().generation == generation {
+        view.borrow_mut().local_phase = None;
+    }
+    // If the voice itself is unavailable, the line stays on screen without
+    // opening Settings.
+    if spoken.is_err() && view.borrow().generation == generation {
+        stop_audio(&view);
+        message(&line);
+    }
+    Ok(())
 }
 fn close_intelligence_picker() {
     let _ = element("intelligence-section").remove_attribute("open");
@@ -1035,10 +1099,12 @@ fn refresh_models(view: &Shared, model: String, effort: String) {
 fn open_panel(view: &Shared) {
     spawn_local(async {
         let _ = call("cancel_session", json!({})).await;
+        let _ = call("cancel_settings", json!({})).await;
     });
     if view.borrow().conversation.active()
         || view.borrow().capture_token.is_some()
         || view.borrow().confirmation_listening.is_some()
+        || view.borrow().local_phase == Some("announcing")
     {
         stop_audio(view);
     }
@@ -1082,6 +1148,7 @@ fn open_panel(view: &Shared) {
         );
     }
     render_session_mode();
+    input("task-notifications").set_checked(s.task_notifications);
     select("behaviour").set_value(s.initiative["behaviour"].as_str().unwrap_or("reactive"));
     for (id, key) in [("quiet-start", "quiet_start"), ("quiet-end", "quiet_end")] {
         let minutes = s.initiative[key].as_u64().unwrap_or(0);
@@ -1147,6 +1214,8 @@ fn open_panel(view: &Shared) {
             select("provider").set_value(&provider);
         }
     });
+    settings_navigation::on_open(!view.borrow().snapshot.settings.onboarding_complete);
+    speakers::on_open();
     let _ = dialog("panel").show_modal();
     if view.borrow().snapshot.key_authorized {
         let target = view.clone();
@@ -1158,6 +1227,7 @@ fn open_panel(view: &Shared) {
     }
 }
 fn close_panel(view: &Shared) {
+    speakers::cancel();
     view.borrow_mut().preview_hue = None;
     apply_theme(view.borrow().snapshot.settings.hue);
     dialog("panel").close();
@@ -1177,10 +1247,12 @@ fn mute_capture(view: &Shared) {
 }
 fn stop_audio(view: &Shared) {
     spawn_local(async {
+        let _ = call("cancel_followup_speech", json!({})).await;
         let _ = call("wake_activity", json!({"ready":false})).await;
     });
     let mut v = view.borrow_mut();
     if let Some(token) = v.capture_token.take() {
+        v.ended_capture = Some(token.clone());
         spawn_local(async move {
             let _ = call("cancel_capture", json!({"token":token})).await;
         });
@@ -1192,6 +1264,8 @@ fn stop_audio(view: &Shared) {
             let _ = call(
                 if id.starts_with("session-") {
                     "cancel_session"
+                } else if id.starts_with("settings-") {
+                    "cancel_settings"
                 } else {
                     "cancel_memory"
                 },
@@ -1232,9 +1306,12 @@ fn stop_audio(view: &Shared) {
     }
 }
 async fn speech_tick() -> Result<(), String> {
+    speech_delay(80).await
+}
+async fn speech_delay(milliseconds: i32) -> Result<(), String> {
     let promise = js_sys::Promise::new(&mut |resolve, reject| {
         if let Err(error) =
-            window().set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 80)
+            window().set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, milliseconds)
         {
             let _ = reject.call1(&JsValue::NULL, &error);
         }
@@ -1360,23 +1437,28 @@ async fn submit_transcript(view: Shared, text: String, generation: u64) -> Resul
     if view.borrow().generation != generation {
         return Ok(());
     }
-    view.borrow_mut().capture_token = None;
+    let capture_token = view.borrow_mut().capture_token.take();
     view.borrow_mut().native_manual = false;
-    let pending_confirmation = view.borrow_mut().confirmation_listening.take();
+    // Keep the operation ID while native validation is pending, so Escape can
+    // revoke approval before a voice/model lookup reaches the save boundary.
+    let pending_confirmation = view.borrow().confirmation_listening.clone();
     if let Some(id) = pending_confirmation {
         view.borrow_mut().local_phase = Some("synthesizing");
         let result = call(
             if id.starts_with("session-") {
                 "answer_session"
+            } else if id.starts_with("settings-") {
+                "answer_settings"
             } else {
                 "answer_memory"
             },
-            json!({"id":id,"text":text}),
+            json!({"id":id,"text":text,"captureToken":capture_token}),
         )
         .await?;
         if view.borrow().generation != generation {
             return Ok(());
         }
+        view.borrow_mut().confirmation_listening = None;
         let answer = result
             .as_string()
             .ok_or("Confirmation returned no answer")?;
@@ -1405,10 +1487,13 @@ async fn submit_transcript(view: Shared, text: String, generation: u64) -> Resul
     view.borrow_mut().conversation.close();
     let request = format!("voice-{:.0}-{generation}", js_sys::Date::now());
     view.borrow_mut().request_id = Some(request.clone());
-    let turn = call("send_message", json!({"text":text,"requestId":request}))
-        .await?
-        .as_string()
-        .ok_or("Runtime did not identify the submitted turn")?;
+    let turn = call(
+        "send_message",
+        json!({"text":text,"requestId":request,"captureToken":capture_token}),
+    )
+    .await?
+    .as_string()
+    .ok_or("Runtime did not identify the submitted turn")?;
     if view.borrow().generation != generation {
         return Ok(());
     }
@@ -1737,6 +1822,8 @@ async fn browser_voice(view: Shared) -> Result<(), String> {
 }
 #[wasm_bindgen(start)]
 pub fn start() -> Result<(), JsValue> {
+    settings_navigation::install()?;
+    speakers::install()?;
     let view = Rc::new(RefCell::new(View {
         snapshot: Snapshot {
             settings: Settings {
@@ -2279,6 +2366,7 @@ pub fn start() -> Result<(), JsValue> {
             let (h, m) = value.split_once(':').unwrap_or(("0", "0"));
             h.parse::<u16>().unwrap_or(0) * 60 + m.parse::<u16>().unwrap_or(0)
         };
+        settings.task_notifications = input("task-notifications").checked();
         settings.initiative = json!({"behaviour":select("behaviour").value(),"quiet_start":minutes("quiet-start"),"quiet_end":minutes("quiet-end"),"daily_limit":input("daily-limit").value().parse::<u8>().unwrap_or(3),"gap_minutes":input("followup-gap").value().parse::<u16>().unwrap_or(60)});
         settings.startup = if input("start-at-login").checked() {
             select("startup").value()
@@ -2587,6 +2675,28 @@ pub fn start() -> Result<(), JsValue> {
                 serde_wasm_bindgen::from_value::<Snapshot>(v).map_err(|e| e.to_string())
             }) {
                 Ok(mut snapshot) => {
+                    let previous_profile = target.borrow().snapshot.profile_id.clone();
+                    if !previous_profile.is_empty() && previous_profile != snapshot.profile_id {
+                        let capturing = {
+                            let v = target.borrow();
+                            v.capture_token.as_deref() == snapshot.wake["capture_token"].as_str()
+                                && v.capture_token.is_some()
+                                && v.audio.is_none()
+                                && matches!(
+                                    snapshot.wake["phase"].as_str(),
+                                    Some("capturing" | "ready")
+                                )
+                        };
+                        if capturing {
+                            let mut v = target.borrow_mut();
+                            v.speech_queue = Default::default();
+                            v.reply_turn.clear();
+                            v.voice_pending = false;
+                        } else {
+                            stop_audio(&target);
+                        }
+                        target.borrow_mut().conversation.close();
+                    }
                     if target.borrow().conversation.active()
                         && !followup_allowed(&target, &snapshot)
                     {
@@ -2709,6 +2819,7 @@ pub fn start() -> Result<(), JsValue> {
                             }
                         });
                     } else {
+                        let ready = ready || speakers::recording();
                         let _ = call("wake_activity", json!({"ready":ready})).await;
                     }
                     let speak = {
@@ -2818,6 +2929,11 @@ pub fn start() -> Result<(), JsValue> {
                         if usage_notice.is_none()
                             && !announce
                             && snapshot.phase == "idle"
+                            && snapshot.window_visible
+                            && !snapshot.settings.microphone_muted
+                            && snapshot.session_pending.is_none()
+                            && snapshot.settings_pending.is_none()
+                            && snapshot.learning["confirmation"].is_null()
                             && snapshot.wake["phase"] != "capturing"
                             && !speak
                             && !v.conversation.active()
@@ -2857,11 +2973,15 @@ pub fn start() -> Result<(), JsValue> {
                             && !dialog("about").open()
                             && v.audio.as_ref().is_none_or(|a| a.paused() || a.ended())
                         {
-                            snapshot.session_pending.clone().or_else(|| {
-                                snapshot.learning["confirmation"]
-                                    .as_str()
-                                    .map(str::to_owned)
-                            })
+                            snapshot
+                                .settings_pending
+                                .clone()
+                                .or_else(|| snapshot.session_pending.clone())
+                                .or_else(|| {
+                                    snapshot.learning["confirmation"]
+                                        .as_str()
+                                        .map(str::to_owned)
+                                })
                         } else {
                             None
                         }
@@ -2873,6 +2993,11 @@ pub fn start() -> Result<(), JsValue> {
                         let model = select("model").value();
                         let effort = select("effort").value();
                         refresh_models(&target, model, effort);
+                    }
+                    if !dialog("panel").open()
+                        && target.borrow().snapshot.settings.hue != snapshot.settings.hue
+                    {
+                        apply_theme(snapshot.settings.hue);
                     }
                     let onboard = !snapshot.settings.onboarding_complete;
                     target.borrow_mut().snapshot = snapshot;
@@ -2909,6 +3034,11 @@ pub fn start() -> Result<(), JsValue> {
                                         .as_str()
                                         .ok_or("Chat action expired")?
                                         .to_owned()
+                                } else if id.starts_with("settings-") {
+                                    call("settings_question", json!({"id":id}))
+                                        .await?
+                                        .as_string()
+                                        .ok_or("Settings check expired")?
                                 } else {
                                     call("memory_question", json!({"id":id}))
                                         .await?
@@ -2945,12 +3075,25 @@ pub fn start() -> Result<(), JsValue> {
                         target.borrow_mut().local_phase = Some("announcing");
                         let companion = target.clone();
                         let generation = companion.borrow().generation;
+                        let task_report =
+                            companion.borrow().snapshot.initiative["task_report"] == true;
                         spawn_local(async move {
-                            if let Err(e) = call("announce_followup", json!({"id":id})).await {
-                                message(e);
-                            }
+                            let spoken = match call("announce_followup", json!({"id":id})).await {
+                                Ok(_) => true,
+                                Err(e) => {
+                                    if companion.borrow().generation == generation {
+                                        message(e);
+                                    }
+                                    false
+                                }
+                            };
+                            let ended_at = conversation_now();
+                            let _ = speech_delay(conversation::ECHO_GUARD_MS as i32).await;
                             if companion.borrow().generation == generation {
-                                companion.borrow_mut().local_phase = None;
+                                let mut v = companion.borrow_mut();
+                                v.local_phase = None;
+                                let enabled = task_report && v.snapshot.settings.followup_enabled;
+                                v.conversation.after_reply(ended_at, enabled, spoken);
                             }
                         });
                     }
@@ -3099,12 +3242,17 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                 if v.conversation.listening() && v.local_phase == Some("listening") {
                     "followup"
                 } else {
-                    v.local_phase
-                        .unwrap_or(if v.snapshot.wake["phase"] == "capturing" {
+                    v.local_phase.unwrap_or(
+                        if visual_state::native_capture_live(
+                            v.snapshot.wake["phase"].as_str().unwrap_or(""),
+                            v.snapshot.wake["capture_token"].as_str(),
+                            v.ended_capture.as_deref(),
+                        ) {
                             "listening"
                         } else {
                             v.snapshot.phase.as_str()
-                        })
+                        },
+                    )
                 },
                 playing,
                 v.voice_pending,
@@ -3488,6 +3636,7 @@ fn mount_debug(view: &Shared) {
 }
 
 async fn review_followups() -> Result<(), String> {
+    settings_navigation::reveal("reminders-section");
     let value = call("followups", json!({})).await?;
     let entries: Value = serde_wasm_bindgen::from_value(value).map_err(|e| e.to_string())?;
     let container = element("followups");
@@ -3544,6 +3693,7 @@ async fn review_followups() -> Result<(), String> {
     Ok(())
 }
 async fn review_memories() -> Result<(), String> {
+    settings_navigation::reveal("memory-section");
     let value = call("memories", json!({})).await?;
     let records: Value = serde_wasm_bindgen::from_value(value).map_err(|e| e.to_string())?;
     let container = element("notes");

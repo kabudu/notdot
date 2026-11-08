@@ -227,11 +227,12 @@ Source URLs, published revisions, archive checksums and text checksums are in [m
 | muda 0.20.0 | Apache-2.0 OR MIT | [text](texts/2ab5537b8c0cb1d475e2145b6a7994b04e7c71e6e5bd836f7f9c47c221a5ad9a.txt), [text](texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt), [text](texts/b99f9d43803f2ac979c50949df630bd8eeaf2fcd1b9fdb9093710d70f5dfb63d.txt) | [Apache-2.0](texts/074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff.txt), [MIT](texts/b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5.txt) |
 | new_debug_unreachable 1.0.6 | MIT | [text](texts/f7715d38a3fa1b4ac97c5729740752505a39cb92ee83ab5b102aeb5eaa7cdea4.txt) | [MIT](texts/b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5.txt) |
 | nix 0.31.3 | MIT | [text](texts/66e3ee1fa7f909ad3c612d556f2a0cdabcd809ad6e66f3b0605015ac64841b70.txt) | [MIT](texts/b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5.txt) |
-| notdot 0.3.0 | Apache-2.0 | [text](texts/481f5a1c3561b3ceac46dcf0b8e091330a1d4bf4d4c01aec87b35563c401c471.txt), [text](texts/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt), [text](texts/d90cf47661861c46da6a10905b89f2c7e59e91b3a4a281b53ba90724afbdc176.txt) | [Apache-2.0](texts/074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff.txt) |
-| notdot-core 0.3.0 | Apache-2.0 | [text](texts/481f5a1c3561b3ceac46dcf0b8e091330a1d4bf4d4c01aec87b35563c401c471.txt), [text](texts/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt) | [Apache-2.0](texts/074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff.txt) |
-| notdot-orb 0.3.0 | Apache-2.0 | [text](texts/481f5a1c3561b3ceac46dcf0b8e091330a1d4bf4d4c01aec87b35563c401c471.txt), [text](texts/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt) | [Apache-2.0](texts/074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff.txt) |
-| notdot-voice 0.3.0 | Apache-2.0 | [text](texts/481f5a1c3561b3ceac46dcf0b8e091330a1d4bf4d4c01aec87b35563c401c471.txt), [text](texts/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt) | [Apache-2.0](texts/074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff.txt) |
-| notdot-wake-runtime 0.3.0 | Apache-2.0 | [text](texts/481f5a1c3561b3ceac46dcf0b8e091330a1d4bf4d4c01aec87b35563c401c471.txt), [text](texts/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt) | [Apache-2.0](texts/074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff.txt) |
+| notdot 0.4.0 | Apache-2.0 | [text](texts/481f5a1c3561b3ceac46dcf0b8e091330a1d4bf4d4c01aec87b35563c401c471.txt), [text](texts/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt), [text](texts/d90cf47661861c46da6a10905b89f2c7e59e91b3a4a281b53ba90724afbdc176.txt) | [Apache-2.0](texts/074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff.txt) |
+| notdot-core 0.4.0 | Apache-2.0 | [text](texts/481f5a1c3561b3ceac46dcf0b8e091330a1d4bf4d4c01aec87b35563c401c471.txt), [text](texts/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt) | [Apache-2.0](texts/074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff.txt) |
+| notdot-orb 0.4.0 | Apache-2.0 | [text](texts/481f5a1c3561b3ceac46dcf0b8e091330a1d4bf4d4c01aec87b35563c401c471.txt), [text](texts/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt) | [Apache-2.0](texts/074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff.txt) |
+| notdot-speakers 0.4.0 | Apache-2.0 | [text](texts/481f5a1c3561b3ceac46dcf0b8e091330a1d4bf4d4c01aec87b35563c401c471.txt), [text](texts/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt) | [Apache-2.0](texts/074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff.txt) |
+| notdot-voice 0.4.0 | Apache-2.0 | [text](texts/481f5a1c3561b3ceac46dcf0b8e091330a1d4bf4d4c01aec87b35563c401c471.txt), [text](texts/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt) | [Apache-2.0](texts/074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff.txt) |
+| notdot-wake-runtime 0.4.0 | Apache-2.0 | [text](texts/481f5a1c3561b3ceac46dcf0b8e091330a1d4bf4d4c01aec87b35563c401c471.txt), [text](texts/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt) | [Apache-2.0](texts/074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff.txt) |
 | ntapi 0.4.3 | Apache-2.0 OR MIT | [text](texts/11a7964ccc0dd115d16720ab1d826c5d03e52838748ffaba3d21bae8bcacd82a.txt), [text](texts/cf90d659de5c1e6418267ab8043b756e65508ee5d8d50b29eb2d2fe444c2c3eb.txt) | [Apache-2.0](texts/074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff.txt), [MIT](texts/b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5.txt) |
 | num-conv 0.2.2 | MIT OR Apache-2.0 | [text](texts/0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594.txt), [text](texts/e2e245f2b566d0bfafb0f6a04c16b82d710c4e6e7d799e39bb4ef6e541b85b98.txt) | [Apache-2.0](texts/074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff.txt), [MIT](texts/b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5.txt) |
 | num-integer 0.1.47 | MIT OR Apache-2.0 | [text](texts/6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb.txt), [text](texts/a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2.txt) | [Apache-2.0](texts/074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff.txt), [MIT](texts/b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5.txt) |
@@ -504,14 +505,21 @@ Source URLs, published revisions, archive checksums and text checksums are in [m
 ## Models and previously retained native notices
 
 - [text](texts/0e07b95f3a8d6230037707c5c4a2b554d12c4cb67369669ac255635528ffcee2.txt)
+- [text](texts/186201b750ade9ec072a51d5a49d11d8288c9ada53d9d4120de7eba6af5b0b6b.txt)
 - [text](texts/2e63e9a38b6e8fc0c7bc37ce174caca1862870856c6daf5697cfb785e925520b.txt)
 - [text](texts/2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c.txt)
 - [text](texts/b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d.txt)
 - [text](texts/bd4ce8e44170a5f9f481310ca85c51de3c4f851a65e679b40e603b143bd3542a.txt)
+- [text](texts/c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4.txt)
 - [text](texts/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30.txt)
 - [text](texts/d90cf47661861c46da6a10905b89f2c7e59e91b3a4a281b53ba90724afbdc176.txt)
 - [text](texts/e562a2ddfaf8280537795ac5ecd34e3012b6582a147ef69ba6a6a5c08c84757d.txt)
 - [text](texts/f0510d3b9d1223c45e8fdd2b49270ec8734fff491c7f7d1b948ee70162e1ceff.txt)
+
+## Bundled speaker model
+
+- 3D-Speaker CAM++ common advanced (Apache-2.0): [text](texts/c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4.txt), [text](texts/186201b750ade9ec072a51d5a49d11d8288c9ada53d9d4120de7eba6af5b0b6b.txt)
+  Weight SHA-256: `aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2`. [Upstream asset](https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx).
 
 ## Separate public-distribution checks
 

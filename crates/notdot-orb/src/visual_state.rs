@@ -37,6 +37,11 @@ impl Mode {
         }
     }
 }
+/// Whether a native wake capture should still show as listening. After the UI
+/// ends a capture, status can report that same capture for one more poll.
+pub(crate) fn native_capture_live(phase: &str, token: Option<&str>, ended: Option<&str>) -> bool {
+    phase == "capturing" && ended.is_none_or(|ended| token != Some(ended))
+}
 pub(crate) fn rms(bytes: &[u8]) -> f64 {
     if bytes.is_empty() {
         return 0.;
@@ -76,6 +81,17 @@ mod tests {
         assert_eq!(Mode::resolve("followup", false, false), Mode::Followup);
         assert_eq!(Mode::resolve("followup", true, false), Mode::Speaking);
         assert_eq!(Mode::Followup.name(), "followup");
+    }
+    #[test]
+    fn an_ended_capture_does_not_flash_listening_before_idle() {
+        assert!(native_capture_live("capturing", Some("a"), None));
+        assert!(native_capture_live("capturing", None, None));
+        // The follow-up window that just timed out is still reported once.
+        assert!(!native_capture_live("capturing", Some("a"), Some("a")));
+        // A new capture after it shows immediately.
+        assert!(native_capture_live("capturing", Some("b"), Some("a")));
+        assert!(native_capture_live("capturing", None, Some("a")));
+        assert!(!native_capture_live("ready", Some("b"), None));
     }
     #[test]
     fn audio_meter_distinguishes_silence_from_known_waveform() {

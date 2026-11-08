@@ -2708,7 +2708,7 @@ dependencies = [
 
 [[package]]
 name = "notdot"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2718,6 +2718,7 @@ dependencies = [
  "hound",
  "keyring",
  "notdot-core",
+ "notdot-speakers",
  "notdot-voice",
  "notdot-wake-runtime",
  "reqwest 0.12.28",
@@ -2743,7 +2744,7 @@ dependencies = [
 
 [[package]]
 name = "notdot-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "mnemara",
  "serde",
@@ -2755,7 +2756,7 @@ dependencies = [
 
 [[package]]
 name = "notdot-orb"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "js-sys",
  "serde",
@@ -2767,8 +2768,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "notdot-speakers"
+version = "0.4.0"
+dependencies = [
+ "hound",
+ "ring",
+ "serde",
+ "sherpa-onnx",
+ "tempfile",
+ "zeroize",
+]
+
+[[package]]
 name = "notdot-voice"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2783,7 +2796,7 @@ dependencies = [
 
 [[package]]
 name = "notdot-wake-runtime"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "hound",
  "rubato",

@@ -355,6 +355,8 @@ struct Detector {
     kws: KeywordSpotter,
     stream: OnlineStream,
     require_hey: bool,
+    /// Token count of the coarticulated variant, when the phrase has one.
+    merged: Option<usize>,
     candidates: u64,
     rejected_energy: u64,
     rejected_prefix: u64,
@@ -425,9 +427,11 @@ impl Detector {
         let mut keywords = format!("{} :3.0 #0.20 @wake\n", tokens.join(" "));
         // Hey Ava shares the EY vowel across the word boundary. Model both
         // separated and coarticulated vowels without dropping other phonemes.
+        let mut merged = None;
         if require_hey && tokens.get(1) == tokens.get(2) {
             let mut joined = tokens.clone();
             joined.remove(2);
+            merged = Some(joined.len());
             keywords.push_str(&format!("{} :3.0 #0.20 @wake\n", joined.join(" ")));
         }
         c.keywords_buf = Some(keywords);
@@ -438,6 +442,7 @@ impl Detector {
             kws,
             stream,
             require_hey,
+            merged,
             candidates: 0,
             rejected_energy: 0,
             rejected_prefix: 0,
@@ -502,12 +507,13 @@ impl Detector {
                 self.kws.reset(&self.stream);
                 // An inserted H can stretch across the name's opening vowel.
                 // Require the short H-to-EY transition for the explicit Hey prefix.
-                let prefix = !self.require_hey
+                let prefix = (!self.require_hey
                     || result
                         .timestamps
                         .get(1)
                         .zip(result.timestamps.first())
-                        .is_some_and(|(ey, h)| *ey > *h && ey - h <= 0.16);
+                        .is_some_and(|(ey, h)| *ey > *h && ey - h <= 0.16))
+                    && merged_vowel_is_held(&result.timestamps, self.merged);
                 #[cfg(test)]
                 eprintln!(
                     "wake candidate: supported={supported} prefix={prefix} timestamps={:?}",
@@ -541,6 +547,23 @@ impl Detector {
         self.quiet_seconds = 0.;
         self.voiced.clear();
     }
+}
+
+/// The coarticulated "Hey Ava" variant drops the second EY, which leaves it one
+/// vowel away from everyday speech such as "have a" or "heavy". A spoken
+/// "Hey Ava" holds that shared vowel; "have a" moves on almost at once. In 176
+/// synthetic clips the merged vowel lasted 0.24-0.28 s in true wakes and
+/// 0.04-0.08 s in every false accept, so require 0.16 s, midway between them.
+/// Timestamps arrive in 0.04 s steps; the tolerance keeps 0.16 itself held.
+const MIN_MERGED_VOWEL_SECONDS: f32 = 0.16 - 0.005;
+fn merged_vowel_is_held(timestamps: &[f32], merged: Option<usize>) -> bool {
+    if merged != Some(timestamps.len()) {
+        return true;
+    }
+    timestamps
+        .get(2)
+        .zip(timestamps.get(1))
+        .is_some_and(|(next, vowel)| next - vowel >= MIN_MERGED_VOWEL_SECONDS)
 }
 
 // Two seconds of bounded headroom tolerate batched remote-audio callbacks.
@@ -1932,6 +1955,25 @@ mod tests {
             "wake recognition must still activate after a backup failure"
         );
         assert!(worker.detector.as_ref().unwrap().fallback.error.is_none());
+    }
+    #[test]
+    fn merged_hey_ava_vowel_must_be_held_unlike_have_a() {
+        // Timestamps of HH EY V AH from the merged keyword variant (seconds).
+        let have_a = [0.16, 0.20, 0.24, 0.32];
+        let heavy = [0.16, 0.24, 0.32, 0.36];
+        let hey_ava = [0.20, 0.24, 0.52, 0.60];
+        let boundary = [0.20, 0.24, 0.40, 0.48];
+        assert!(merged_vowel_is_held(&boundary, Some(4)));
+        assert!(!merged_vowel_is_held(&[0.20, 0.24, 0.36, 0.44], Some(4)));
+        assert!(!merged_vowel_is_held(&have_a, Some(4)));
+        assert!(!merged_vowel_is_held(&heavy, Some(4)));
+        assert!(merged_vowel_is_held(&hey_ava, Some(4)));
+        // The full keyword and phrases without a merged variant are unaffected.
+        assert!(merged_vowel_is_held(
+            &[0.0, 0.04, 0.08, 0.12, 0.16],
+            Some(4)
+        ));
+        assert!(merged_vowel_is_held(&have_a, None));
     }
     #[test]
     fn quiet_wake_phrases_and_confusable_speech() {

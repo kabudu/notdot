@@ -34,23 +34,44 @@ fn scope() -> MemoryScope {
         ..MemoryScope::default()
     }
 }
+/// Sled releases its file lock only when its last background job drops the
+/// shared file handle, which can be shortly after the previous `Memory` was
+/// dropped (or, after `restart`, shortly after the old process exits). Wait a
+/// bounded time for that release; every other failure is returned at once.
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+fn open_store(path: &Path, wait: std::time::Duration) -> Result<SledMemoryStore, String> {
+    let deadline = std::time::Instant::now() + wait;
+    let mut pause = std::time::Duration::from_millis(5);
+    loop {
+        let mut config = EngineConfig::default();
+        config.compaction.summarize_after_record_count = 2;
+        match SledMemoryStore::open(SledStoreConfig::new(path).with_engine_config(config)) {
+            Ok(store) => return Ok(store),
+            // sled 0.34 reports contention only as this message (ErrorKind::Other).
+            Err(e)
+                if e.to_string().contains("could not acquire lock")
+                    && std::time::Instant::now() + pause < deadline =>
+            {
+                std::thread::sleep(pause);
+                pause = (pause * 2).min(std::time::Duration::from_millis(100));
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+}
 impl Memory {
     pub fn open(path: &Path) -> Result<Self, String> {
         Self::open_with_learning(path, false)
     }
     pub fn open_with_learning(path: &Path, enabled: bool) -> Result<Self, String> {
-        let mut config = EngineConfig::default();
-        config.compaction.summarize_after_record_count = 2;
-        SledMemoryStore::open(SledStoreConfig::new(path).with_engine_config(config))
-            .map(|store| Self {
-                policy: tokio::sync::watch::channel(LearningPolicy { enabled, epoch: 0 }).0,
-                store,
-                mutations: tokio::sync::Mutex::new(()),
-                revision: std::sync::atomic::AtomicU64::new(1),
-                maintained: std::sync::atomic::AtomicU64::new(0),
-                semantic_reviewed: std::sync::atomic::AtomicU64::new(0),
-            })
-            .map_err(|e| e.to_string())
+        open_store(path, LOCK_WAIT).map(|store| Self {
+            policy: tokio::sync::watch::channel(LearningPolicy { enabled, epoch: 0 }).0,
+            store,
+            mutations: tokio::sync::Mutex::new(()),
+            revision: std::sync::atomic::AtomicU64::new(1),
+            maintained: std::sync::atomic::AtomicU64::new(0),
+            semantic_reviewed: std::sync::atomic::AtomicU64::new(0),
+        })
     }
     pub async fn remember(&self, text: &str, thread: &str) -> Result<String, String> {
         let _gate = self.mutations.lock().await;
@@ -327,6 +348,31 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(memory.review("").await.unwrap().len(), 2);
+    }
+    #[test]
+    fn reopening_waits_only_for_a_briefly_held_store_lock() {
+        let d = tempfile::tempdir().unwrap();
+        let held = open_store(d.path(), LOCK_WAIT).unwrap();
+        // A lock that stays held fails after the bounded wait, naming the cause.
+        let started = std::time::Instant::now();
+        let error = open_store(d.path(), std::time::Duration::from_millis(60))
+            .expect_err("held store must not open twice");
+        assert!(error.contains("could not acquire lock"), "{error}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        // A lock released shortly afterwards, as by sled's background jobs or an
+        // exiting previous process, is waited for instead of failing startup.
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            drop(held);
+        });
+        open_store(d.path(), LOCK_WAIT).unwrap();
+        release.join().unwrap();
+        // Other failures are not retried.
+        let file = d.path().join("not-a-directory");
+        std::fs::write(&file, b"x").unwrap();
+        let started = std::time::Instant::now();
+        assert!(open_store(&file, LOCK_WAIT).is_err());
+        assert!(started.elapsed() < std::time::Duration::from_millis(500));
     }
     #[tokio::test]
     async fn recall_reopen_forget() {

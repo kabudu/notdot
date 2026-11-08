@@ -9,6 +9,7 @@ sha2 = "0.10"
 tauri-build = { version = "2", features = [] }
 [dependencies]
 notdot-core = { path = "../crates/notdot-core" }
+notdot-speakers = { path = "../crates/notdot-speakers" }
 notdot-voice = { path = "../crates/notdot-voice" }
 notdot-wake-runtime = { path = "../crates/notdot-wake-runtime" }
 tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }

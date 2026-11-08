@@ -26,9 +26,11 @@ https://github.com/user-attachments/assets/8279f3a2-af14-4c5b-8960-e69596ca5ad5
 - **Talk naturally.** Say your wake phrase or click once, speak, then pause to send. Press Escape to cancel.
 - **Follow up without starting again.** Turn on an optional listening window after replies. Keep talking, or say “That’s all” to stop.
 - **Use your other Codex chats.** Find and read relevant history by voice. Optional controls let you send work, add instructions and stop tasks notdot started, with your chosen confirmation setting.
+- **Hear when work finishes.** Add “and let me know when it’s done” when sending a task. notdot reports the result when you’re idle, respecting quiet hours.
 - **Pick up where you left off.** Continue the same chat after restarting notdot. You can view its history in Codex.
 - **Choose what it remembers.** Turn learning on or off, review and edit saved memories, forget individual notes or reset them all.
-- **Make it yours.** Choose its name, orb colour, voice and how much it can interrupt you.
+- **Share without sharing everything.** Add trusted voices with separate conversations and memories, then choose which Codex chats each person may read or message. Remove someone at any time, or let them remove themselves by voice with a confirmation on screen. Voice matching is a convenience, not authentication.
+- **Make it yours.** Choose its name, orb colour, voice and how much it can interrupt you. Ask for settings changes by voice, hear them read back, then approve.
 
 The orb shows when notdot is listening, thinking and speaking. Settings opens when you right-click the orb or use Command/Control + comma.
 
@@ -57,6 +59,8 @@ Use notdot to send messages in its chat. Keep the Codex app for viewing that cha
 ## Privacy and memory
 
 Wake detection runs on your computer. Background listening is not sent to a speech service. After activation, your chosen services transcribe your request and generate the spoken reply. Codex receives your request and any relevant memories. If you ask about another local Codex chat, selected messages from that chat are also supplied to the model.
+
+Voice matching runs on your computer. Saved voiceprints are encrypted there, and setup recordings are discarded once a voiceprint is made. Removing a person deletes their voiceprint and private memories.
 
 Saved memories stay on your computer. Turning learning off stops saving and using those notes, while keeping existing notes and chat history. Resetting memory does not delete saved Codex chats or backups.
 

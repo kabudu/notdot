@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "notdot",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "identifier": "com.kabudu.notdot",
   "build": {
     "beforeDevCommand": "trunk serve --port 1420",
@@ -55,6 +55,7 @@
     ],
     "resources": {
       "resources/wake/": "wake/",
+      "resources/speaker/": "speaker/",
       "resources/notices/": "notices/"
     }
   },

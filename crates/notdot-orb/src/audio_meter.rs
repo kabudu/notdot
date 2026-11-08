@@ -3,6 +3,41 @@ use web_sys::{
     AnalyserNode, AudioContext, AudioContextState, Event, GainNode, HtmlAudioElement,
     MediaElementAudioSourceNode, MediaStream, MediaStreamAudioSourceNode,
 };
+/// Wake cue envelope, in seconds after the cue starts. The level and the
+/// 80 ms fade-out are unchanged; only the onset rises over 5 ms.
+const CUE_LEVEL: f32 = 0.035;
+const CUE_ATTACK: f64 = 0.005;
+const CUE_RELEASE_END: f64 = 0.08;
+const CUE_STOP: f64 = 0.09;
+/// (gain, time) automation points: silent start, peak, then fade to silence.
+fn cue_envelope(now: f64) -> [(f32, f64); 3] {
+    [
+        (0., now),
+        (CUE_LEVEL, now + CUE_ATTACK),
+        (0., now + CUE_RELEASE_END),
+    ]
+}
+/// Linux WebKit drops the first 15-40 ms of sound after silence, which cut
+/// off the attack and left an audible step. A -70 dBFS pre-roll absorbs that
+/// loss; the cue then starts once output is flowing. Measured in the Linux
+/// VM: 30-40 ms leads still clipped some cues, 50 ms and longer never did.
+const LINUX_CUE_LEAD: f64 = 0.08;
+const PRE_ROLL_LEVEL: f32 = 0.0003;
+/// When the cue starts, and the (start, stop) of any inaudible pre-roll.
+fn cue_schedule(now: f64, linux: bool) -> (f64, Option<(f64, f64)>) {
+    if linux {
+        let start = now + LINUX_CUE_LEAD;
+        // Overlap the cue briefly so output never falls silent between them.
+        (start, Some((now, start + CUE_ATTACK)))
+    } else {
+        (now, None)
+    }
+}
+fn linux_webkit() -> bool {
+    web_sys::window()
+        .and_then(|window| window.navigator().user_agent().ok())
+        .is_some_and(|agent| agent.contains("Linux"))
+}
 struct Microphone {
     source: MediaStreamAudioSourceNode,
     analyser: AnalyserNode,
@@ -58,18 +93,32 @@ impl Meter {
     pub fn wake_cue(&mut self) -> Result<(), JsValue> {
         self.unlock()?;
         let context = self.context.as_ref().expect("audio context initialized");
-        let tone = context.create_oscillator()?;
-        tone.set_type(web_sys::OscillatorType::Sine);
-        tone.frequency().set_value(740.);
-        let volume = context.create_gain()?;
-        volume.gain().set_value(0.035);
-        volume
-            .gain()
-            .linear_ramp_to_value_at_time(0., context.current_time() + 0.08)?;
-        tone.connect_with_audio_node(&volume)?;
-        volume.connect_with_audio_node(&context.destination())?;
-        tone.start()?;
-        tone.stop_with_when(context.current_time() + 0.09)?;
+        let tone = |level: f32| -> Result<_, JsValue> {
+            let tone = context.create_oscillator()?;
+            tone.set_type(web_sys::OscillatorType::Sine);
+            tone.frequency().set_value(740.);
+            let volume = context.create_gain()?;
+            volume.gain().set_value(level);
+            tone.connect_with_audio_node(&volume)?;
+            volume.connect_with_audio_node(&context.destination())?;
+            Ok((tone, volume))
+        };
+        let (start, pre_roll) = cue_schedule(context.current_time(), linux_webkit());
+        if let Some((from, until)) = pre_roll {
+            let (pre_roll, _) = tone(PRE_ROLL_LEVEL)?;
+            pre_roll.start_with_when(from)?;
+            pre_roll.stop_with_when(until)?;
+        }
+        let (cue, volume) = tone(0.)?;
+        // Start silent and rise briefly: a step to full level ticks audibly.
+        // Explicit events keep the shape the same on every Web Audio engine.
+        let gain = volume.gain();
+        let [(silent, at), rise, fall] = cue_envelope(start);
+        gain.set_value_at_time(silent, at)?;
+        gain.linear_ramp_to_value_at_time(rise.0, rise.1)?;
+        gain.linear_ramp_to_value_at_time(fall.0, fall.1)?;
+        cue.start_with_when(start)?;
+        cue.stop_with_when(start + CUE_STOP)?;
         Ok(())
     }
     fn analyser(context: &AudioContext) -> Result<AnalyserNode, JsValue> {
@@ -107,10 +156,7 @@ impl Meter {
         // Linux WebKit's MediaElementAudioSourceNode truncated sentence tails
         // in native output tests. Preserve ordinary HTML media output there;
         // the orb still uses its smooth, unmetered speaking animation.
-        if web_sys::window()
-            .and_then(|window| window.navigator().user_agent().ok())
-            .is_some_and(|agent| agent.contains("Linux"))
-        {
+        if linux_webkit() {
             return Ok(false);
         }
         let Some(context) = &self.context else {
@@ -167,5 +213,66 @@ impl Meter {
             rms: crate::visual_state::rms(&bytes),
             metered: analyser.is_some(),
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    /// Linear Web Audio automation evaluated at sample time `t`.
+    fn level(points: &[(f32, f64); 3], t: f64) -> f64 {
+        let pairs = points.windows(2);
+        for pair in pairs {
+            let ((a, ta), (b, tb)) = (pair[0], pair[1]);
+            if t <= tb {
+                let x = ((t - ta) / (tb - ta)).clamp(0., 1.);
+                return f64::from(a) + (f64::from(b) - f64::from(a)) * x;
+            }
+        }
+        0.
+    }
+    #[test]
+    fn wake_cue_rises_smoothly_without_changing_its_timing_or_level() {
+        let now = 12.5;
+        let points = cue_envelope(now);
+        let rate = 48_000.;
+        let samples: Vec<f64> = (0..(rate * CUE_STOP) as usize)
+            .map(|n| level(&points, now + n as f64 / rate))
+            .collect();
+        let peak = samples.iter().copied().fold(0., f64::max);
+        let largest_step = samples
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0., f64::max);
+        // Same audible level and duration as before the attack was added.
+        assert!((peak - f64::from(CUE_LEVEL)).abs() < 1e-6);
+        assert_eq!(samples[0], 0.);
+        assert!(level(&points, now + 0.04) > peak / 3.);
+        assert_eq!(level(&points, now + 0.08), 0.);
+        assert!(CUE_STOP > points[2].1 - now);
+        // No step: the gain never moves more than 1% of its peak per sample.
+        assert!(largest_step < peak / 100., "step {largest_step}");
+        // Still crisp: full level within 10 ms.
+        assert!(level(&points, now + 0.01) > peak * 0.9);
+    }
+    #[test]
+    fn linux_cue_waits_behind_an_inaudible_pre_roll_and_others_do_not() {
+        let now = 3.25;
+        assert_eq!(cue_schedule(now, false), (now, None));
+        let (start, pre_roll) = cue_schedule(now, true);
+        let (from, until) = pre_roll.expect("Linux pre-roll");
+        // Starts at once and keeps output flowing into the cue's attack.
+        assert_eq!(from, now);
+        assert!(until > start && until <= start + CUE_ATTACK);
+        // Longer than the 50 ms that kept every measured Linux cue intact,
+        // but short enough to still mark the start of listening promptly.
+        let lead = start - now;
+        assert!((0.05..=0.1).contains(&lead), "lead {lead}");
+        // Inaudible: at least 60 dB below full scale and the cue itself.
+        let below_full = -20. * f64::from(PRE_ROLL_LEVEL).log10();
+        let below_cue = 20. * f64::from(CUE_LEVEL / PRE_ROLL_LEVEL).log10();
+        assert!(
+            below_full >= 60. && below_cue >= 30.,
+            "{below_full} {below_cue}"
+        );
     }
 }

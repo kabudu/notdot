@@ -123,13 +123,17 @@ impl Plan {
             Action::Status => format!("Check {}", destination),
         };
         format!(
-            "{detail}. This uses that chat's existing permissions. Say yes, {} it to confirm, or no to cancel.",
-            if self.action == Action::Stop {
-                "stop"
-            } else {
-                "send"
-            }
+            "{detail}. This uses that chat's existing permissions. Say {} to confirm, or no to cancel.",
+            self.confirmation_phrase()
         )
+    }
+    fn confirmation_phrase(&self) -> &'static str {
+        match self.action {
+            Action::Send => "yes, please send that message",
+            Action::Steer => "yes, please add that instruction",
+            Action::Stop => "yes, please stop that task",
+            Action::Status => "yes, please check that chat",
+        }
     }
 }
 fn words(s: &str) -> String {
@@ -172,14 +176,54 @@ pub enum Decision {
     Ask(String),
     Execute(Authorised),
 }
+/// Delimited, explicit suffixes only. A mention inside a task, a negation or a
+/// model's invented notification flag is not permission to interrupt later.
+pub fn completion_request(text: &str) -> (&str, bool) {
+    let text = text.trim();
+    let candidate = text.trim_end_matches(['.', '!', '?']);
+    for separator in [", and ", " and ", ", then ", " then "] {
+        for notice in [
+            "let me know when it's done",
+            "let me know when it’s done",
+            "let me know when it is done",
+            "let me know when it's finished",
+            "let me know when it’s finished",
+            "let me know when it is finished",
+            "tell me when it's done",
+            "tell me when it’s done",
+            "tell me when it is done",
+            "tell me when it's finished",
+            "tell me when it’s finished",
+            "tell me when it is finished",
+            "tell me when it finishes",
+        ] {
+            let suffix = format!("{separator}{notice}");
+            if candidate.len() > suffix.len() {
+                let start = candidate.len() - suffix.len();
+                if candidate
+                    .get(start..)
+                    .is_some_and(|s| s.eq_ignore_ascii_case(&suffix))
+                {
+                    return (candidate[..start].trim_end(), true);
+                }
+            }
+        }
+    }
+    (text, false)
+}
 pub struct Authorised {
     plan: Plan,
+    notify: bool,
     valid: Arc<AtomicBool>,
     expires: Instant,
 }
 impl Authorised {
     pub fn plan(&self) -> &Plan {
         &self.plan
+    }
+    /// Derived from the current spoken request, never from retrieved chat text.
+    pub fn notify_on_completion(&self) -> bool {
+        self.notify
     }
     pub fn is_valid(&self) -> bool {
         self.valid.load(Ordering::SeqCst) && Instant::now() < self.expires
@@ -191,6 +235,7 @@ struct Pending {
     created: Instant,
     offered: bool,
     automatic: bool,
+    notify: bool,
 }
 #[derive(Default)]
 pub struct Consent {
@@ -225,6 +270,7 @@ impl Consent {
         {
             return Err("Chat control is disabled or this request is no longer current".into());
         }
+        let (instruction, notify) = completion_request(&self.transcript);
         // Some model calls include the routing command in their message. Strip
         // only a literal, current command addressed to the verified unique chat.
         // Never rewrite a paraphrase, negation, quotation or command punctuation.
@@ -232,7 +278,7 @@ impl Consent {
             && plan.unambiguous
             && plan.message.trim() == self.transcript.trim()
         {
-            let text = self.transcript.trim();
+            let text = instruction;
             for prefix in [
                 format!("Tell {} to ", plan.title),
                 format!("Tell the {} chat to ", plan.title),
@@ -250,15 +296,25 @@ impl Consent {
                 }
             }
         }
+        // Only remove the literal notification suffix. Never alter the task's
+        // punctuation, casing or internal whitespace to gain automatic consent.
+        if notify && matches!(plan.action, Action::Send | Action::Steer) {
+            let (message, included) = completion_request(&plan.message);
+            if included {
+                plan.message = message.to_owned();
+            }
+        }
         let automatic = plan.action == Action::Status
-            || (self.mode == Mode::WhenAsked && directly_requested(&self.transcript, &plan));
+            || (self.mode == Mode::WhenAsked && directly_requested(instruction, &plan));
         self.proposed = true;
+        let notify = notify && matches!(plan.action, Action::Send | Action::Steer);
         self.pending = Some(Pending {
             id: format!("session-{}", uuid::Uuid::new_v4()),
             plan,
             created: Instant::now(),
             offered: false,
             automatic,
+            notify,
         });
         self.issued_id = self.pending.as_ref().map(|p| p.id.clone());
         Ok(())
@@ -271,6 +327,10 @@ impl Consent {
         {
             self.pending = None;
         }
+    }
+    pub fn waiting(&mut self) -> bool {
+        self.prune();
+        self.pending.is_some()
     }
     pub fn pending(&mut self) -> Option<String> {
         self.prune();
@@ -290,13 +350,18 @@ impl Consent {
             let p = self.pending.take().expect("checked proposal");
             return Ok(Decision::Execute(Authorised {
                 plan: p.plan,
+                notify: p.notify,
                 valid: self.authority.clone(),
                 expires: p.created + Duration::from_secs(120),
             }));
         }
         p.offered = true;
         p.created = Instant::now();
-        Ok(Decision::Ask(p.plan.question()))
+        let mut question = p.plan.question();
+        if p.notify {
+            question.push_str(" I'll report when that Codex turn ends, respecting quiet hours.");
+        }
+        Ok(Decision::Ask(question))
     }
     pub fn answer(&mut self, id: &str, text: &str) -> Result<Option<Authorised>, String> {
         self.prune();
@@ -313,11 +378,16 @@ impl Consent {
         } else {
             "yes send it"
         };
-        Ok((words(text) == expected).then_some(Authorised {
-            plan: p.plan,
-            valid: self.authority.clone(),
-            expires: p.created + Duration::from_secs(120),
-        }))
+        let answer = words(text);
+        let longer = words(p.plan.confirmation_phrase());
+        Ok(
+            (answer == expected || answer == longer).then_some(Authorised {
+                plan: p.plan,
+                notify: p.notify,
+                valid: self.authority.clone(),
+                expires: p.created + Duration::from_secs(120),
+            }),
+        )
     }
     pub fn cancel_id(&mut self, id: &str) {
         if self.issued_id.as_deref() == Some(id) {
@@ -414,8 +484,61 @@ mod tests {
         let id = c.pending().unwrap();
         assert!(c.answer(&id, "yes send it").is_err());
         assert!(matches!(c.question(&id).unwrap(), Decision::Ask(_)));
+        assert!(c.pending().is_none());
+        assert!(
+            c.waiting(),
+            "offered confirmation must block speaker switches"
+        );
         assert!(c.answer(&id, "yes send it").unwrap().is_some());
         assert!(c.answer(&id, "yes send it").is_err());
+    }
+    #[test]
+    fn longer_chat_confirmations_are_exact_and_action_specific() {
+        for (action, phrase, legacy) in [
+            (
+                Action::Send,
+                "Yes, please send that message!",
+                "yes send it",
+            ),
+            (
+                Action::Steer,
+                "Yes, please add that instruction.",
+                "yes send it",
+            ),
+            (Action::Stop, "Yes, please stop that task.", "yes stop it"),
+        ] {
+            for answer in [
+                phrase,
+                legacy,
+                "yes",
+                "yes please do not send that message",
+                "yes please send that message no",
+                "yes please save that memory",
+                if action == Action::Stop {
+                    "yes please send that message"
+                } else {
+                    "yes please stop that task"
+                },
+            ] {
+                let mut consent = Consent::default();
+                consent.begin(Mode::Confirm, "Please control this chat");
+                consent.bind("turn");
+                let mut requested = plan();
+                requested.action = action;
+                if matches!(action, Action::Stop | Action::Status) {
+                    requested.message.clear();
+                }
+                consent.stage("turn", requested).unwrap();
+                let id = consent.pending().unwrap();
+                assert!(matches!(consent.question(&id).unwrap(), Decision::Ask(_)));
+                let approved = consent.answer(&id, answer).unwrap().is_some();
+                assert_eq!(
+                    approved,
+                    answer == phrase || answer == legacy,
+                    "{action:?}: {answer}"
+                );
+            }
+        }
     }
     #[test]
     fn when_asked_requires_the_exact_current_request() {
@@ -539,5 +662,125 @@ mod tests {
         assert!(c.question(&id).is_err());
         c.cancel();
         assert!(c.stage("t", plan()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+    fn stage(text: &str, mode: Mode, message: &str) -> (Consent, String) {
+        let mut c = Consent::default();
+        c.begin(mode, text);
+        c.bind("turn");
+        c.stage(
+            "turn",
+            Plan {
+                action: Action::Send,
+                thread_id: "target".into(),
+                title: "Website".into(),
+                unambiguous: true,
+                message: message.into(),
+            },
+        )
+        .unwrap();
+        let id = c.pending().unwrap();
+        (c, id)
+    }
+    #[test]
+    fn explicit_suffix_is_host_verified_and_never_forwarded_as_task_work() {
+        for message in [
+            "make the button clearer",
+            "make the button clearer, and let me know when it's done",
+            "Tell Website to make the button clearer, and let me know when it's done",
+        ] {
+            let (mut c, id) = stage(
+                "Tell Website to make the button clearer, and let me know when it's done",
+                Mode::WhenAsked,
+                message,
+            );
+            let Decision::Execute(a) = c.question(&id).unwrap() else {
+                panic!("exact command needs no extra confirmation")
+            };
+            assert!(a.notify_on_completion());
+            assert_eq!(a.plan().message, "make the button clearer");
+        }
+    }
+    #[test]
+    fn a_completion_notice_never_bypasses_action_confirmation_or_read_only() {
+        let (mut c, id) = stage(
+            "Tell Website to make the button clearer, and let me know when it's done",
+            Mode::Confirm,
+            "make the button clearer",
+        );
+        let Decision::Ask(q) = c.question(&id).unwrap() else {
+            panic!()
+        };
+        assert!(q.contains("report"));
+        assert!(c.answer(&id, "yes").unwrap().is_none());
+        let (mut c, id) = stage(
+            "Tell Website to make the button clearer, and let me know when it's done",
+            Mode::Confirm,
+            "make the button clearer",
+        );
+        c.question(&id).unwrap();
+        assert!(
+            c.answer(&id, "yes send it")
+                .unwrap()
+                .unwrap()
+                .notify_on_completion()
+        );
+        let mut c = Consent::default();
+        c.begin(
+            Mode::ReadOnly,
+            "Tell Website to do it and let me know when it's done",
+        );
+        c.bind("turn");
+        assert!(
+            c.stage(
+                "turn",
+                Plan {
+                    action: Action::Send,
+                    thread_id: "target".into(),
+                    title: "Website".into(),
+                    unambiguous: true,
+                    message: "do it".into()
+                }
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn no_notice_from_a_mention_negation_or_invented_model_suffix() {
+        for suffix in [
+            ", and let me know when it is done.",
+            " and tell me when it is finished!",
+            " and let me know when it’s done",
+        ] {
+            let text = format!("Tell Website to make it clearer{suffix}");
+            assert_eq!(
+                completion_request(&text),
+                ("Tell Website to make it clearer", true)
+            );
+        }
+
+        for text in [
+            "Tell Website to write about 'let me know when it is done'",
+            "Tell Website to make the button clearer, and don't let me know when it's done",
+            "Tell Website to make the button clearer",
+        ] {
+            assert!(!completion_request(text).1);
+        }
+        let (mut c, id) = stage(
+            "Tell Website to make the button clearer",
+            Mode::Confirm,
+            "make the button clearer, and let me know when it's done",
+        );
+        c.question(&id).unwrap();
+        assert!(
+            !c.answer(&id, "yes send it")
+                .unwrap()
+                .unwrap()
+                .notify_on_completion()
+        );
     }
 }

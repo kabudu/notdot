@@ -1,16 +1,32 @@
 {
   "already_retained_model_native_notices": [
     "0e07b95f3a8d6230037707c5c4a2b554d12c4cb67369669ac255635528ffcee2",
+    "186201b750ade9ec072a51d5a49d11d8288c9ada53d9d4120de7eba6af5b0b6b",
     "2e63e9a38b6e8fc0c7bc37ce174caca1862870856c6daf5697cfb785e925520b",
     "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c",
     "b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d",
     "bd4ce8e44170a5f9f481310ca85c51de3c4f851a65e679b40e603b143bd3542a",
+    "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
     "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
     "d90cf47661861c46da6a10905b89f2c7e59e91b3a4a281b53ba90724afbdc176",
     "e562a2ddfaf8280537795ac5ecd34e3012b6582a147ef69ba6a6a5c08c84757d",
     "f0510d3b9d1223c45e8fdd2b49270ec8734fff491c7f7d1b948ee70162e1ceff"
   ],
-  "cargo_lock_sha256": "b15ee471c40bee1231900ead991ada28ba574fe8389c0978c6bbeb53ae4f8580",
+  "bundled_models": [
+    {
+      "file": "src-tauri/resources/speaker/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx",
+      "license_expression": "Apache-2.0",
+      "model_card": "https://modelscope.cn/models/iic/speech_campplus_sv_zh_en_16k-common_advanced",
+      "name": "3D-Speaker CAM++ common advanced",
+      "original_notices": [
+        "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "186201b750ade9ec072a51d5a49d11d8288c9ada53d9d4120de7eba6af5b0b6b"
+      ],
+      "sha256": "aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2",
+      "source_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
+    }
+  ],
+  "cargo_lock_sha256": "071d99707125623eec28ba969c6069dd52c02749075e35aaf354d835b2d6749c",
   "first_party_license": "Apache-2.0",
   "native_source_components": [
     {
@@ -78,121 +94,6 @@
     }
   ],
   "packages": [
-    {
-      "id": "workspace:notdot-core@0.3.0",
-      "license_expression": "Apache-2.0",
-      "name": "notdot-core",
-      "original_notices": [
-        "481f5a1c3561b3ceac46dcf0b8e091330a1d4bf4d4c01aec87b35563c401c471",
-        "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
-      ],
-      "repository": null,
-      "source": {
-        "kind": "workspace",
-        "repository_path": "LICENSE and NOTICE",
-        "revision": "66587d1f3d74decc9a022e5a11a17ca72c155502"
-      },
-      "standard_terms": {
-        "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
-      },
-      "version": "0.3.0"
-    },
-    {
-      "id": "workspace:notdot-orb@0.3.0",
-      "license_expression": "Apache-2.0",
-      "name": "notdot-orb",
-      "original_notices": [
-        "481f5a1c3561b3ceac46dcf0b8e091330a1d4bf4d4c01aec87b35563c401c471",
-        "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
-      ],
-      "repository": null,
-      "source": {
-        "kind": "workspace",
-        "repository_path": "LICENSE and NOTICE",
-        "revision": "66587d1f3d74decc9a022e5a11a17ca72c155502"
-      },
-      "standard_terms": {
-        "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
-      },
-      "version": "0.3.0"
-    },
-    {
-      "id": "workspace:notdot-voice@0.3.0",
-      "license_expression": "Apache-2.0",
-      "name": "notdot-voice",
-      "original_notices": [
-        "481f5a1c3561b3ceac46dcf0b8e091330a1d4bf4d4c01aec87b35563c401c471",
-        "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
-      ],
-      "repository": null,
-      "source": {
-        "kind": "workspace",
-        "repository_path": "LICENSE and NOTICE",
-        "revision": "66587d1f3d74decc9a022e5a11a17ca72c155502"
-      },
-      "standard_terms": {
-        "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
-      },
-      "version": "0.3.0"
-    },
-    {
-      "id": "workspace:notdot-wake-runtime@0.3.0",
-      "license_expression": "Apache-2.0",
-      "name": "notdot-wake-runtime",
-      "original_notices": [
-        "481f5a1c3561b3ceac46dcf0b8e091330a1d4bf4d4c01aec87b35563c401c471",
-        "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
-      ],
-      "repository": null,
-      "source": {
-        "kind": "workspace",
-        "repository_path": "LICENSE and NOTICE",
-        "revision": "66587d1f3d74decc9a022e5a11a17ca72c155502"
-      },
-      "standard_terms": {
-        "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
-      },
-      "version": "0.3.0"
-    },
-    {
-      "id": "workspace:notdot@0.3.0",
-      "license_expression": "Apache-2.0",
-      "name": "notdot",
-      "original_notices": [
-        "481f5a1c3561b3ceac46dcf0b8e091330a1d4bf4d4c01aec87b35563c401c471",
-        "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
-        "d90cf47661861c46da6a10905b89f2c7e59e91b3a4a281b53ba90724afbdc176"
-      ],
-      "repository": null,
-      "source": {
-        "kind": "workspace",
-        "repository_path": "LICENSE and NOTICE",
-        "revision": "66587d1f3d74decc9a022e5a11a17ca72c155502"
-      },
-      "standard_terms": {
-        "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
-      },
-      "version": "0.3.0"
-    },
-    {
-      "id": "vendored:glib@0.18.5",
-      "license_expression": "MIT",
-      "name": "glib",
-      "original_notices": [
-        "8cf56d10131ce201cf69ab74b111d3ebac1acca3833d7efb39ae357224b70edb",
-        "dae402989de65164815b7e2b6bc2b9576285434c3785934c8b6ece0fa055960d"
-      ],
-      "repository": "https://github.com/gtk-rs/gtk-rs-core",
-      "source": {
-        "kind": "vendored",
-        "repository_path": "vendor/glib",
-        "revision": "66587d1f3d74decc9a022e5a11a17ca72c155502"
-      },
-      "standard_terms": {
-        "MIT": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
-      },
-      "version": "0.18.5"
-    },
     {
       "id": "registry+https://github.com/rust-lang/crates.io-index#adler2@2.0.1",
       "license_expression": "0BSD OR MIT OR Apache-2.0",
@@ -12193,6 +12094,145 @@
         "MIT": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
       },
       "version": "4.2.0"
+    },
+    {
+      "id": "vendored:glib@0.18.5",
+      "license_expression": "MIT",
+      "name": "glib",
+      "original_notices": [
+        "8cf56d10131ce201cf69ab74b111d3ebac1acca3833d7efb39ae357224b70edb",
+        "dae402989de65164815b7e2b6bc2b9576285434c3785934c8b6ece0fa055960d"
+      ],
+      "repository": "https://github.com/gtk-rs/gtk-rs-core",
+      "source": {
+        "kind": "vendored",
+        "repository_path": "vendor/glib",
+        "revision": "66587d1f3d74decc9a022e5a11a17ca72c155502"
+      },
+      "standard_terms": {
+        "MIT": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+      },
+      "version": "0.18.5"
+    },
+    {
+      "id": "workspace:notdot-core@0.4.0",
+      "license_expression": "Apache-2.0",
+      "name": "notdot-core",
+      "original_notices": [
+        "481f5a1c3561b3ceac46dcf0b8e091330a1d4bf4d4c01aec87b35563c401c471",
+        "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      ],
+      "repository": null,
+      "source": {
+        "kind": "workspace",
+        "repository_path": "LICENSE and NOTICE",
+        "revision": "66587d1f3d74decc9a022e5a11a17ca72c155502"
+      },
+      "standard_terms": {
+        "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
+      },
+      "version": "0.4.0"
+    },
+    {
+      "id": "workspace:notdot-orb@0.4.0",
+      "license_expression": "Apache-2.0",
+      "name": "notdot-orb",
+      "original_notices": [
+        "481f5a1c3561b3ceac46dcf0b8e091330a1d4bf4d4c01aec87b35563c401c471",
+        "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      ],
+      "repository": null,
+      "source": {
+        "kind": "workspace",
+        "repository_path": "LICENSE and NOTICE",
+        "revision": "66587d1f3d74decc9a022e5a11a17ca72c155502"
+      },
+      "standard_terms": {
+        "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
+      },
+      "version": "0.4.0"
+    },
+    {
+      "id": "workspace:notdot-speakers@0.4.0",
+      "license_expression": "Apache-2.0",
+      "name": "notdot-speakers",
+      "original_notices": [
+        "481f5a1c3561b3ceac46dcf0b8e091330a1d4bf4d4c01aec87b35563c401c471",
+        "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      ],
+      "repository": null,
+      "source": {
+        "kind": "workspace",
+        "notice_paths": [
+          "LICENSE",
+          "NOTICE"
+        ],
+        "repository_path": "crates/notdot-speakers",
+        "revision": null,
+        "revision_note": "First-party workspace source; the exact release revision is recorded by the release build and corresponding-source archive."
+      },
+      "standard_terms": {
+        "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
+      },
+      "version": "0.4.0"
+    },
+    {
+      "id": "workspace:notdot-voice@0.4.0",
+      "license_expression": "Apache-2.0",
+      "name": "notdot-voice",
+      "original_notices": [
+        "481f5a1c3561b3ceac46dcf0b8e091330a1d4bf4d4c01aec87b35563c401c471",
+        "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      ],
+      "repository": null,
+      "source": {
+        "kind": "workspace",
+        "repository_path": "LICENSE and NOTICE",
+        "revision": "66587d1f3d74decc9a022e5a11a17ca72c155502"
+      },
+      "standard_terms": {
+        "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
+      },
+      "version": "0.4.0"
+    },
+    {
+      "id": "workspace:notdot-wake-runtime@0.4.0",
+      "license_expression": "Apache-2.0",
+      "name": "notdot-wake-runtime",
+      "original_notices": [
+        "481f5a1c3561b3ceac46dcf0b8e091330a1d4bf4d4c01aec87b35563c401c471",
+        "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      ],
+      "repository": null,
+      "source": {
+        "kind": "workspace",
+        "repository_path": "LICENSE and NOTICE",
+        "revision": "66587d1f3d74decc9a022e5a11a17ca72c155502"
+      },
+      "standard_terms": {
+        "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
+      },
+      "version": "0.4.0"
+    },
+    {
+      "id": "workspace:notdot@0.4.0",
+      "license_expression": "Apache-2.0",
+      "name": "notdot",
+      "original_notices": [
+        "481f5a1c3561b3ceac46dcf0b8e091330a1d4bf4d4c01aec87b35563c401c471",
+        "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "d90cf47661861c46da6a10905b89f2c7e59e91b3a4a281b53ba90724afbdc176"
+      ],
+      "repository": null,
+      "source": {
+        "kind": "workspace",
+        "repository_path": "LICENSE and NOTICE",
+        "revision": "66587d1f3d74decc9a022e5a11a17ca72c155502"
+      },
+      "standard_terms": {
+        "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
+      },
+      "version": "0.4.0"
     }
   ],
   "remaining_distribution_gates": [
@@ -12216,10 +12256,6 @@
   "targets": {
     "aarch64-apple-darwin": {
       "packages": [
-        "workspace:notdot-core@0.3.0",
-        "workspace:notdot-voice@0.3.0",
-        "workspace:notdot-wake-runtime@0.3.0",
-        "workspace:notdot@0.3.0",
         "registry+https://github.com/rust-lang/crates.io-index#adler2@2.0.1",
         "registry+https://github.com/rust-lang/crates.io-index#aho-corasick@1.1.5",
         "registry+https://github.com/rust-lang/crates.io-index#alloc-no-stdlib@3.0.0",
@@ -12565,13 +12601,18 @@
         "registry+https://github.com/rust-lang/crates.io-index#zerovec-derive@0.11.7",
         "registry+https://github.com/rust-lang/crates.io-index#zerovec@0.11.9",
         "registry+https://github.com/rust-lang/crates.io-index#zlib-rs@0.6.8",
-        "registry+https://github.com/rust-lang/crates.io-index#zmij@1.0.23"
+        "registry+https://github.com/rust-lang/crates.io-index#zmij@1.0.23",
+        "workspace:notdot-core@0.4.0",
+        "workspace:notdot-speakers@0.4.0",
+        "workspace:notdot-voice@0.4.0",
+        "workspace:notdot-wake-runtime@0.4.0",
+        "workspace:notdot@0.4.0"
       ],
       "root": "notdot"
     },
     "wasm32-unknown-unknown": {
       "packages": [
-        "workspace:notdot-orb@0.3.0",
+        "workspace:notdot-orb@0.4.0",
         "registry+https://github.com/rust-lang/crates.io-index#bumpalo@3.20.3",
         "registry+https://github.com/rust-lang/crates.io-index#cfg-if@1.0.5",
         "registry+https://github.com/rust-lang/crates.io-index#futures-core@0.3.34",
@@ -12607,10 +12648,6 @@
     },
     "x86_64-pc-windows-msvc": {
       "packages": [
-        "workspace:notdot-core@0.3.0",
-        "workspace:notdot-voice@0.3.0",
-        "workspace:notdot-wake-runtime@0.3.0",
-        "workspace:notdot@0.3.0",
         "registry+https://github.com/rust-lang/crates.io-index#adler2@2.0.1",
         "registry+https://github.com/rust-lang/crates.io-index#aho-corasick@1.1.5",
         "registry+https://github.com/rust-lang/crates.io-index#alloc-no-stdlib@3.0.0",
@@ -12937,17 +12974,17 @@
         "registry+https://github.com/rust-lang/crates.io-index#zerovec-derive@0.11.7",
         "registry+https://github.com/rust-lang/crates.io-index#zerovec@0.11.9",
         "registry+https://github.com/rust-lang/crates.io-index#zlib-rs@0.6.8",
-        "registry+https://github.com/rust-lang/crates.io-index#zmij@1.0.23"
+        "registry+https://github.com/rust-lang/crates.io-index#zmij@1.0.23",
+        "workspace:notdot-core@0.4.0",
+        "workspace:notdot-speakers@0.4.0",
+        "workspace:notdot-voice@0.4.0",
+        "workspace:notdot-wake-runtime@0.4.0",
+        "workspace:notdot@0.4.0"
       ],
       "root": "notdot"
     },
     "x86_64-unknown-linux-gnu": {
       "packages": [
-        "workspace:notdot-core@0.3.0",
-        "workspace:notdot-voice@0.3.0",
-        "workspace:notdot-wake-runtime@0.3.0",
-        "workspace:notdot@0.3.0",
-        "vendored:glib@0.18.5",
         "registry+https://github.com/rust-lang/crates.io-index#adler2@2.0.1",
         "registry+https://github.com/rust-lang/crates.io-index#aho-corasick@1.1.5",
         "registry+https://github.com/rust-lang/crates.io-index#alloc-no-stdlib@3.0.0",
@@ -13340,7 +13377,13 @@
         "registry+https://github.com/rust-lang/crates.io-index#zmij@1.0.23",
         "registry+https://github.com/rust-lang/crates.io-index#zvariant@5.15.1",
         "registry+https://github.com/rust-lang/crates.io-index#zvariant_derive@5.15.1",
-        "registry+https://github.com/rust-lang/crates.io-index#zvariant_utils@4.2.0"
+        "registry+https://github.com/rust-lang/crates.io-index#zvariant_utils@4.2.0",
+        "vendored:glib@0.18.5",
+        "workspace:notdot-core@0.4.0",
+        "workspace:notdot-speakers@0.4.0",
+        "workspace:notdot-voice@0.4.0",
+        "workspace:notdot-wake-runtime@0.4.0",
+        "workspace:notdot@0.4.0"
       ],
       "root": "notdot"
     }
@@ -14600,6 +14643,19 @@
         }
       ],
       "sha256": "157cc607717b1b372a69f6b4526f6ad18c1279af9f3267835cca2943f37bc07d"
+    },
+    "186201b750ade9ec072a51d5a49d11d8288c9ada53d9d4120de7eba6af5b0b6b": {
+      "bytes": 732,
+      "file": "texts/186201b750ade9ec072a51d5a49d11d8288c9ada53d9d4120de7eba6af5b0b6b.txt",
+      "origins": [
+        {
+          "kind": "retained-model-notice",
+          "model": "3D-Speaker CAM++ common advanced",
+          "path": "src-tauri/resources/speaker/NOTICE.md",
+          "upstream": "https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models"
+        }
+      ],
+      "sha256": "186201b750ade9ec072a51d5a49d11d8288c9ada53d9d4120de7eba6af5b0b6b"
     },
     "1954992a2b32e8a2af24a4c11b726902e344c1934b947a77f04d404908f8db30": {
       "bytes": 1068,
@@ -18007,7 +18063,7 @@
       "origins": [
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot-core@0.3.0",
+          "package": "workspace:notdot-core@0.4.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",
@@ -18017,7 +18073,7 @@
         },
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot-orb@0.3.0",
+          "package": "workspace:notdot-orb@0.4.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",
@@ -18027,7 +18083,7 @@
         },
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot-voice@0.3.0",
+          "package": "workspace:notdot-voice@0.4.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",
@@ -18037,7 +18093,7 @@
         },
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot-wake-runtime@0.3.0",
+          "package": "workspace:notdot-wake-runtime@0.4.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",
@@ -18047,7 +18103,7 @@
         },
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot@0.3.0",
+          "package": "workspace:notdot@0.4.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",
@@ -26416,6 +26472,12 @@
           "component": "simple-sentencepiece",
           "kind": "native-source-archive-file",
           "path": "simple-sentencepiece-0.7/LICENSE"
+        },
+        {
+          "kind": "retained-model-notice",
+          "model": "3D-Speaker CAM++ common advanced",
+          "path": "src-tauri/resources/speaker/LICENSE",
+          "upstream": "https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models"
         }
       ],
       "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
@@ -26772,7 +26834,7 @@
       "origins": [
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot-core@0.3.0",
+          "package": "workspace:notdot-core@0.4.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",
@@ -26782,7 +26844,7 @@
         },
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot-orb@0.3.0",
+          "package": "workspace:notdot-orb@0.4.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",
@@ -26792,7 +26854,7 @@
         },
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot-voice@0.3.0",
+          "package": "workspace:notdot-voice@0.4.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",
@@ -26802,7 +26864,7 @@
         },
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot-wake-runtime@0.3.0",
+          "package": "workspace:notdot-wake-runtime@0.4.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",
@@ -26812,7 +26874,7 @@
         },
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot@0.3.0",
+          "package": "workspace:notdot@0.4.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",
@@ -26822,7 +26884,7 @@
         },
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot@0.3.0",
+          "package": "workspace:notdot@0.4.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",
@@ -27160,7 +27222,7 @@
       "origins": [
         {
           "kind": "original-package-file",
-          "package": "workspace:notdot@0.3.0",
+          "package": "workspace:notdot@0.4.0",
           "package_source": {
             "kind": "workspace",
             "repository_path": "LICENSE and NOTICE",

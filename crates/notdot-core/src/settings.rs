@@ -22,6 +22,7 @@ pub struct Settings {
     pub voice_name: String,
     pub memory_enabled: bool,
     pub session_control: crate::session_control::Mode,
+    pub task_notifications: bool,
     pub initiative: crate::initiative::Policy,
     pub onboarding_complete: bool,
     pub thread_id: Option<String>,
@@ -48,6 +49,7 @@ impl Default for Settings {
             voice_name: String::new(),
             memory_enabled: false,
             session_control: crate::session_control::Mode::ReadOnly,
+            task_notifications: false,
             initiative: crate::initiative::Policy::default(),
             onboarding_complete: false,
             thread_id: None,
@@ -79,8 +81,10 @@ impl Settings {
     pub fn load(path: &Path) -> Result<Self, String> {
         match std::fs::read(path) {
             Ok(bytes) => {
+                // Windows editors and PowerShell often save UTF-8 with a byte-order mark.
+                let json = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
                 let mut settings: Self =
-                    serde_json::from_slice(&bytes).map_err(|e| format!("Read settings: {e}"))?;
+                    serde_json::from_slice(json).map_err(|e| format!("Read settings: {e}"))?;
                 if settings.voice_id.is_empty() {
                     settings.voice_name.clear();
                 }
@@ -128,6 +132,22 @@ impl Settings {
 mod tests {
     use super::*;
     #[test]
+    fn settings_saved_with_a_utf8_byte_order_mark_still_load() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("settings.json");
+        std::fs::write(
+            &path,
+            b"\xEF\xBB\xBF{\"name\":\"Juniper\",\"wake_enabled\":true}",
+        )
+        .unwrap();
+        let loaded = Settings::load(&path).unwrap();
+        assert_eq!(loaded.name, "Juniper");
+        assert!(loaded.wake_enabled);
+        // Only a leading mark is accepted; other damage is still reported.
+        std::fs::write(&path, b"{\"name\":\"Juniper\"\xEF\xBB\xBF}").unwrap();
+        assert!(Settings::load(&path).is_err());
+    }
+    #[test]
     fn session_control_defaults_to_read_only_and_all_modes_persist() {
         use crate::session_control::Mode;
         let d = tempfile::tempdir().unwrap();
@@ -156,8 +176,11 @@ mod tests {
             name: "Aster".into(),
             ..Settings::default()
         };
+        assert!(!s.task_notifications);
+        s.task_notifications = true;
         s.save(&p).unwrap();
         assert_eq!(Settings::load(&p).unwrap().name, "Aster");
+        assert!(Settings::load(&p).unwrap().task_notifications);
         s.startup = Startup::WithCodex;
         s.open_desktop = true;
         s.automatic_updates = false;
