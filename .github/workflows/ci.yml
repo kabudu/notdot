@@ -263,7 +263,7 @@ jobs:
         run: |
           mkdir -p .local
           set +e
-          cargo test -p notdot --bin notdot --locked wake::tests::bundled_detector_accepts_48khz_wake_fixture -- --ignored --exact --nocapture 2>&1 | tee .local/linux-wake-48k.log
+          cargo test -p notdot --bin notdot --release --locked wake::tests::bundled_detector_accepts_48khz_wake_fixture -- --ignored --exact --nocapture 2>&1 | tee .local/linux-wake-48k.log
           statuses=("${PIPESTATUS[@]}")
           result="${statuses[0]}"
           if [ "${statuses[1]}" -ne 0 ]; then result=125; fi
