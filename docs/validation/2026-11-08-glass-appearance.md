@@ -41,3 +41,48 @@ choices, voice picker and preview button. Searching for “quiet” returned the
 matching settings sections while retaining Close and Save. This verifies native
 WebKit rendering and accessibility exposure, not a VoiceOver listening session
 or the packaged Tauri window's operating-system behaviour.
+
+
+### Full settings acceptance
+
+The reusable settings harness runs the production WASM UI with synthetic
+provider, model, usage and people data. It passed 122 checks at each of
+320 × 360, 360 × 360, 450 × 680 and 900 × 900 CSS pixels in Chrome. Every
+category and all 11 main sections are expanded and their controls focused.
+Checks include horizontal overflow, focus scrolling, visible footer actions,
+three model cards and five effort levels, eight searchable voices, aligned
+voice and preview icons, usage progress labels, empty searches and clear,
+seven theme colours, About modal return, all four enrolment phrases and named
+member-removal cancellation. These are layout and UI-flow checks, not speaker
+recognition or provider acceptance.
+
+This exposed and fixed overflowing long member-action labels, focus remaining
+outside enrolment, lost focus after enrolment/removal cancellation and the
+final enrolment phrase, and long errors displacing the settings content.
+Long errors now scroll in a bounded, keyboard-focusable status area.
+
+The final compiled UI also passed the existing 65-check integration suite
+again (11 simulated model messages, 9 follow-up captures, minimum playback-to-
+capture gap 660.4 ms). Native debug/release tests, native/WASM Clippy with
+warnings denied, formatting, Python compilation and JS syntax checks passed.
+
+The same 122 checks also passed in the native macOS WKWebView host using its
+public 200% page zoom setting: a 900 × 900 host produces a 450 × 450 CSS-pixel
+viewport. Native accessibility inspection separately verified that enrolment
+focuses consent and Cancel returns to Teach voice. This is accessibility-tree
+inspection, not a claim of a completed VoiceOver listening session. OS-level
+forced-colour and reduced-transparency preferences remain source-reviewed;
+they were not changed on the user's Mac. Packaged Windows/Linux webviews and
+real voice interaction remain outside this appearance-only acceptance run.
+
+To reproduce the settings matrix without keys or audio:
+
+```sh
+trunk build --release --dist .local/settings-qa
+python3 scripts/prepare_settings_harness.py
+python3 -m http.server 8101 --bind 127.0.0.1 --directory .local/settings-qa
+```
+
+Open `http://localhost:8101/runner.html` and select **Run all layouts**.
+Screenshot evidence and the native JSON report were retained locally under
+`.local/settings-evidence/`; they contain synthetic profiles only.

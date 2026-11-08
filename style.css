@@ -273,3 +273,20 @@ select:focus-visible {
   .settings-categories { grid-template-columns: repeat(5, minmax(0, 1fr)); margin-block: 8px; padding-bottom: 8px; }
   .settings-categories button { min-height: 32px; font-size: 10px; padding-inline: 1px; }
 }
+
+/* Names and service errors may contain long, unbroken text. Keep actions on
+   their card's grid without truncating a person's name or hiding an error. */
+dialog { overflow-wrap: anywhere; }
+.speaker-actions button { min-width: 0; }
+
+/* A verbose service error must not displace Settings or its actions. The full
+   message remains available to keyboard users and assistive technology. */
+.settings-footer #error { max-height: 3em; overflow: auto; line-height: 1.5; }
+.settings-footer #error:focus-visible {
+  outline: 2px solid hsl(var(--hue), 78%, 79%);
+  outline-offset: 2px;
+}
+
+@media (forced-colors: active) {
+  .settings-footer #error:focus-visible { outline-color: Highlight; }
+}
