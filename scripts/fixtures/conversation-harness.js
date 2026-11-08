@@ -122,6 +122,7 @@
           await until(()=>orb.dataset.taskState===cue);
           ok(cue+' task cue appears inside the production orb',orb.dataset.state==='idle');
           ok(cue+' task status has a text equivalent',document.getElementById('orb-status').textContent==='Synthetic '+cue+' task status.');
+          if(cue==='working'){state.initiative.tasks.description='2 tasks are working.';await until(()=>document.getElementById('orb-status').textContent==='2 tasks are working.');ok('same-state count changes refresh accessible status text',orb.dataset.taskState==='working');}
         }
         state.initiative={tasks:{cue:'attention',description:'Approval needed.'}};
         state.phase='thinking';await until(()=>orb.dataset.state==='thinking');

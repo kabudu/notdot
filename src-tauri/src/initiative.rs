@@ -206,7 +206,7 @@ impl Initiative {
             }
         }
         if filter == 2 {
-            tasks.retain(|t| t.activity == notdot_core::task_awareness::Activity::Working);
+            tasks.retain(|t| t.activity != notdot_core::task_awareness::Activity::Finished);
         }
         let messages: Vec<_> = tasks
             .iter()
@@ -860,6 +860,19 @@ mod task_completion_tests {
         let status = restored.status(&policy, &profile).await;
         assert_eq!(status.tasks.cue, "review");
         assert!(status.announce.is_none());
+        let waiting = notdot_core::task_awareness::Task {
+            key: "live-task".into(),
+            title: "Appointment".into(),
+            activity: notdot_core::task_awareness::Activity::Attention,
+            outcome: Outcome::Unverified,
+            attention: Some(notdot_core::task_awareness::Attention::Approval),
+        };
+        let running = restored
+            .task_command("Please what's still running?", vec![waiting])
+            .await
+            .unwrap();
+        assert!(running.contains("Appointment needs attention"));
+        assert!(!running.contains("Draft"));
         assert!(
             restored
                 .task_command("What needs me?", vec![])

@@ -203,6 +203,7 @@ struct View {
     meter: audio_meter::Meter,
     last_mode: visual_state::Mode,
     last_task_cue: String,
+    last_task_description: String,
     last_wake_enabled: bool,
     last_wake_status: String,
     last_report: f64,
@@ -3417,9 +3418,14 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                     .unwrap_or("none"),
             )
             .to_owned();
-            let task_changed = cue != v.last_task_cue;
+            let task_text = v.snapshot.initiative["tasks"]["description"]
+                .as_str()
+                .unwrap_or("Task update available.")
+                .to_owned();
+            let task_changed = cue != v.last_task_cue || task_text != v.last_task_description;
             if task_changed {
                 v.last_task_cue = cue.clone();
+                v.last_task_description = task_text.clone();
                 let _ = canvas.set_attribute("data-task-state", &cue);
             }
             orb_renderer::task_cue(
