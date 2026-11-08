@@ -2,6 +2,7 @@
 mod audio_meter;
 mod conversation;
 mod interaction;
+mod orb_renderer;
 mod settings_navigation;
 mod speakers;
 mod speech_queue;
@@ -162,7 +163,7 @@ struct View {
     last_poll_at: f64,
     generation: u64,
     last_frame: f64,
-    amplitude: f64,
+    orb_motion: visual_state::OrbMotion,
     speech_energy: f64,
     keyboard_navigation: bool,
     local_phase: Option<&'static str>,
@@ -3306,57 +3307,18 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
             };
             v.speech_energy =
                 visual_state::smooth_speech(v.speech_energy, speech_target, frame_seconds);
-            let target = match mode {
-                visual_state::Mode::Thinking => 0.65,
-                visual_state::Mode::Speaking => 0.22 + v.speech_energy * 0.78,
-                visual_state::Mode::Listening | visual_state::Mode::Followup => {
-                    0.22 + v.speech_energy * 0.78
-                }
-                _ => 0.08,
-            };
-            v.amplitude += (target - v.amplitude) * 0.22;
-            let hue = if mode == visual_state::Mode::Error {
-                12.
-            } else {
-                v.preview_hue.unwrap_or(v.snapshot.settings.hue) as f64
-            };
-            let time = if reduced { 0. } else { now / 1000. };
-            let scale = match mode {
-                visual_state::Mode::Speaking => {
-                    1. + v.speech_energy * if reduced { 0.01 } else { 0.07 }
-                }
-                visual_state::Mode::Listening | visual_state::Mode::Followup => {
-                    1. + v.speech_energy * if reduced { 0.01 } else { 0.07 }
-                }
-                visual_state::Mode::Thinking => {
-                    1. + if reduced {
-                        0.
-                    } else {
-                        0.045 * (time * 3.).sin()
-                    }
-                }
-                _ => 1.,
-            };
+            v.orb_motion.advance(mode, frame_seconds, reduced);
+            let hue = v.preview_hue.unwrap_or(v.snapshot.settings.hue) as f64;
             let radius = w.min(h) * 0.17;
-            draw(
+            orb_renderer::draw(
                 &context,
-                w / 2.,
-                h / 2.,
-                radius * scale,
-                time,
-                hue,
-                v.amplitude,
-            );
-            draw_activity(
-                &context,
-                ActivityFrame {
+                orb_renderer::Frame {
                     center: (w / 2., h / 2.),
                     radius,
-                    time,
                     hue,
-                    mode,
+                    energy: v.speech_energy,
                     reduced,
-                    speech_energy: v.speech_energy,
+                    motion: &v.orb_motion,
                 },
             );
             if v.keyboard_navigation
@@ -3368,7 +3330,7 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                 context.set_line_width(1.5);
                 context.set_stroke_style_str("rgba(220,245,255,.7)");
                 context.begin_path();
-                let _ = context.arc(w / 2., h / 2., radius * 1.24, 0., TAU);
+                let _ = context.arc(w / 2., h / 2., radius * 1.52, 0., TAU);
                 context.stroke();
                 context.restore();
             }
@@ -3509,85 +3471,6 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
     )?;
     Ok(())
 }
-fn draw(c: &Context, x: f64, y: f64, r: f64, t: f64, hue: f64, amp: f64) {
-    let color = |alpha: f64| format!("hsla({hue},85%,70%,{alpha})");
-    if let Ok(g) = c.create_radial_gradient(x, y, r * 0.1, x, y, r * 2.9) {
-        let _ = g.add_color_stop(0., &color(0.18));
-        let _ = g.add_color_stop(1., &color(0.));
-        c.set_fill_style_canvas_gradient(&g);
-        c.fill_rect(x - r * 3., y - r * 3., r * 6., r * 6.);
-    }
-    for i in 0..70 {
-        let a = i as f64 * 2.39996 + t * 0.025;
-        let radius = r * (1.3 + ((i * 37 % 67) as f64 / 67.) * 1.15);
-        let sparkle = 0.2 + ((t * 0.6 + i as f64).sin() + 1.) * 0.22;
-        c.set_fill_style_str(&color(sparkle));
-        c.begin_path();
-        let _ = c.arc(
-            x + a.cos() * radius,
-            y + a.sin() * radius,
-            if i % 7 == 0 { 1.2 } else { 0.65 },
-            0.,
-            TAU,
-        );
-        c.fill();
-    }
-    c.set_stroke_style_str(&color(0.45));
-    c.set_line_width(1.);
-    c.begin_path();
-    for i in 0..=180 {
-        let a = i as f64 / 180. * TAU;
-        let rr =
-            r * (1.85 + 0.035 * (a * 3. + t * 0.7).sin() + amp * 0.06 * (a * 2. - t * 0.8).sin());
-        let (px, py) = (x + a.cos() * rr, y + a.sin() * rr);
-        if i == 0 {
-            c.move_to(px, py)
-        } else {
-            c.line_to(px, py)
-        }
-    }
-    c.close_path();
-    c.stroke();
-    c.save();
-    let _ = c.translate(x, y);
-    c.begin_path();
-    for i in 0..=120 {
-        let a = i as f64 / 120. * TAU;
-        let rr =
-            r * (1. + amp * (0.08 * (a * 2. + t * 0.7).sin() + 0.05 * (a * 3. - t * 0.8).cos()));
-        let (px, py) = (a.cos() * rr, a.sin() * rr);
-        if i == 0 {
-            c.move_to(px, py)
-        } else {
-            c.line_to(px, py)
-        }
-    }
-    c.close_path();
-    if let Ok(g) = c.create_radial_gradient(-r * 0.28, -r * 0.35, r * 0.1, 0., 0., r * 1.15) {
-        let _ = g.add_color_stop(0., "rgba(255,255,255,.94)");
-        let _ = g.add_color_stop(0.4, &color(0.7));
-        let _ = g.add_color_stop(1., &format!("hsla({},80%,30%,.15)", hue + 40.));
-        c.set_fill_style_canvas_gradient(&g);
-        c.set_shadow_blur(30. + amp * 40.);
-        c.set_shadow_color(&color(0.65));
-        c.fill();
-    }
-    c.set_shadow_blur(0.);
-    c.begin_path();
-    let _ = c.arc(0., 0., r * 0.65, 0., TAU);
-    if let Ok(g) = c.create_radial_gradient(-r * 0.1, -r * 0.1, r * 0.05, 0., 0., r * 0.8) {
-        let _ = g.add_color_stop(0., &color(0.2));
-        let _ = g.add_color_stop(1., "rgba(0,0,0,.68)");
-        c.set_fill_style_canvas_gradient(&g);
-        c.fill();
-    }
-    c.begin_path();
-    let _ = c.arc(-r * 0.18, -r * 0.18, r * 0.18, 0., TAU);
-    c.set_fill_style_str("rgba(255,255,255,.22)");
-    c.fill();
-    c.restore();
-}
-
 #[cfg(feature = "debug-ui")]
 fn mount_debug(view: &Shared) {
     let node = document().create_element("div").expect("debug container");
@@ -3791,67 +3674,4 @@ async fn review_memories() -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-struct ActivityFrame {
-    center: (f64, f64),
-    radius: f64,
-    time: f64,
-    hue: f64,
-    mode: visual_state::Mode,
-    reduced: bool,
-    speech_energy: f64,
-}
-fn draw_activity(c: &Context, frame: ActivityFrame) {
-    let ActivityFrame {
-        center: (x, y),
-        radius: r,
-        time: t,
-        hue,
-        mode,
-        reduced,
-        speech_energy,
-    } = frame;
-    use visual_state::Mode;
-    c.save();
-    c.set_line_cap("round");
-    if mode == Mode::Thinking {
-        for i in 0..28 {
-            let a = t * 2.9 + i as f64 * 0.075;
-            let alpha = (i as f64 / 27.).powf(1.5) * 0.9 + 0.05;
-            c.set_line_width(3. + i as f64 / 28.);
-            c.set_stroke_style_str(&format!("hsla({hue},95%,47%,{alpha})"));
-            c.begin_path();
-            let _ = c.arc(x, y, r * 2.02, a, a + 0.06);
-            c.stroke();
-        }
-    } else if matches!(mode, Mode::Speaking | Mode::Listening | Mode::Followup) {
-        let layers = if mode == Mode::Listening { 1 } else { 2 };
-        for layer in 0..layers {
-            c.set_line_width(if layer == 0 { 2.2 } else { 1.2 });
-            c.set_shadow_color(&format!("hsla({hue},85%,65%,.4)"));
-            c.set_shadow_blur(if reduced { 0. } else { 10. });
-            c.set_stroke_style_str(&format!(
-                "hsla({hue},85%,65%,{})",
-                0.30 + speech_energy * 0.25
-            ));
-            c.set_fill_style_str(&format!("hsla({hue},75%,60%,.025)"));
-            c.begin_path();
-            for i in 0..=180 {
-                let angle = i as f64 / 180. * TAU;
-                let radius =
-                    r * visual_state::speaking_shell(angle, t, speech_energy, layer, reduced);
-                let (px, py) = (x + angle.cos() * radius, y + angle.sin() * radius);
-                if i == 0 {
-                    c.move_to(px, py);
-                } else {
-                    c.line_to(px, py);
-                }
-            }
-            c.close_path();
-            c.fill();
-            c.stroke();
-        }
-    }
-    c.restore();
 }

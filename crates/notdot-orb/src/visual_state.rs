@@ -116,26 +116,6 @@ pub(crate) fn smooth_speech(current: f64, target: f64, seconds: f64) -> f64 {
     let tau = if target > current { 0.10 } else { 0.32 };
     current + (target - current) * (1. - (-seconds.clamp(0., 0.1) / tau).exp())
 }
-/// A closed, low-frequency shell: broad waves rather than individual audio spikes.
-pub(crate) fn speaking_shell(
-    angle: f64,
-    time: f64,
-    energy: f64,
-    layer: usize,
-    reduced: bool,
-) -> f64 {
-    let base = 1.82 + layer as f64 * 0.11;
-    if reduced {
-        return base;
-    }
-    let phase = layer as f64 * 0.8;
-    base + energy * 0.065
-        + 0.016 * (time * 1.6 + phase).sin()
-        + (0.3 + energy * 0.7)
-            * (0.022 * (angle * 2. + time * 0.9 + phase).sin()
-                + 0.012 * (angle * 3. - time * 0.55 + phase).sin())
-}
-
 #[cfg(test)]
 mod speech_tests {
     use super::*;
@@ -152,33 +132,61 @@ mod speech_tests {
         }
         assert!((value - 1.).abs() < 1e-9);
     }
-    #[test]
-    fn shell_is_closed_bounded_and_static_with_reduced_motion() {
-        use std::f64::consts::TAU;
-        for layer in 0..2 {
-            for step in 0..200 {
-                let t = step as f64 * 0.17;
-                for energy in [0., 0.5, 1.] {
-                    assert!(
-                        (speaking_shell(0., t, energy, layer, false)
-                            - speaking_shell(TAU, t, energy, layer, false))
-                        .abs()
-                            < 1e-12
-                    );
-                    for i in 0..180 {
-                        let a = i as f64 / 180. * TAU;
-                        let r = speaking_shell(a, t, energy, layer, false);
-                        assert!((1.7..2.1).contains(&r));
-                        assert!(
-                            (r - speaking_shell(a + 0.01, t, energy, layer, false)).abs() < 0.002
-                        );
-                    }
-                }
-                assert_eq!(
-                    speaking_shell(1., t, 1., layer, true),
-                    speaking_shell(0., 0., 0., layer, true)
-                );
-            }
+}
+
+/// Smooth transitions share one bounded clock, so returning from a hidden
+/// window never jumps a surface ribbon or changes the orb's size abruptly.
+#[derive(Default)]
+pub(crate) struct OrbMotion {
+    pub phase: f64,
+    pub listening: f64,
+    pub followup: f64,
+    pub thinking: f64,
+    pub speaking: f64,
+    pub error: f64,
+}
+impl OrbMotion {
+    pub fn advance(&mut self, mode: Mode, seconds: f64, reduced: bool) {
+        let seconds = if seconds.is_finite() {
+            seconds.clamp(0., 0.1)
+        } else {
+            0.
+        };
+        let ease = 1. - (-seconds / 0.24).exp();
+        for (value, active) in [
+            (&mut self.listening, mode == Mode::Listening),
+            (&mut self.followup, mode == Mode::Followup),
+            (&mut self.thinking, mode == Mode::Thinking),
+            (&mut self.speaking, mode == Mode::Speaking),
+            (&mut self.error, mode == Mode::Error),
+        ] {
+            *value += (f64::from(active) - *value) * ease;
         }
+        if !reduced {
+            self.phase += seconds * (0.18 + self.thinking * 0.5 + self.speaking * 0.24);
+        }
+    }
+}
+
+#[cfg(test)]
+mod motion_tests {
+    use super::*;
+
+    #[test]
+    fn transitions_ease_without_jumps_and_pause_motion_when_requested() {
+        let mut motion = OrbMotion::default();
+        motion.advance(Mode::Thinking, 1. / 30., false);
+        assert!(motion.thinking > 0. && motion.thinking < 0.2);
+        let phase = motion.phase;
+        motion.advance(Mode::Speaking, 30., true);
+        assert_eq!(motion.phase, phase);
+        assert!(motion.speaking > 0. && motion.speaking < 0.4);
+        motion.advance(Mode::Error, f64::NAN, false);
+        assert_eq!(motion.phase, phase);
+        for _ in 0..300 {
+            motion.advance(Mode::Followup, 1. / 30., false);
+        }
+        assert!(motion.followup > 0.999);
+        assert!(motion.speaking < 0.001);
     }
 }

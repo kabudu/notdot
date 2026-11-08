@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **A softer, translucent orb.** Flowing light and a glass-like shell show listening, thinking and speech, with smooth transitions that follow your chosen colour.
+- **Clearer glass settings.** A subtle themed backdrop keeps labels and controls readable, with solid surfaces when reduced transparency or high contrast is preferred.
+
 ## [0.4.0] - 2026-11-07
 
 Let the people you live with talk to notdot too, each with their own conversations and memories.

@@ -4,6 +4,8 @@ Completed work and the next additions planned for notdot. Priorities may change 
 
 ## Implemented
 
+- **Translucent appearance.** A softly lit orb and themed glass settings, with distinct conversation states, keyboard focus and reduced-motion support.
+
 - **Trusted voices.** Keep separate conversations and memories for people you add. Share chosen Codex chats for reading, with messages allowed separately. Voice matching runs locally and is not authentication. [Settings guide](docs/settings.md#people-and-voices).
 
 - **Change settings by voice.** Ask for a change, hear it read back and approve before it is saved. Settings also has focused categories and search. [Settings guide](docs/settings.md#change-settings-by-speaking).
