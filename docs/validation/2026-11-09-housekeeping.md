@@ -39,8 +39,20 @@ Tests bind explanation, snooze and dismissal to one exact update spoken within t
 
 Existing native gates still require an idle, visible, unmuted app, current profile access and permitted announcements. No new external-action authority is granted. The troubleshooting export uses an explicit field allowlist and is never uploaded automatically.
 
+## Native desktop acceptance in progress
+
+On the ARM64 Linux VM (XFCE, WebKitGTK 2.52.6), a locally built production app opened the new setup screen in a fresh, separate data directory. It recognised the existing Codex sign-in, opened Voice settings, accessed both saved provider keys without re-entry, loaded the voice catalogue and saved the chosen voice while leaving setup incomplete. The existing profile was untouched.
+
+That check exposed competing native resize requests when saving Settings and reopening setup: the window could collapse and hide the remaining buttons. Native size changes now run in request order. The regression check exercises the actual bridge JavaScript with a delayed first resize and verifies that setup remains expanded and interactive. The rebuilt native Linux app passed the same Settings-to-setup transition with all action buttons visible.
+
+The Linux first-run trial also completed a synthetic speaker-to-microphone request through Deepgram, Terra Medium and ElevenLabs. The saved test chat contains “Please calculate five plus seven an answer in one short sentence” and the answer “Five plus seven equals twelve.” Orb telemetry records listening, thinking and speaking, followed by the audible-confirmation screen. Setup remained incomplete pending that explicit confirmation. This establishes the automated pipeline, not a human judgement of audio quality.
+
+The Windows laptop is connected and its installed Codex reports an existing ChatGPT sign-in. The installer from successful CI run 42621358940 was downloaded, extracted and transferred with a pinned SHA-256 check. Avast blocked the unsigned executable for Threat Labs analysis before it could launch. Protection was left enabled; the original Windows profile was restored and verified. Windows microphone-to-reply acceptance remains blocked by that scan.
+
+The Developer ID-signed native Mac build also detected the existing Codex account, opened setup and Voice settings, loaded ElevenLabs voices from the saved key and returned from Settings at the correct expanded size. No provider key was exported or re-entered. The automated speaker-to-microphone trial returned to idle without a model reply, including a retry after the listening cue. Its audio path is not marked passed. The original Mac profile was restored after testing.
+
 ## Remaining acceptance boundaries
 
-- Three-platform CI must pass for the final PR revision, including native tests and packaging checks.
-- Clean-account browser consent and real native first-run microphone-to-spoken-reply tests have not been established by the silent preview or extraction evaluation.
+- CI run 42621358940 passed all platform, packaging and content jobs. The native resize fix also passed every job in follow-up run 42623407989.
+- Clean-account browser consent remains unverified. Linux completed the automated native voice pipeline; Mac voice acceptance is incomplete and Windows execution is awaiting Avast analysis.
 - Installed-update, battery, long-duration RAM and physical Bluetooth/device-switch measurements are separate hardware acceptance checks; this report does not mark them passed.
