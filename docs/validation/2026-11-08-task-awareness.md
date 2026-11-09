@@ -65,3 +65,7 @@ To repeat after a fresh debug Trunk build: `python3 scripts/prepare_task_cue_pre
 ## Cancellation review correction, 9 November
 
 Two failing regressions reproduced an approval-blocked turn remaining in attention after explicit cancellation, including its persisted journal entry. Terminal failure/interruption now takes precedence over an earlier approval request. A terminal result replaces an existing attention entry in place, preserving acknowledgement and entry identity. Duplicate terminal events do not reset delivery; a dismissed entry stays dismissed. The real process/bridge test and native restart/journal test now pass. No user tasks or saved keys were used.
+
+## Release preparation, 9 November
+
+v0.6.0 metadata and concise notes are prepared in the PR; no release has been published. The final live Terra Medium run produced the expected draft success, partial research, failed delivery and unverified booking outcomes. Four actual macOS system-speech processes completed. All 67 simulated voice workflows passed, including task-report delivery, echo delay, follow-ups and cancellation. The approved four-state design was also inspected in native macOS WKWebView on light and dark backgrounds. No acoustic or human-speaker claim is inferred from those simulations or process exits. The 92 core unit tests, 22 existing bridge tests, updated runtime lifecycle test and 29 orb tests passed after the version change, with native/WASM Clippy warnings denied.

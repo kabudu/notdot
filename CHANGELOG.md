@@ -2,8 +2,13 @@
 
 ## [Unreleased]
 
-- **Keep track of delegated work.** Ask what is running or needs you, hear requested updates, and spot subtle task cues inside the orb.
-- **Know what finished means.** Reports distinguish success, failure, partial results and unverified work, for coding and everyday tasks. Agent-reported checks are labelled as reports, not independent verification.
+## [0.6.0] - 2026-11-09
+
+Keep track of delegated work without opening every Codex chat.
+
+- **Know what needs you.** Ask what is running or needs attention, with requested spoken updates and subtle, themed cues inside the orb.
+- **Understand the result.** Reports distinguish success, failure, partial results and unverified work across coding and everyday tasks. Checks are reported by the task, not independently verified by notdot.
+- **Stay in control.** Listening and speaking take priority over task cues. Dismiss saved updates without stopping work, with reliable status after cancellation and restart.
 
 ## [0.5.0] - 2026-11-08
 
