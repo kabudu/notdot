@@ -82,7 +82,8 @@
         await until(()=>el('setup-panel').open&&el('setup-status').textContent.includes('didn’t hear'));
         ok('empty capture returns immediately to setup without completing it',!settings.onboarding_complete&&el('setup-finish').hidden);
         el('setup-try').click();await until(()=>count('capture')>1);
-        window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+        const escape=new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true});window.dispatchEvent(escape);
+        ok('trial cancellation consumes Escape before opening its dialog',escape.defaultPrevented);
         await until(()=>el('setup-panel').open&&el('setup-status').textContent.includes('cancelled'));
         ok('cancelled trial returns to setup and permits retry',!settings.onboarding_complete&&el('setup-finish').hidden);
         el('setup-try').click();await until(()=>count('capture')>2);

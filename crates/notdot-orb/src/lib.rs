@@ -2077,6 +2077,8 @@ pub fn start() -> Result<(), JsValue> {
                 return;
             }
             if action == Some(interaction::KeyboardAction::Cancel) {
+                // Escape must not also dismiss the setup dialog opened below.
+                e.prevent_default();
                 stop_audio(&target);
                 onboarding::capture_ended(
                     "The conversation test was cancelled. Try again when you’re ready.",
