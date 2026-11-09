@@ -337,3 +337,79 @@ mod listening_cue_tests {
         assert_eq!(cue.advance(Mode::Idle, 0.033, true), 0.);
     }
 }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum TaskKind {
+    #[default]
+    None = 0,
+    Working = 1,
+    Attention = 2,
+    Finished = 3,
+    Review = 4,
+}
+impl TaskKind {
+    pub fn from_cue(cue: &str) -> Self {
+        match cue {
+            "working" => Self::Working,
+            "attention" => Self::Attention,
+            "finished" => Self::Finished,
+            "review" => Self::Review,
+            _ => Self::None,
+        }
+    }
+}
+#[derive(Default)]
+pub(crate) struct TaskMotion {
+    pub kind: TaskKind,
+    pub elapsed: f64,
+    pub strength: f64,
+}
+impl TaskMotion {
+    pub fn advance(&mut self, cue: &str, seconds: f64, reduced: bool) {
+        let kind = TaskKind::from_cue(cue);
+        if kind != self.kind {
+            self.kind = kind;
+            self.elapsed = 0.;
+            self.strength = 0.;
+        }
+        if kind == TaskKind::None {
+            self.strength = 0.;
+            return;
+        }
+        let seconds = if seconds.is_finite() {
+            seconds.clamp(0., 0.1)
+        } else {
+            0.
+        };
+        if reduced {
+            self.elapsed = 0.;
+            self.strength = 1.;
+        } else {
+            self.elapsed += seconds;
+            self.strength += (1. - self.strength) * (1. - (-seconds / 0.24).exp());
+        }
+    }
+}
+#[cfg(test)]
+mod task_motion_tests {
+    use super::*;
+    #[test]
+    fn task_light_eases_in_freezes_for_reduced_motion_and_yields_immediately() {
+        let mut task = TaskMotion::default();
+        task.advance("working", 0.033, false);
+        assert!(task.strength > 0. && task.strength < 0.2);
+        for _ in 0..100 {
+            task.advance("working", 0.033, false);
+        }
+        assert!(task.strength > 0.999);
+        task.advance("attention", 0.033, true);
+        assert_eq!(task.elapsed, 0.);
+        assert_eq!(task.strength, 1.);
+        task.advance("attention", 0.1, true);
+        assert_eq!(task.elapsed, 0.);
+        task.advance("none", 0.033, false);
+        assert_eq!(task.kind, TaskKind::None);
+        assert_eq!(task.strength, 0.);
+    }
+}

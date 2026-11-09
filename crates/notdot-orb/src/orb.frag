@@ -11,6 +11,9 @@
       uniform float thinking;
       uniform float speaking;
       uniform float still;
+      uniform float task_kind;
+      uniform float task_time;
+      uniform float task_strength;
       float band(float value, float width) { return exp(-value*value/width); }
       void main() {
         vec2 point = (gl_FragCoord.xy-resolution*.5)/min(resolution.x,resolution.y)*2.;
@@ -78,6 +81,32 @@
           vec3 luminous = colouredLight/(vec3(1.)+colouredLight*.6);
           light = (ink+luminous*.82)*edgeMask;
           alpha = max(coreAlpha,alpha);
+          if(task_kind>.5 && task_strength>.001){
+            float t=still>.5?0.:task_time;
+            vec2 q=vec2(position.x,-position.y);
+            float field=0.;
+            if(task_kind<1.5){
+              float flow=q.y-(.48*q.x+.14*sin(q.x*3.+t*.3)-.22*sin(t*.65));
+              field=band(flow,.045)*(1.-smoothstep(.65,.93,radialDistance));
+            }else if(task_kind<2.5){
+              float cycle=mod(t,6.);
+              float breath=exp(-pow((cycle-1.)/.5,2.))+exp(-pow((cycle-2.2)/.5,2.));
+              field=exp(-dot(q,q)/.22)*(.82+.18*breath);
+            }else if(task_kind<3.5){
+              float bloom=still>.5?.45:.06+.39*(1.-exp(-t*.9));
+              field=exp(-dot(q,q)/bloom);
+            }else{
+              vec2 a=q-vec2(-.34,.32),b=q-vec2(0.,.4),c=q-vec2(.34,.32);
+              field=min(1.,exp(-dot(a,a)/.045)+exp(-dot(b,b)/.045)+exp(-dot(c,c)/.045));
+            }
+            vec3 ambient=light/(vec3(1.)+light*3.)*.35;
+            vec3 taskTint=(tint-vec3(.42))/.58;
+            taskTint=mix(vec3(.32),taskTint,.68);
+            taskTint.g=max(taskTint.g,taskTint.b*.6);
+            vec3 current=ink+ambient+taskTint*field*.82;
+            light=mix(light,current*edgeMask,task_strength);
+          }
+
 
         }
         // Deterministic sparse particles outside the body.

@@ -1,6 +1,6 @@
 //! Layered Canvas 2D glass, kept within the transparent desktop canvas.
 //! Fixed point counts and whole-path strokes avoid per-segment glow passes.
-use crate::visual_state::OrbMotion;
+use crate::visual_state::{OrbMotion, TaskKind, TaskMotion};
 use std::f64::consts::TAU;
 use web_sys::{CanvasGradient, CanvasRenderingContext2d as Context};
 
@@ -11,149 +11,68 @@ pub(crate) struct Frame<'a> {
     pub energy: f64,
     pub reduced: bool,
     pub motion: &'a OrbMotion,
+    pub task: &'a TaskMotion,
 }
 
 struct Palette {
     hue: f64,
 }
-/// A tapered filament follows a softly bending interior wave instead of an
-/// orbital spinner. Three whole-path fills bound per-frame Canvas work.
-fn working_filament(context: &Context, frame: &Frame<'_>) {
-    let phase = if frame.reduced {
-        0.
-    } else {
-        frame.motion.phase
-    };
-    let center = 0.5 + 0.22 * (phase * 3.6).sin();
-    let points: [(f64, f64, f64, f64, f64); 33] = std::array::from_fn(|i| {
-        let u = i as f64 / 32.;
-        let t = center + (u - 0.5) * 0.42;
-        let angle = t * TAU - phase * 0.7;
-        let dx = 1.45_f64;
-        let dy = 0.48 + 0.12 * TAU * angle.cos();
-        let length = dx.hypot(dy);
-        (
-            frame.center.0 + (t - 0.5) * frame.radius * dx,
-            frame.center.1 + (0.48 * (t - 0.5) + 0.12 * angle.sin()) * frame.radius,
-            -dy / length,
-            dx / length,
-            (std::f64::consts::PI * u).sin().max(0.).powf(0.75),
-        )
-    });
-    for (half_width, colour) in [(6.5, "#07111f"), (4.5, "#02060c"), (2.1, "#f1f8ff")] {
-        context.begin_path();
-        for (i, &(x, y, nx, ny, envelope)) in points.iter().enumerate() {
-            let w = half_width * envelope;
-            if i == 0 {
-                context.move_to(x + nx * w, y + ny * w);
-            } else {
-                context.line_to(x + nx * w, y + ny * w);
-            }
-        }
-        for &(x, y, nx, ny, envelope) in points.iter().rev() {
-            let w = half_width * envelope;
-            context.line_to(x - nx * w, y - ny * w);
-        }
-        context.close_path();
-        if half_width == 2.1 {
-            let gradient = context.create_linear_gradient(
-                points[0].0,
-                points[0].1,
-                points[32].0,
-                points[32].1,
-            );
-            let _ = gradient.add_color_stop(0., &format!("hsl({},80%,76%)", frame.hue));
-            let _ = gradient.add_color_stop(0.55, "#f1f8ff");
-            let _ = gradient.add_color_stop(1., &format!("hsl({},85%,86%)", frame.hue));
-            context.set_fill_style_canvas_gradient(&gradient);
-        } else {
-            context.set_fill_style_str(colour);
-        }
-        context.fill();
-    }
-}
-/// Draw inside the opaque core, shared by GPU and Canvas modes. Shape carries
-/// meaning without depending on colour; reduced motion keeps each cue steady.
-pub(crate) fn task_cue(context: &Context, frame: &Frame<'_>, cue: &str) {
-    if !matches!(cue, "working" | "attention" | "review" | "finished") {
+/// Volumetric-looking light belongs to the orb, without separate glyphs.
+fn task_light(context: &Context, palette: &Palette, r: f64, task: &TaskMotion, reduced: bool) {
+    if task.kind == TaskKind::None || task.strength < 0.001 {
         return;
     }
-    let (x, center_y) = frame.center;
-    let r = frame.radius;
-    let phase = frame.motion.phase;
-    let badge = (r * 0.23).clamp(11., 20.).min(r * 0.28);
-    let y = if cue == "attention" {
-        center_y
-    } else {
-        center_y + r * 0.56
-    };
+    let t = if reduced { 0. } else { task.elapsed };
     context.save();
-    context.set_global_alpha(1.);
-    let _ = context.set_global_composite_operation("source-over");
-    context.set_line_cap("round");
-    context.set_line_join("round");
-    if cue == "attention" {
-        let alpha = if frame.reduced {
-            0.16
-        } else {
-            0.12 + 0.08 * (phase * 4.).sin().powi(2)
-        };
-        context.set_fill_style_str(&format!("hsla({},85%,75%,{alpha})", frame.hue));
-        context.begin_path();
-        let _ = context.arc(x, center_y, r * 0.72, 0., TAU);
-        context.fill();
-    }
-    context.begin_path();
-    if cue == "working" {
-        working_filament(context, frame);
-        context.restore();
-        return;
+    context.set_global_alpha(task.strength * 0.82);
+    context.set_fill_style_str("#050c17");
+    context.fill_rect(-r, -r, r * 2., r * 2.);
+    context.set_global_alpha(task.strength);
+    let hue = palette.hue.rem_euclid(360.);
+    let lift = if (215.0..285.0).contains(&hue) {
+        10.
     } else {
-        let _ = context.arc(x, y, badge, 0., TAU);
-        context.set_fill_style_str("#07111f");
-        context.fill();
-        context.set_stroke_style_str("#02060c");
-        context.set_line_width(2.);
-        context.stroke();
-        context.begin_path();
-        match cue {
-            "attention" => {
-                context.move_to(x, y - badge * 0.42);
-                context.line_to(x, y + badge * 0.06);
-            }
-            "review" => {
-                let d = badge * 0.48;
-                context.move_to(x, y - d);
-                context.line_to(x + d, y);
-                context.line_to(x, y + d);
-                context.line_to(x - d, y);
-                context.close_path();
-            }
-            "finished" => {
-                context.move_to(x - badge * 0.48, y);
-                context.line_to(x - badge * 0.12, y + badge * 0.32);
-                context.line_to(x + badge * 0.5, y - badge * 0.36);
-            }
-            _ => {}
+        0.
+    };
+    let cloud = |x: f64, y: f64, size: f64, alpha: f64| {
+        if let Ok(g) = context.create_radial_gradient(x, y, 0., x, y, size) {
+            let _ = g.add_color_stop(0., &palette.colour(alpha, 60. + lift));
+            let _ = g.add_color_stop(0.25, &palette.colour(alpha * 0.9, 58. + lift));
+            let _ = g.add_color_stop(1., &palette.colour(0., 60.));
+            context.set_fill_style_canvas_gradient(&g);
+            context.begin_path();
+            let _ = context.arc(x, y, size, 0., TAU);
+            context.fill();
         }
-    }
-    // Both the backing and outline are opaque. The cue's contrast therefore
-    // cannot be washed out by a bright shader frame or a light desktop.
-    context.set_stroke_style_str("#02060c");
-    context.set_line_width(7.);
-    context.stroke();
-    context.set_stroke_style_str("#f1f8ff");
-    context.set_line_width(3.);
-    context.stroke();
-    if cue == "attention" {
-        context.begin_path();
-        let _ = context.arc(x, y + badge * 0.48, 4.2, 0., TAU);
-        context.set_fill_style_str("#02060c");
-        context.fill();
-        context.begin_path();
-        let _ = context.arc(x, y + badge * 0.48, 2.2, 0., TAU);
-        context.set_fill_style_str("#f1f8ff");
-        context.fill();
+    };
+    match task.kind {
+        TaskKind::Working => {
+            let offset = 0.14 * (t * 0.3).sin() - 0.22 * (t * 0.65).sin();
+            for x in [-0.7_f64, -0.35, 0., 0.35, 0.7] {
+                let y = 0.48 * x + 0.14 * (x * 3.).sin() + offset;
+                cloud(x * r, y * r, r * 0.3, 1.);
+            }
+        }
+        TaskKind::Attention => {
+            let cycle = t % 6.;
+            let breath =
+                (-((cycle - 1.) / 0.5).powi(2)).exp() + (-((cycle - 2.2) / 0.5).powi(2)).exp();
+            cloud(0., 0., r * 0.72, 0.82 + 0.18 * breath);
+        }
+        TaskKind::Finished => {
+            let size = if reduced {
+                0.85
+            } else {
+                0.3 + 0.55 * (1. - (-t * 0.9).exp())
+            };
+            cloud(0., 0., r * size, 1.);
+        }
+        TaskKind::Review => {
+            for (x, y) in [(-0.34, 0.32), (0., 0.4), (0.34, 0.32)] {
+                cloud(x * r, y * r, r * 0.34, 1.);
+            }
+        }
+        TaskKind::None => {}
     }
     context.restore();
 }
@@ -332,6 +251,7 @@ pub(crate) fn draw(context: &Context, frame: Frame<'_>) {
         energy,
         reduced,
         motion,
+        task,
     } = frame;
     let palette = Palette {
         hue: hue + motion.error * ((12. - hue + 540.) % 360. - 180.),
@@ -417,6 +337,7 @@ pub(crate) fn draw(context: &Context, frame: Frame<'_>) {
         ribbon(context, &palette, radius, i, phase);
     }
     flowing_light(context, &palette, radius, phase, speech);
+    task_light(context, &palette, radius, task, reduced);
     if let Ok(gradient) = context.create_radial_gradient(0., 0., radius * 0.82, 0., 0., radius) {
         palette.gradient(
             &gradient,

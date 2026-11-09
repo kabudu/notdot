@@ -3,7 +3,7 @@
 use crate::{
     orb_renderer::{self, Frame},
     shader_renderer::Shader,
-    visual_state::OrbMotion,
+    visual_state::{OrbMotion, TaskKind, TaskMotion},
 };
 use wasm_bindgen::{JsCast, prelude::*};
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
@@ -47,6 +47,11 @@ impl CueAcceptance {
             speaking: 1.,
             ..Default::default()
         };
+        let task = TaskMotion {
+            kind: TaskKind::from_cue(cue),
+            elapsed: if reduced { 0. } else { phase / 12. },
+            strength: if cue == "none" { 0. } else { 1. },
+        };
         let frame = Frame {
             center: (side / 2., side / 2.),
             radius: side * 0.17,
@@ -54,12 +59,17 @@ impl CueAcceptance {
             energy: 1.,
             reduced,
             motion: &motion,
+            task: &task,
         };
         self.output.clear_rect(0., 0., side, side);
-        self.output.set_fill_style_str("white");
+        self.output.set_fill_style_str(if background == "shader" {
+            "#0b1018"
+        } else {
+            "white"
+        });
         self.output.fill_rect(0., 0., side, side);
         match background {
-            "shader" => {
+            "shader" | "white" => {
                 if !self.shader.draw(&self.gpu, &frame) {
                     return Err(JsValue::from_str("Shader unavailable"));
                 }
@@ -75,12 +85,11 @@ impl CueAcceptance {
                     energy: 1.,
                     reduced,
                     motion: &motion,
+                    task: &task,
                 },
             ),
-            "white" => {}
             _ => return Err(JsValue::from_str("Unknown background")),
         }
-        orb_renderer::task_cue(&self.output, &frame, cue);
         Ok(())
     }
 }
