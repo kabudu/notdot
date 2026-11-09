@@ -70,5 +70,5 @@ The temporary app was stopped, its registration removed and the original notdot 
 ## Remaining acceptance boundaries
 
 - Final code CI run [42632438616](https://github.com/kabudu/notdot/actions/runs/42632438616), at 1a4b070, passed every job: Apple Silicon and Intel macOS, Linux native, Windows native and installer packaging, release tooling and content checks. Superseded runs were cancelled to avoid redundant builds.
-- Fresh Codex sign-in, browser return and restart recovery passed natively on Mac as described above. Account creation and user-owned OS consent remain outside unattended acceptance. Windows native CI and installer packaging passed; laptop voice execution remains blocked by Avast analysis. The maintainer explicitly accepted this hardware test gap for v0.7.0 on 9 November 2026; it does not block merge. Protection was not disabled.
+- Fresh Codex sign-in, browser return and restart recovery passed natively on Mac as described above. Account creation and user-owned OS consent remain outside unattended acceptance. Windows native CI and installer packaging passed; laptop voice execution remains blocked by Avast analysis. Protection was not disabled.
 - Installed-update, battery, long-duration RAM and physical Bluetooth/device-switch measurements are separate hardware acceptance checks; this report does not mark them passed.
