@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-09
+
 An easier first conversation, more careful memories and less background work.
 
 - **Guided setup.** Connect Codex, follow official installation guidance, sign in and test a spoken conversation, with clear retry and cancellation.
