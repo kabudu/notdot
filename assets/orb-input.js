@@ -46,7 +46,7 @@ api.event.listen('orb-visual-state',event=>{
  const p=event.payload;
  if(!p||typeof p.mode!=='string')return;
  const state={idle:'Ready',listening:'Listening',followup:'Ready for your reply',thinking:'Thinking',speaking:'Speaking',error:'Needs attention'}[p.mode]||'Ready';
- control.setAttribute('aria-label','notdot voice companion. '+state+'. '+(p.help||''));
+ control.setAttribute('aria-label','notdot voice companion. '+(typeof p.status==='string'&&p.status?p.status:state+'. '+(p.help||'')));
  if(p.pressed===null)control.removeAttribute('aria-pressed');
  else control.setAttribute('aria-pressed',p.pressed);
  control.dataset.state=p.mode;

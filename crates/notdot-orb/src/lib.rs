@@ -26,8 +26,9 @@ export function drag(){return window.__TAURI__.window.getCurrentWindow().startDr
 export function installOrbControls(){
 const orb=document.getElementById('orb');
 const notify=()=>window.__TAURI__.event.emitTo('orb-input','orb-visual-state',{
-    mode:orb.dataset.state||'idle',help:orb.title,pressed:orb.getAttribute('aria-pressed')
+    mode:orb.dataset.state||'idle',help:orb.title,status:document.getElementById('orb-status')?.textContent||'',pressed:orb.getAttribute('aria-pressed')
 }).catch(()=>{});
+new MutationObserver(notify).observe(document.getElementById('orb-status'),{childList:true,characterData:true,subtree:true});
 new MutationObserver(notify).observe(orb,{attributes:true,attributeFilter:['data-state','title','aria-pressed']});
 return window.__TAURI__.event.listen('orb-control',e=>{
     const c=document.getElementById('orb'),p=e.payload;
