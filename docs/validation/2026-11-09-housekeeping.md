@@ -39,7 +39,7 @@ Tests bind explanation, snooze and dismissal to one exact update spoken within t
 
 Existing native gates still require an idle, visible, unmuted app, current profile access and permitted announcements. No new external-action authority is granted. The troubleshooting export uses an explicit field allowlist and is never uploaded automatically.
 
-## Native desktop acceptance in progress
+## Native desktop acceptance
 
 On the ARM64 Linux VM (XFCE, WebKitGTK 2.52.6), a locally built production app opened the new setup screen in a fresh, separate data directory. It recognised the existing Codex sign-in, opened Voice settings, accessed both saved provider keys without re-entry, loaded the voice catalogue and saved the chosen voice while leaving setup incomplete. The existing profile was untouched.
 
@@ -55,8 +55,20 @@ Earlier failed Mac attempts were not reliably synchronised with the eight-second
 
 The investigation also reproduced two setup recovery defects. An empty capture left the user at the orb until the full setup timeout; it now immediately returns to setup with a microphone/retry message. Escape could open recovery and then dismiss that new dialog through its default action; cancellation consumes Escape only while opening recovery, preserving the normal Escape-to-close action of an already-open dialog. Both native behaviours passed. Native Mac silence, cancellation and successful retry passed after rebuilding. A silence trial after successful playback correctly removed the completion option, so an earlier successful trial cannot finish a later empty one. The original Mac profile was restored after testing. The rebuilt Linux app also passed native silence and Escape recovery, a synchronised voice retry and explicit setup completion. After the final empty-segment change (1a4b070), both Mac and Linux repeated the Deepgram → Terra Medium → ElevenLabs turn and returned to idle. The Mac run also repeated explicit setup completion. The ARM64 Linux build passed all 21 voice tests. These checks used synthetic audio, not a real-person listening assessment.
 
+## Final native onboarding checks
+
+The final production Mac binary at 1a4b070 was launched with a separate, initially signed-out Codex home and a disposable notdot profile. The normal Codex credentials and notdot profile were not altered. File-based credential storage was selected only for the isolated test runtime.
+
+- Signed-out detection displayed Sign in with ChatGPT.
+- The actual runtime opened OpenAI’s browser account-selection page. Cancelling in notdot returned immediately to sign-in guidance; retry started a new browser flow.
+- Selecting the existing browser account and continuing the official Codex sign-in completed the real localhost callback. notdot automatically reported Codex connected and exposed voice setup and the conversation test.
+- Sign-in alone left onboarding incomplete. Continue later returned to the orb; restarting reused the new sign-in and reopened the unfinished setup without another browser login.
+- Selecting a deliberately nonexistent runtime displayed Get Codex and Check again. Get Codex opened the official quickstart with desktop downloads and CLI guidance; retry remained actionable while the runtime was absent.
+
+The temporary app was stopped, its registration removed and the original notdot profile restored. The temporary runtime authentication file was removed without reading or exporting its contents. This verifies a fresh Codex credential store using an existing browser account, not account creation, password entry or every operating system’s consent UI.
+
 ## Remaining acceptance boundaries
 
 - Final code CI run [42632438616](https://github.com/kabudu/notdot/actions/runs/42632438616), at 1a4b070, passed every job: Apple Silicon and Intel macOS, Linux native, Windows native and installer packaging, release tooling and content checks. Superseded runs were cancelled to avoid redundant builds.
-- Clean-account browser consent remains unverified. Linux completed the automated native voice pipeline; Mac also completed both transcription paths and restart recovery. Windows execution is awaiting Avast analysis, including a repeated attempt after the original scan.
+- Fresh Codex sign-in, browser return and restart recovery passed natively on Mac as described above. Account creation and user-owned OS consent remain outside unattended acceptance. Windows native CI and installer packaging passed; laptop voice execution remains blocked by Avast analysis. The maintainer explicitly accepted this hardware test gap for v0.7.0 on 9 November 2026; it does not block merge. Protection was not disabled.
 - Installed-update, battery, long-duration RAM and physical Bluetooth/device-switch measurements are separate hardware acceptance checks; this report does not mark them passed.
