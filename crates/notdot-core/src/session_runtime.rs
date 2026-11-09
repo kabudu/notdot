@@ -186,16 +186,19 @@ impl SessionRuntime {
                                 .await
                                 .insert(tid.into(), notify.clone());
                             let task = active.remove(tid).expect("matched owned task");
+                            // A previous approval request must not hide a later
+                            // failure or explicit cancellation of this turn.
+                            let terminal = event["params"]["turn"]["status"]
+                                .as_str()
+                                .unwrap_or("unknown");
+                            let status = if task.approval_blocked && terminal == "completed" {
+                                "approval_required"
+                            } else {
+                                terminal
+                            };
                             if task.origin.as_ref().is_none_or(|policy| {
                                 policy.check(tid, crate::profiles::ChatOp::Read).is_ok()
                             }) {
-                                let status = if task.approval_blocked {
-                                    "approval_required"
-                                } else {
-                                    event["params"]["turn"]["status"]
-                                        .as_str()
-                                        .unwrap_or("unknown")
-                                };
                                 session.completions.lock().await.push_back(Completion {
                                     thread_id: tid.into(),
                                     turn_id: turn.into(),
@@ -217,14 +220,7 @@ impl SessionRuntime {
                                 thread_id: tid.into(),
                                 turn_id: turn.into(),
                                 title: task.title,
-                                status: if task.approval_blocked {
-                                    "approval_required".into()
-                                } else {
-                                    event["params"]["turn"]["status"]
-                                        .as_str()
-                                        .unwrap_or("unknown")
-                                        .into()
-                                },
+                                status: status.into(),
                                 summary: task.summary,
                                 report: task.report,
                                 announce: task.notify,

@@ -141,7 +141,7 @@ impl Initiative {
         completion: &notdot_core::session_runtime::Completion,
     ) -> Result<(), String> {
         let time = now();
-        self.add(Entry {
+        let entry = Entry {
             id: uuid::Uuid::new_v4().to_string(), key: completion.key(),
             message: completion.message(), source: completion.key(),
             evidence: "Status from the exact Codex turn started by notdot. A completed turn does not independently verify external work.".into(),
@@ -149,8 +149,37 @@ impl Initiative {
             permitted: completion.announce, delivered: false, dismissed: false,
             profile_origin: completion.origin.clone(),
             task: Some(completion.task()),
-        }).await
+        };
+        let mut journal = self.journal.lock().await;
+        let mut updated = journal.clone();
+        if let Some(previous) = updated.entries.iter_mut().find(|e| {
+            e.key == entry.key
+                && e.expires > time
+                && e.task
+                    .as_ref()
+                    .is_some_and(|t| t.activity == notdot_core::task_awareness::Activity::Attention)
+                && entry
+                    .task
+                    .as_ref()
+                    .is_some_and(|t| t.activity == notdot_core::task_awareness::Activity::Finished)
+        }) {
+            // A terminal result replaces the earlier attention notice. Preserve
+            // acknowledgement and identity; duplicate terminal events remain no-ops.
+            let id = previous.id.clone();
+            let dismissed = previous.dismissed;
+            *previous = entry;
+            previous.id = id;
+            previous.dismissed = dismissed;
+        } else {
+            updated.insert(entry, time)?;
+        }
+        if updated != *journal {
+            self.save(&updated).await?;
+            *journal = updated;
+        }
+        Ok(())
     }
+
     pub async fn task_command(
         &self,
         text: &str,
@@ -892,6 +921,56 @@ mod task_completion_tests {
             "none",
             "duplicate cannot resurrect an acknowledged report"
         );
+    }
+    #[tokio::test]
+    async fn cancelling_an_attention_task_updates_its_saved_result_without_resurrection() {
+        use notdot_core::task_awareness::{Activity, Outcome};
+        for dismissed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("tasks.json");
+            let initiative = Initiative::open(path.clone()).unwrap();
+            let mut completion = notdot_core::session_runtime::Completion {
+                thread_id: "synthetic".into(),
+                turn_id: "owned".into(),
+                title: "Draft".into(),
+                status: "approval_required".into(),
+                summary: String::new(),
+                report: None,
+                announce: true,
+                origin: None,
+            };
+            initiative.task_completed(&completion).await.unwrap();
+            {
+                let mut journal = initiative.journal.lock().await;
+                journal.entries[0].delivered = true;
+                journal.entries[0].dismissed = dismissed;
+                initiative.save(&journal).await.unwrap();
+            }
+            let restored = Initiative::open(path.clone()).unwrap();
+            completion.status = "interrupted".into();
+            restored.task_completed(&completion).await.unwrap();
+            restored.task_completed(&completion).await.unwrap();
+            let restarted = Initiative::open(path).unwrap();
+            let journal = restarted.journal.lock().await;
+            assert_eq!(journal.entries.len(), 1);
+            let entry = &journal.entries[0];
+            assert_eq!(entry.task.as_ref().unwrap().activity, Activity::Finished);
+            assert_eq!(entry.task.as_ref().unwrap().outcome, Outcome::Failed);
+            assert_eq!(entry.dismissed, dismissed);
+            assert!(entry.message.contains("interrupted"));
+            assert!(!entry.message.contains("needs attention"));
+            drop(journal);
+            {
+                let mut journal = restarted.journal.lock().await;
+                journal.entries[0].delivered = true;
+                restarted.save(&journal).await.unwrap();
+            }
+            restarted.task_completed(&completion).await.unwrap();
+            assert!(
+                restarted.journal.lock().await.entries[0].delivered,
+                "duplicate terminal events cannot requeue speech"
+            );
+        }
     }
     #[tokio::test]
     async fn completed_report_survives_restart_and_duplicate_events_without_redelivery() {

@@ -160,5 +160,9 @@ for line in sys.stdin:
     );
     runtime.acknowledge_completion(&report.key()).await;
     execute(&runtime, "Approval", Action::Stop, false).await;
+    let stopped = completion(&runtime).await;
+    assert_eq!(stopped.task().activity, Activity::Finished);
+    assert_eq!(stopped.task().outcome, Outcome::Failed);
+    assert!(stopped.message().contains("interrupted"));
     runtime.shutdown().await;
 }

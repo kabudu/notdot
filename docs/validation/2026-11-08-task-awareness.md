@@ -16,7 +16,7 @@ The target receives a bounded result-report instruction alongside the authorised
 | Real bridge and process lifecycle, synthetic Codex peer | Seven result cases passed: draft success, failed tests, partial research, unverified booking, runtime failure overriding success, clarification and sign-in. Foreign/duplicate events, working state, cancellation and early unsupported approval were also exercised through consent and the actual bridge. |
 | Real Codex, Terra Medium | Tool-free disposable chats produced the expected writing success, partial research, failed delivery and unverified booking outcomes. The example archives only the chats it creates. No real booking, delivery or provider action occurs. |
 | Persistence and privacy | Native journal tests passed for restart, deduplication, durable acknowledgement, disabled speech and profile visibility. Existing trusted-profile tests remain in the native suite. Old journal entries without task metadata still load. |
-| Production WASM UI with synthetic snapshots | Twelve task-cue checks passed in Chrome: working, attention, review and success cues, matching status text, foreground preemption, restoration, acknowledgement and accessible count updates without a cue change. Screenshot inspection confirmed the attention mark stays inside the dark core. |
+| Production WASM UI with synthetic snapshots | Twelve task-cue checks passed in Chrome: working, attention, review and success cues, matching status text, foreground preemption, restoration, acknowledgement and accessible count updates without a cue change. The same twelve checks also passed in a native macOS Tauri/WKWebView host with synthetic services. |
 | Existing simulated voice workflow | All 67 checks passed, including consent, mute, hidden window, Settings, cancellation, sentence playback, follow-ups and the echo guard. Audio, capture and provider adapters in this harness are synthetic. |
 | Real macOS system speech | The opt-in native test successfully completed four system-speech processes for draft success, failed tests, partial research and unverified booking. No paid speech keys were accessed. This establishes the speech path completed, not independent human or acoustic verification. |
 | Static checks | Native and WASM Clippy passed with warnings denied; formatting, website structure, local documentation links and orb input checks passed. |
@@ -28,7 +28,7 @@ The target receives a bounded result-report instruction alongside the authorised
 - Automatic speech stays within 301 characters and uses whole-word truncation. Failed checks take priority over optimistic summaries. Details remain in the source chat.
 - Quiet cues do not enable spoken interruptions. Requested announcements retain idle, mute, visibility, quiet-hours, spacing, cancellation and echo rules. Entry delivery is claimed before playback; a failed voice process does not trigger duplicate automatic speech.
 - A successful cue expires after eight seconds. Review and attention indicators remain until dismissal or expiry. Voice acknowledgement clears saved reports, never a running task or an approval requirement.
-- Foreground listening, thinking, speaking and error states take priority. Shapes and status text supplement colour; reduced motion keeps the task cues steady. The same Canvas overlay works with WebGL and fallback rendering.
+- Foreground listening, thinking, speaking and error states take priority. Patterns and status text supplement colour; reduced motion keeps task cues steady. WebGL lighting and the Canvas fallback share the same state transitions.
 - Revoked read permissions remove visibility. Private state uses the existing active-profile and private-announcement gate.
 
 ## Validation limits
@@ -61,3 +61,7 @@ The complete matrix passed **27,648 samples** across 16 hues, 24 phases, two orb
 All 29 orb unit tests and debug/release WASM Clippy passed. The light/dark desktop and blue/purple theme previews were inspected in Chrome. These are renderer checks, not new Windows/Linux hardware acceptance.
 
 To repeat after a fresh debug Trunk build: `python3 scripts/prepare_task_cue_preview.py`, serve the dist directory locally, open `cue-contrast.html` and run the checks. `task-cues.html` provides the silent theme/background comparison. Task lighting uses bounded shader arithmetic and a fixed number of fallback gradients, without production pixel readbacks.
+
+## Cancellation review correction, 9 November
+
+Two failing regressions reproduced an approval-blocked turn remaining in attention after explicit cancellation, including its persisted journal entry. Terminal failure/interruption now takes precedence over an earlier approval request. A terminal result replaces an existing attention entry in place, preserving acknowledgement and entry identity. Duplicate terminal events do not reset delivery; a dismissed entry stays dismissed. The real process/bridge test and native restart/journal test now pass. No user tasks or saved keys were used.
