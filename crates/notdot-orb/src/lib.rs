@@ -4,6 +4,7 @@ mod conversation;
 #[cfg(all(debug_assertions, target_arch = "wasm32"))]
 mod cue_acceptance;
 mod interaction;
+mod onboarding;
 mod orb_renderer;
 mod settings_navigation;
 mod shader_renderer;
@@ -730,7 +731,7 @@ fn wake_ready(view: &Shared, snapshot: &Snapshot) -> bool {
         && (!v.conversation.active() || v.native_manual)
         && (snapshot.settings.wake_enabled || v.native_manual)
         && !snapshot.settings.microphone_muted
-        && snapshot.settings.onboarding_complete
+        && (snapshot.settings.onboarding_complete || onboarding::trial())
         && snapshot.key_configured
         && snapshot.stt_ready
         && !snapshot.key_checking
@@ -2427,7 +2428,7 @@ pub fn start() -> Result<(), JsValue> {
         settings.wake_enabled = input("wake-enabled").checked();
         settings.wake_name_only = select("wake-phrase").value() == "name";
         settings.microphone_muted = input("microphone-muted").checked();
-        settings.onboarding_complete = true;
+        settings.onboarding_complete = target.borrow().snapshot.settings.onboarding_complete;
         let key = input("key").value();
         let stt_key = input("stt-key").value();
         let target = target.clone();
@@ -2444,6 +2445,7 @@ pub fn start() -> Result<(), JsValue> {
                     message("");
                     target.borrow_mut().snapshot.settings = settings;
                     close_panel(&target);
+                    if !target.borrow().snapshot.settings.onboarding_complete {onboarding::open();}
                 }
                 Err(e) => message(e),
             }
@@ -3059,7 +3061,7 @@ pub fn start() -> Result<(), JsValue> {
                     if *first.borrow() {
                         *first.borrow_mut() = false;
                         if onboard {
-                            open_panel(&target);
+                            onboarding::open();
                         }
                     }
                     if let Some(id) = memory_check {
@@ -3252,6 +3254,7 @@ pub fn start() -> Result<(), JsValue> {
         100,
     )?;
     tick.forget();
+    onboarding::install(&view);
     animate(canvas, view)?;
     Ok(())
 }
@@ -3271,7 +3274,10 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
         let mut v = view.borrow_mut();
         if v.initialized
             && v.snapshot.window_visible
-            && let Some(frame_seconds) = v.frame_clock.tick(now, reduced)
+            && let Some(frame_seconds) = v.frame_clock.tick(
+                now,
+                reduced || dialog("panel").open() || dialog("setup-panel").open(),
+            )
         {
             let w = canvas.client_width() as f64;
             let h = canvas.client_height() as f64;

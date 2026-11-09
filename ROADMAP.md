@@ -4,6 +4,10 @@ Completed work and the next additions planned for notdot. Priorities may change 
 
 ## Implemented
 
+- **Guided setup.** Check Codex, follow official installation guidance, sign in through your browser and try a conversation before finishing setup. Existing settings and saved keys are kept.
+
+- **More careful memory and check-ins.** New learned facts keep the original evidence wording. Ask why a recent check-in was suggested, snooze it or stop that saved item. Memory checks have bounded prompts and skip simple acknowledgements.
+
 - **Translucent appearance.** A fluid dark-core orb and themed glass settings, with an inner listening glow, distinct conversation states, keyboard focus and reduced-motion support.
 
 - **Trusted voices.** Keep separate conversations and memories for people you add. Share chosen Codex chats for reading, with messages allowed separately. Voice matching runs locally and is not authentication. [Settings guide](docs/settings.md#people-and-voices).

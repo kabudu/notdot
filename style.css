@@ -293,3 +293,11 @@ dialog { overflow-wrap: anywhere; }
 
 /* Shader pixels never replace the accessible interaction/status canvas. */
 #orb-gl{position:absolute;inset:0;pointer-events:none;cursor:default}#orb{position:relative}
+
+/* Setup shares the settings palette and accessible focus treatment. */
+#setup-panel{max-width:min(420px,calc(100vw - 32px));padding:24px;}
+#setup-panel h1{font-size:1.65rem;margin:.35rem 0 1rem;}
+#setup-status{min-height:4.5em;line-height:1.55;}
+.setup-actions{display:flex;flex-direction:column;gap:12px;}
+.setup-actions button{min-height:44px;width:100%;}
+.setup-actions [hidden]{display:none;}
