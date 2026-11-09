@@ -43,7 +43,13 @@ return window.__TAURI__.event.listen('orb-control',e=>{
     else if(p.action==='key'){c.focus();c.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:p.key,metaKey:p.meta,ctrlKey:p.ctrl,repeat:p.repeat}));}
     else if(p.action==='blur')c.blur();
 })}
-export async function resize(w,h){
+let resizeQueue=Promise.resolve();
+export function resize(w,h){
+    const next=resizeQueue.catch(()=>{}).then(()=>resizeWindow(w,h));
+    resizeQueue=next;
+    return next;
+}
+async function resizeWindow(w,h){
     const api=window.__TAURI__, win=api.window.getCurrentWindow();
     await api.core.invoke('orb_input_mode',{collapsed:false}).catch(()=>{});
     const monitor=await api.window.currentMonitor();
