@@ -349,8 +349,8 @@ async fn process_stream(
                 }
                 if text.trim().is_empty() {
                     return Err(VoiceError::new(
-                        VoiceErrorKind::Provider,
-                        "No usable speech was transcribed",
+                        VoiceErrorKind::NoSpeech,
+                        "No speech was transcribed. Please try again.",
                     ));
                 }
                 return Ok(text);

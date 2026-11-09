@@ -772,6 +772,9 @@ async fn wake_request(view: Shared, id: u64, generation: u64) -> Result<(), Stri
     if text.trim().is_empty() {
         if view.borrow().generation == generation {
             stop_audio(&view);
+            onboarding::capture_ended(
+                "I didn’t catch a request. Try speaking a little closer to the microphone, then try again.",
+            );
         }
         return Ok(());
     }

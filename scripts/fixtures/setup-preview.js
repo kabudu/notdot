@@ -90,7 +90,10 @@
         const clock=Date.now;Date.now=()=>clock()+121000;
         try{await until(()=>el('setup-panel').open&&el('setup-status').textContent.includes('timed out'));}finally{Date.now=clock;}
         ok('expired trial returns to setup without accepting a stale result',!settings.onboarding_complete&&el('setup-finish').hidden);
-        el('setup-try').click();await until(()=>count('capture')>3);submit('What is five plus seven?');
+        el('setup-try').click();await until(()=>count('capture')>3);submit('');
+        await until(()=>el('setup-panel').open&&el('setup-status').textContent.includes('didn’t catch'));
+        ok('empty provider transcript returns to setup without a model request',turn===0&&!settings.onboarding_complete&&el('setup-finish').hidden);
+        el('setup-try').click();await until(()=>count('capture')>4);submit('What is five plus seven?');
         await until(()=>!el('setup-finish').hidden,12000);
         ok('spoken test returns to an explicit audible confirmation',!settings.onboarding_complete);
         el('setup-finish').click();await until(()=>settings.onboarding_complete);
