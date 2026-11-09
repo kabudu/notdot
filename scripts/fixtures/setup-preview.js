@@ -75,6 +75,8 @@
         el('setup-signin').click();await until(()=>!el('setup-voice').hidden,12000);
         el('setup-voice').click();await until(()=>el('panel').open);
         ok('voice settings preserve incomplete setup',!settings.onboarding_complete);
+        const modalEscape=new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true});window.dispatchEvent(modalEscape);
+        ok('existing dialogs retain Escape-to-close behaviour',!modalEscape.defaultPrevented);
         el('save-settings').click();await until(()=>el('setup-panel').open);
         ok('saving settings does not skip the spoken test',!settings.onboarding_complete);
         el('setup-try').click();await until(()=>count('capture')>0);
