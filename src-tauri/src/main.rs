@@ -612,9 +612,11 @@ async fn save_settings(
     let key_changed = key.as_ref().is_some_and(|key| !key.is_empty());
     let mut snap = state.snapshot.lock().await;
     let provider_changed = settings.voice_provider != snap.settings.voice_provider;
-    let name_changed = settings.name != snap.settings.name;
-    if name_changed && snap.active_turn.is_some() {
-        return Err("Stop the active turn before changing your companion's name".into());
+    let runtime_changed = settings.requires_reconnect(&snap.settings);
+    if runtime_changed && snap.active_turn.is_some() {
+        return Err(
+            "Stop the active turn before changing companion, model or chat permissions".into(),
+        );
     }
     if !notdot_voice::providers()
         .iter()
@@ -675,9 +677,7 @@ async fn save_settings(
         problems.push(format!("could not refresh voice usage: {error}"));
     }
     drop(_submission);
-    if (name_changed || model_changed)
-        && let Err(error) = connect(state.inner().clone(), false).await
-    {
+    if runtime_changed && let Err(error) = connect(state.inner().clone(), false).await {
         let mut s = state.snapshot.lock().await;
         s.phase = "error".into();
         s.error = Some(error.clone());

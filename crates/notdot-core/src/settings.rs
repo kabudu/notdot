@@ -65,6 +65,13 @@ impl Default for Settings {
     }
 }
 impl Settings {
+    /// Runtime prompts and the chat-tool helper capture these values at connect time.
+    pub fn requires_reconnect(&self, previous: &Self) -> bool {
+        self.name != previous.name
+            || self.selection() != previous.selection()
+            || self.session_control != previous.session_control
+    }
+
     pub fn transcription_id(&self) -> &str {
         if self.stt_provider == "voice" {
             &self.voice_provider
@@ -131,6 +138,23 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn runtime_settings_refresh_in_both_permission_directions() {
+        use crate::session_control::Mode;
+        let original = Settings::default();
+        for mode in [Mode::Confirm, Mode::WhenAsked] {
+            let mut changed = original.clone();
+            changed.session_control = mode;
+            assert!(changed.requires_reconnect(&original));
+            assert!(original.requires_reconnect(&changed));
+        }
+        let mut cosmetic = original.clone();
+        cosmetic.hue = 42;
+        assert!(!cosmetic.requires_reconnect(&original));
+        cosmetic.name = "Luna".into();
+        assert!(cosmetic.requires_reconnect(&original));
+    }
+
     #[test]
     fn settings_saved_with_a_utf8_byte_order_mark_still_load() {
         let d = tempfile::tempdir().unwrap();

@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-09
+
+Chat permissions now take effect when saved, and task updates are available to screen readers.
+
+- **Reliable chat permissions.** Changing access to other Codex chats refreshes the connection automatically, including when returning to Read only.
+- **Accessible task updates.** The orb’s accessible label includes the current task status and updates when that status changes.
+
 ## [0.6.0] - 2026-11-09
 
 Keep track of delegated work without opening every Codex chat.
