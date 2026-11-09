@@ -6,7 +6,7 @@ Right-click the orb or press **Cmd/Ctrl+,** to open Settings. Drag the header to
 
 The floating setup panel checks Codex and offers the official installation guide if it cannot start. Installation is completed through OpenAI’s own installer; notdot does not silently install software or ask for your ChatGPT password. Sign-in opens in your browser and returns you to notdot after it succeeds. Keep the setup panel open during sign-in, or cancel and continue later.
 
-Choose your companion’s name and speech services, save their keys in the secure key store, then choose **Try a conversation**. Speak, pause and listen for the reply. Choose **I heard it. Finish setup** only when you hear the answer. Saving Settings alone does not complete setup. A failed or silent test can be retried; setup does not grant microphone access on your behalf.
+Choose your companion’s name and speech services, save their keys in the secure key store, then choose **Try a conversation**. Speak, pause and listen for the reply. Choose **I heard it. Finish setup** only when you hear the answer. Saving Settings alone does not complete setup. Silence or Escape brings you back to setup so you can try again. Setup does not grant microphone access on your behalf.
 
 Learning and unsolicited spoken check-ins are separate choices, both off by default. Existing installations keep their completed setup and saved keys. You can reopen setup under **App → Connection → Check setup and sign-in**. Codex’s desktop window does not need to stay open: notdot starts the conversation runtime itself.
 

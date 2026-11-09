@@ -337,10 +337,9 @@ fn committed_text(value: &Value) -> Result<String, VoiceError> {
             VoiceErrorKind::Provider,
             "Live transcription exceeded its limit",
         )),
-        Some(text) if text.trim().is_empty() => Err(error(
-            VoiceErrorKind::NoSpeech,
-            "No speech was transcribed. Please try again.",
-        )),
+        // An empty segment can follow valid earlier segments. The host
+        // classifies the complete utterance, rather than discarding that text.
+        Some(text) if text.trim().is_empty() => Ok(String::new()),
         Some(text) => Ok(text.trim().to_owned()),
         None => Err(error(
             VoiceErrorKind::Provider,
@@ -414,12 +413,9 @@ mod tests {
         server.await.unwrap();
     }
     #[test]
-    fn empty_commits_are_no_speech_but_invalid_responses_are_provider_errors() {
+    fn empty_segments_are_valid_but_invalid_responses_are_provider_errors() {
         for text in ["", " \n\t"] {
-            assert_eq!(
-                committed_text(&json!({"text": text})).unwrap_err().kind,
-                VoiceErrorKind::NoSpeech
-            );
+            assert_eq!(committed_text(&json!({"text": text})).unwrap(), "");
         }
         for value in [
             json!({}),
