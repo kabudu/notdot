@@ -8,7 +8,7 @@ pub(crate) struct Shader {
     buffer: web_sys::WebGlBuffer,
     lost: bool,
     failed: bool,
-    uniforms: [Option<web_sys::WebGlUniformLocation>; 8],
+    uniforms: [Option<web_sys::WebGlUniformLocation>; 11],
 }
 impl Shader {
     pub fn new(canvas: &HtmlCanvasElement) -> Result<Self, JsValue> {
@@ -106,6 +106,9 @@ impl Shader {
             "thinking",
             "speaking",
             "still",
+            "task_kind",
+            "task_time",
+            "task_strength",
         ]
         .map(|name| gl.get_uniform_location(&program, name));
         Ok(Self {
@@ -161,6 +164,9 @@ impl Shader {
             (5, frame.motion.thinking),
             (6, frame.motion.speaking),
             (7, f64::from(frame.reduced)),
+            (8, frame.task.kind as u8 as f64),
+            (9, frame.task.elapsed),
+            (10, frame.task.strength),
         ] {
             gl.uniform1f(self.uniforms[index].as_ref(), value as f32);
         }

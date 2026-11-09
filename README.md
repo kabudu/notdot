@@ -26,7 +26,7 @@ https://github.com/user-attachments/assets/27db5b3f-e31a-40ee-a8dd-37ecc9c2b6b5
 - **Talk naturally.** Say your wake phrase or click once, speak, then pause to send. Press Escape to cancel.
 - **Follow up without starting again.** Turn on an optional listening window after replies. Keep talking, or say “That’s all” to stop.
 - **Use your other Codex chats.** Find and read relevant history by voice. Optional controls let you send work, add instructions and stop tasks notdot started, with your chosen confirmation setting.
-- **Hear when work finishes.** Add “and let me know when it’s done” when sending a task. notdot reports the result when you’re idle, respecting quiet hours.
+- **Know how work is going.** Ask “What needs me?” or “What’s still running?” Subtle orb cues show work, attention and results. Requested spoken reports distinguish success, failure, partial results and unverified work, while respecting quiet hours.
 - **Pick up where you left off.** Continue the same chat after restarting notdot. You can view its history in Codex.
 - **Choose what it remembers.** Turn learning on or off, review and edit saved memories, forget individual notes or reset them all.
 - **Share without sharing everything.** Add trusted voices with separate conversations and memories, then choose which Codex chats each person may read or message. Remove someone at any time, or let them remove themselves by voice with a confirmation on screen. Voice matching is a convenience, not authentication.

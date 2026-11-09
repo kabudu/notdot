@@ -4,6 +4,7 @@ import re
 import sys
 import subprocess
 from release_notes import release_notes
+import distribution_notices
 version = sys.argv[1]
 if not re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', version):
     raise SystemExit('Use a stable major.minor.patch version')
@@ -17,3 +18,8 @@ assert Path('docs/release-notes.md').is_file(), 'Write reviewed release notes be
 
 expected_notes = release_notes(Path("CHANGELOG.md").read_text(encoding="utf-8"), version)
 assert Path("docs/release-notes.md").read_text(encoding="utf-8") == expected_notes, "Release notes must match the versioned changelog entry"
+
+# A version bump also changes Cargo.lock; validate its retained notice inventory
+# here so release preparation cannot pass with stale packaging inputs.
+notices = distribution_notices.validate(distribution_notices.BUNDLE, Path('Cargo.lock'))
+assert {p['version'] for p in notices['packages'] if p['source']['kind'] == 'workspace'} == {version}, 'Workspace notice versions must match the release'

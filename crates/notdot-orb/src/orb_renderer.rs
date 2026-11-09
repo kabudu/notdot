@@ -1,6 +1,6 @@
 //! Layered Canvas 2D glass, kept within the transparent desktop canvas.
 //! Fixed point counts and whole-path strokes avoid per-segment glow passes.
-use crate::visual_state::OrbMotion;
+use crate::visual_state::{OrbMotion, TaskKind, TaskMotion};
 use std::f64::consts::TAU;
 use web_sys::{CanvasGradient, CanvasRenderingContext2d as Context};
 
@@ -11,11 +11,72 @@ pub(crate) struct Frame<'a> {
     pub energy: f64,
     pub reduced: bool,
     pub motion: &'a OrbMotion,
+    pub task: &'a TaskMotion,
 }
 
 struct Palette {
     hue: f64,
 }
+/// Volumetric-looking light belongs to the orb, without separate glyphs.
+fn task_light(context: &Context, palette: &Palette, r: f64, task: &TaskMotion, reduced: bool) {
+    if task.kind == TaskKind::None || task.strength < 0.001 {
+        return;
+    }
+    let t = if reduced { 0. } else { task.elapsed };
+    context.save();
+    context.set_global_alpha(task.strength * 0.82);
+    context.set_fill_style_str("#050c17");
+    context.fill_rect(-r, -r, r * 2., r * 2.);
+    context.set_global_alpha(task.strength);
+    let hue = palette.hue.rem_euclid(360.);
+    let lift = if (215.0..285.0).contains(&hue) {
+        10.
+    } else {
+        0.
+    };
+    let cloud = |x: f64, y: f64, size: f64, alpha: f64| {
+        if let Ok(g) = context.create_radial_gradient(x, y, 0., x, y, size) {
+            let _ = g.add_color_stop(0., &palette.colour(alpha, 60. + lift));
+            let _ = g.add_color_stop(0.25, &palette.colour(alpha * 0.9, 58. + lift));
+            let _ = g.add_color_stop(1., &palette.colour(0., 60.));
+            context.set_fill_style_canvas_gradient(&g);
+            context.begin_path();
+            let _ = context.arc(x, y, size, 0., TAU);
+            context.fill();
+        }
+    };
+    match task.kind {
+        TaskKind::Working => {
+            let offset = 0.14 * (t * 0.3).sin() - 0.22 * (t * 0.65).sin();
+            for x in [-0.7_f64, -0.35, 0., 0.35, 0.7] {
+                let y = 0.48 * x + 0.14 * (x * 3.).sin() + offset;
+                cloud(x * r, y * r, r * 0.3, 1.);
+            }
+        }
+        TaskKind::Attention => {
+            let cycle = t % 6.;
+            let breath =
+                (-((cycle - 1.) / 0.5).powi(2)).exp() + (-((cycle - 2.2) / 0.5).powi(2)).exp();
+            cloud(0., 0., r * 0.72, 0.82 + 0.18 * breath);
+        }
+        TaskKind::Finished => {
+            let size = if reduced {
+                0.85
+            } else {
+                0.3 + 0.55 * (1. - (-t * 0.9).exp())
+            };
+            cloud(0., 0., r * size, 1.);
+        }
+        TaskKind::Review => {
+            for (x, y) in [(-0.34, 0.32), (0., 0.4), (0.34, 0.32)] {
+                cloud(x * r, y * r, r * 0.34, 1.);
+            }
+        }
+        TaskKind::None => {}
+    }
+    context.restore();
+}
+
 impl Palette {
     fn colour(&self, alpha: f64, light: f64) -> String {
         format!("hsla({},85%,{}%,{alpha})", self.hue, light)
@@ -190,6 +251,7 @@ pub(crate) fn draw(context: &Context, frame: Frame<'_>) {
         energy,
         reduced,
         motion,
+        task,
     } = frame;
     let palette = Palette {
         hue: hue + motion.error * ((12. - hue + 540.) % 360. - 180.),
@@ -275,6 +337,7 @@ pub(crate) fn draw(context: &Context, frame: Frame<'_>) {
         ribbon(context, &palette, radius, i, phase);
     }
     flowing_light(context, &palette, radius, phase, speech);
+    task_light(context, &palette, radius, task, reduced);
     if let Ok(gradient) = context.create_radial_gradient(0., 0., radius * 0.82, 0., 0., radius) {
         palette.gradient(
             &gradient,

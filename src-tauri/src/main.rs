@@ -300,6 +300,18 @@ async fn snapshot(
     } else {
         initiative::Status::default()
     };
+    if state.can_announce_private() {
+        let runtime = context.session_runtime.lock().await.clone();
+        if let Some(runtime) = runtime {
+            let mut tasks = runtime.working_tasks().await;
+            for task in &snapshot.initiative.tasks.tasks {
+                if !tasks.iter().any(|live| live.key == task.key) {
+                    tasks.push(task.clone());
+                }
+            }
+            snapshot.initiative.tasks = notdot_core::task_awareness::Awareness::new(tasks);
+        }
+    }
     snapshot.quota = state.quota.status(&snapshot.settings.voice_provider).await;
     Ok(snapshot)
 }
@@ -1006,7 +1018,18 @@ async fn send_message(
     let behaviour = state.snapshot.lock().await.settings.initiative.behaviour;
     let local_reply = match removal_reply {
         Some(reply) => Some(reply),
-        None => context.initiative.command(&text, behaviour).await,
+        None => {
+            let runtime = context.session_runtime.lock().await.clone();
+            let live = if let Some(runtime) = runtime {
+                runtime.working_tasks().await
+            } else {
+                Vec::new()
+            };
+            match context.initiative.task_command(&text, live).await {
+                Some(reply) => Some(reply),
+                None => context.initiative.command(&text, behaviour).await,
+            }
+        }
     };
     if let Some(reply) = local_reply {
         let mut s = state.snapshot.lock().await;

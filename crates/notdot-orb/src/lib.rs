@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 mod audio_meter;
 mod conversation;
+#[cfg(all(debug_assertions, target_arch = "wasm32"))]
+mod cue_acceptance;
 mod interaction;
 mod orb_renderer;
 mod settings_navigation;
@@ -188,6 +190,7 @@ struct View {
     generation: u64,
     frame_clock: visual_state::FrameClock,
     orb_motion: visual_state::OrbMotion,
+    task_motion: visual_state::TaskMotion,
     speech_energy: f64,
     listening_cue: visual_state::ListeningCue,
     keyboard_navigation: bool,
@@ -202,6 +205,8 @@ struct View {
     initialized: bool,
     meter: audio_meter::Meter,
     last_mode: visual_state::Mode,
+    last_task_cue: String,
+    last_task_description: String,
     last_wake_enabled: bool,
     last_wake_status: String,
     last_report: f64,
@@ -3352,6 +3357,21 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
             };
             v.speech_energy =
                 visual_state::smooth_speech(v.speech_energy, speech_target, frame_seconds);
+            let cue = visual_state::task_cue(
+                mode,
+                v.snapshot.initiative["tasks"]["cue"]
+                    .as_str()
+                    .unwrap_or("none"),
+            )
+            .to_owned();
+            let task_text = v.snapshot.initiative["tasks"]["description"]
+                .as_str()
+                .unwrap_or("Task update available.")
+                .to_owned();
+            if cue == "finished" && task_text != v.last_task_description {
+                v.task_motion = visual_state::TaskMotion::default();
+            }
+            v.task_motion.advance(&cue, frame_seconds, reduced);
             v.orb_motion.advance(mode, frame_seconds, reduced);
             let hue = v.preview_hue.unwrap_or(v.snapshot.settings.hue) as f64;
             let radius = w.min(h) * 0.17;
@@ -3362,6 +3382,7 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                 energy: v.speech_energy,
                 reduced,
                 motion: &v.orb_motion,
+                task: &v.task_motion,
             };
             let gpu = shader
                 .as_mut()
@@ -3408,6 +3429,12 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                     context.fill();
                 }
                 context.restore();
+            }
+            let task_changed = cue != v.last_task_cue || task_text != v.last_task_description;
+            if task_changed {
+                v.last_task_cue = cue.clone();
+                v.last_task_description = task_text.clone();
+                let _ = canvas.set_attribute("data-task-state", &cue);
             }
             if v.keyboard_navigation
                 && document()
@@ -3471,7 +3498,8 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                 v.peak_speaking_rms = v.peak_speaking_rms.max(level.rms);
             }
             v.frames += 1;
-            if mode != v.last_mode
+            if task_changed
+                || mode != v.last_mode
                 || v.frames == 1
                 || v.last_wake_enabled != v.snapshot.settings.wake_enabled
                 || v.last_wake_status != wake_hint(&v.snapshot)
@@ -3502,7 +3530,11 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                     },
                 );
                 let _ = canvas.set_attribute("data-state", mode.name());
+                let task_description = v.snapshot.initiative["tasks"]["description"]
+                    .as_str()
+                    .unwrap_or("Task update available.");
                 element("orb-status").set_text_content(Some(match mode {
+                    visual_state::Mode::Idle if cue != "none" => task_description,
                     visual_state::Mode::Idle if v.snapshot.settings.wake_enabled => {
                         wake_hint(&v.snapshot)
                     }
