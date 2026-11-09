@@ -176,6 +176,13 @@ jobs:
           $installers = @(Get-ChildItem 'target/x86_64-pc-windows-msvc/release/bundle/nsis' -Filter '*-setup.exe' -File)
           if ($installers.Count -ne 1 -or $installers[0].Length -eq 0) { throw 'Expected one nonempty NSIS installer' }
           Get-FileHash $installers[0].FullName -Algorithm SHA256
+      - name: Retain unsigned installer for native acceptance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-installer-test
+          path: target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+          retention-days: 2
       - name: Validate Windows toolset and redistribution records
         run: ./scripts/windows-release-provenance.ps1
       # Observe after acceptance, so the probe cannot prewarm the tested path.
