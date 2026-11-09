@@ -41,6 +41,7 @@ use tauri::{
 use tokio::sync::Mutex;
 #[derive(Clone, Serialize)]
 struct Snapshot {
+    setup_required: bool,
     profile_id: String,
     settings: Settings,
     phase: String,
@@ -250,6 +251,7 @@ async fn snapshot(
         window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
     snapshot.updates = app.state::<Arc<updates::Updates>>().status();
     snapshot.wake = state.wake.status();
+    snapshot.setup_required = state.setup.needs_attention.load(Ordering::Relaxed);
     if !snapshot.window_visible {
         context
             .settings_consent
@@ -477,6 +479,15 @@ async fn start_capture(
         return Err("Show notdot before speaking".into());
     }
     let s = state.snapshot.lock().await;
+    if !s.settings.onboarding_complete
+        && !state.setup.trial.load(Ordering::Relaxed)
+        && !state.speakers.is_enrol_capture(&token)
+    {
+        return Err(
+            "Finish setup before speaking. Open App, Connection, then Check setup and sign-in."
+                .into(),
+        );
+    }
     if s.phase != "idle"
         || s.active_turn.is_some()
         || ((!s.key_configured || !state.credentials.cached(s.settings.transcription_id()))
@@ -754,15 +765,35 @@ async fn connect(state: Arc<AppState>, allow_interrupt: bool) -> Result<(), Stri
     }
     let existing_thread = context.thread_id.lock().await.clone();
     let policy = state.chat_policy(identity.clone(), &settings, existing_thread.clone());
-    let bridge = Arc::new(
-        Bridge::connect_with_profile_tools(
-            &startup::runtime(),
-            &std::env::current_exe().map_err(|e| e.to_string())?,
-            &state.path,
-            policy,
-        )
-        .await?,
-    );
+    let bridge = match Bridge::connect_with_profile_tools(
+        &startup::runtime(),
+        &std::env::current_exe().map_err(|e| e.to_string())?,
+        &state.path,
+        policy,
+    )
+    .await
+    {
+        Ok(bridge) => Arc::new(bridge),
+        Err(error) => {
+            state.setup.needs_attention.store(true, Ordering::Relaxed);
+            return Err(error);
+        }
+    };
+    let account = tokio::time::timeout(
+        Duration::from_secs(15),
+        bridge.call("account/read", json!({"refreshToken":false})),
+    )
+    .await;
+    match account {
+        Ok(Ok(value)) if onboarding::account_connected(&value) => {
+            state.setup.needs_attention.store(false, Ordering::Relaxed)
+        }
+        _ => {
+            state.setup.needs_attention.store(true, Ordering::Relaxed);
+            bridge.shutdown().await;
+            return Err("Connect or sign in to Codex to continue.".into());
+        }
+    }
     let settings = state.snapshot.lock().await.settings.clone();
     let cwd = state.path.parent().ok_or("App data directory missing")?;
     let tid = bridge
@@ -1982,6 +2013,7 @@ fn main() {
             let state = Arc::new(AppState {
                 setup: onboarding::Setup::default(),
                 snapshot: Mutex::new(Snapshot {
+                    setup_required: false,
                     profile_id: active_context.id.to_string(),
                     settings,
                     phase: "connecting".into(),
@@ -2024,6 +2056,7 @@ fn main() {
                 streaming: transcription::Streaming::default(),
             });
             app.manage(state.clone());
+            onboarding::spawn(state.clone());
             transcription::spawn(app.handle().clone(), state.clone(), capture_input);
             profile_access::spawn_revocation_watch(state.clone());
             speakers::spawn_archive_worker(state.clone());

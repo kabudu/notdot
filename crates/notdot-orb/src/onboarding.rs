@@ -3,6 +3,7 @@ use super::*;
 thread_local! {static TESTING: RefCell<bool> = const {RefCell::new(false)}; static WAITING: RefCell<bool> = const {RefCell::new(false)}; static BUSY: RefCell<bool> = const {RefCell::new(false)}; static DEADLINE: RefCell<f64> = const {RefCell::new(0.)};}
 fn show_status(value: &Value) {
     let stage = value["stage"].as_str().unwrap_or("error");
+    let focused = document().active_element();
     element("setup-status").set_text_content(value["message"].as_str());
     for (id, visible) in [
         ("setup-install", stage == "install"),
@@ -22,12 +23,32 @@ fn show_status(value: &Value) {
         }
     }
     WAITING.with(|s| *s.borrow_mut() = stage == "waiting");
+    if focused.is_some_and(|e| e.has_attribute("hidden")) {
+        let id = match stage {
+            "install" => "setup-install",
+            "signin" => "setup-signin",
+            "waiting" => "setup-cancel",
+            _ => "setup-voice",
+        };
+        let _ = element(id).unchecked_into::<web_sys::HtmlElement>().focus();
+    }
+}
+fn show_error(message: &str) {
+    WAITING.with(|s| *s.borrow_mut() = false);
+    element("setup-status").set_text_content(Some(message));
+    let _ = element("setup-voice").remove_attribute("hidden");
+    let _ = element("setup-try").set_attribute("hidden", "");
+    let _ = element("setup-finish").set_attribute("hidden", "");
 }
 async fn command(action: &str) -> Result<Value, String> {
     serde_wasm_bindgen::from_value(call("setup_codex", json!({"action":action})).await?)
         .map_err(|e| e.to_string())
 }
 pub(crate) fn open() {
+    if dialog("setup-panel").open() {
+        return;
+    }
+    BUSY.with(|s| *s.borrow_mut() = true);
     let _ = resize(450., 540.);
     if !dialog("setup-panel").open() {
         let _ = dialog("setup-panel").show_modal();
@@ -39,8 +60,9 @@ pub(crate) fn open() {
                     show_status(&v);
                 }
             }
-            Err(e) => element("setup-status").set_text_content(Some(&e)),
+            Err(e) => show_error(&e),
         }
+        BUSY.with(|s| *s.borrow_mut() = false);
     });
 }
 pub(crate) fn install(view: &Shared) {
@@ -73,7 +95,7 @@ pub(crate) fn install(view: &Shared) {
                             show_status(&v);
                         }
                     }
-                    Err(e) => element("setup-status").set_text_content(Some(&e)),
+                    Err(e) => show_error(&e),
                 }
                 BUSY.with(|s| *s.borrow_mut() = false);
             });
@@ -102,7 +124,7 @@ pub(crate) fn install(view: &Shared) {
                         element("setup-status").set_text_content(Some(&e));
                     }
                 }
-                Err(e) => element("setup-status").set_text_content(Some(&e)),
+                Err(e) => show_error(&e),
             }
         });
     });
@@ -117,7 +139,7 @@ pub(crate) fn install(view: &Shared) {
                     dialog("setup-panel").close();
                     let _ = resize(360., 360.);
                 }
-                Err(e) => element("setup-status").set_text_content(Some(&e)),
+                Err(e) => show_error(&e),
             }
         });
     });
@@ -156,7 +178,7 @@ pub(crate) fn install(view: &Shared) {
         }
         let owner = owner.clone();
         spawn_local(async move {
-            match command("check").await {
+            match command("poll").await {
                 Ok(v) => {
                     let idle = {
                         let s = owner.borrow();

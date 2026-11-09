@@ -17,6 +17,8 @@ pub struct Setup {
     pub spoken: AtomicBool,
     pub received: AtomicBool,
     cancellation: AtomicU64,
+    pub needs_attention: AtomicBool,
+    expired_notice: AtomicBool,
 }
 #[derive(Default)]
 struct Auth {
@@ -52,7 +54,7 @@ impl Auth {
         self.started = None;
     }
 }
-fn account_connected(account: &Value) -> bool {
+pub fn account_connected(account: &Value) -> bool {
     account["account"].as_object().is_some_and(|a| {
         a.get("type")
             .and_then(Value::as_str)
@@ -120,7 +122,7 @@ pub async fn setup_codex(
     }
     if !matches!(
         action.as_str(),
-        "check" | "install" | "signin" | "cancel" | "trial" | "finish"
+        "check" | "poll" | "install" | "signin" | "cancel" | "trial" | "finish"
     ) {
         return Err("Unknown setup action".into());
     }
@@ -194,23 +196,27 @@ pub async fn setup_codex(
             json!({"stage":"install","message":"Install Codex from the official page in your browser, then choose Check again. You can use the desktop app or native command-line tool."}),
         );
     }
-    if auth.expire().await {
+    if auth.expire().await || state.setup.expired_notice.swap(false, Ordering::Relaxed) {
         return Ok(
             json!({"stage":"signin","message":"Sign-in expired. Choose Sign in to try again."}),
         );
     }
     // Reuse the live transport, but recheck account state: a running process
     // does not prove that its credentials are still valid.
-    if action == "check" && auth.bridge.is_none() {
+    if matches!(action.as_str(), "check" | "poll") && auth.bridge.is_none() {
         let live = state.context().bridge.lock().await.clone();
         if let Some(live) = live {
             let account = tokio::time::timeout(
                 Duration::from_secs(15),
-                live.call("account/read", json!({"refreshToken":false})),
+                live.call("account/read", json!({"refreshToken":action=="check"})),
             )
             .await;
             match account {
                 Ok(Ok(value)) if account_connected(&value) => {
+                    if state.snapshot.lock().await.phase == "error" {
+                        super::connect(state.inner().clone(), false).await?;
+                    }
+                    state.setup.needs_attention.store(false, Ordering::Relaxed);
                     return Ok(
                         json!({"stage":"ready","message":"Codex is connected. Its desktop window can stay closed.","trial_passed":state.setup.trial.load(Ordering::Relaxed) && state.setup.spoken.load(Ordering::Relaxed)}),
                     );
@@ -245,7 +251,7 @@ pub async fn setup_codex(
         auth.bridge
             .as_ref()
             .expect("auth runtime")
-            .call("account/read", json!({"refreshToken":false})),
+            .call("account/read", json!({"refreshToken":action=="check"})),
     )
     .await;
     let account = match account {
@@ -298,11 +304,15 @@ pub async fn setup_codex(
             auth.close().await;
             return Err("Setup was cancelled. You can continue later.".into());
         }
-        let id = login["loginId"]
+        let Some(id) = login["loginId"]
             .as_str()
-            .filter(|s| s.len() <= 128)
-            .ok_or("Could not start sign-in")?
-            .to_owned();
+            .filter(|s| !s.is_empty() && s.len() <= 128)
+            .map(str::to_owned)
+        else {
+            auth.close().await;
+            return Err("Could not start sign-in. Please try again.".into());
+        };
+        state.setup.expired_notice.store(false, Ordering::Relaxed);
         auth.login = Some(id);
         auth.started = Some(Instant::now());
         let result = match login["authUrl"].as_str() {
@@ -321,6 +331,22 @@ pub async fn setup_codex(
     Ok(
         json!({"stage":if waiting{"waiting"}else{"signin"},"message":if waiting{"Finish signing in in your browser. Keep this window open; notdot will reconnect when you return."}else{"Sign in to your ChatGPT account to connect Codex."}}),
     )
+}
+/// One local timer expires pending sign-in even if its WebView is hidden or
+/// suspended. It does not poll OpenAI and never starts a runtime.
+pub fn spawn(state: Arc<AppState>) {
+    tauri::async_runtime::spawn(async move {
+        let mut ticks = tokio::time::interval(Duration::from_secs(10));
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticks.tick().await;
+            if let Ok(mut auth) = state.setup.auth.try_lock()
+                && auth.expire().await
+            {
+                state.setup.expired_notice.store(true, Ordering::Relaxed);
+            }
+        }
+    });
 }
 #[cfg(test)]
 mod tests {

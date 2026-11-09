@@ -103,6 +103,14 @@ async fn main() -> Result<(), String> {
     let recalled = recall.iter().any(|r| r.content.contains("Jo"));
     failures += usize::from(!recalled);
     let active = memory.review("").await?;
+    let correction_kept = active
+        .iter()
+        .any(|r| r.content.contains("detailed answers"))
+        && active.iter().all(|r| !r.content.contains("short answers"));
+    let qualification_kept = active
+        .iter()
+        .any(|r| r.content.contains("not drink coffee") && r.content.contains("except on holiday"));
+    failures += usize::from(!correction_kept) + usize::from(!qualification_kept);
     let statements: Vec<_> = active
         .iter()
         .map(|r| json!({"key":r.metadata.get("semantic_key"),"content":r.content}))
@@ -110,7 +118,7 @@ async fn main() -> Result<(), String> {
     bridge.shutdown().await;
     println!(
         "{}",
-        json!({"method":"Real Codex structured extraction; synthetic source; direct test-only confirmation, not voice-consent E2E","model":"GPT-6.1 Terra","effort":"medium","cases":results,"name_recalled":recalled,"active_synthetic_statements":statements,"failures":failures})
+        json!({"method":"Real Codex structured extraction; synthetic source; direct test-only confirmation, not voice-consent E2E","model":"GPT-6.1 Terra","effort":"medium","cases":results,"name_recalled":recalled,"correction_kept":correction_kept,"qualification_kept":qualification_kept,"active_synthetic_statements":statements,"failures":failures})
     );
     if failures > 0 {
         return Err(format!("{failures} evaluation cases failed"));

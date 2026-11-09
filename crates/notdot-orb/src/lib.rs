@@ -108,6 +108,8 @@ struct Settings {
 #[derive(Clone, Default, Deserialize)]
 struct Snapshot {
     #[serde(default)]
+    setup_required: bool,
+    #[serde(default)]
     profile_id: String,
     settings: Settings,
     #[serde(default)]
@@ -209,6 +211,7 @@ struct View {
     last_mode: visual_state::Mode,
     last_task_cue: String,
     last_task_description: String,
+    setup_prompted: bool,
     last_wake_enabled: bool,
     last_wake_status: String,
     last_report: f64,
@@ -1557,6 +1560,10 @@ async fn voice(view: Shared) -> Result<(), String> {
     voice_inner(view, false).await
 }
 async fn voice_inner(view: Shared, followup: bool) -> Result<(), String> {
+    if !view.borrow().snapshot.settings.onboarding_complete && !onboarding::trial() {
+        onboarding::open();
+        return Ok(());
+    }
     let expected_generation = view.borrow().generation;
     if followup && !view.borrow().conversation.starting() {
         return Ok(());
@@ -1909,7 +1916,14 @@ pub fn start() -> Result<(), JsValue> {
     });
     let target = view.clone();
     on(canvas.as_ref(), "click", move |e| {
-        if !target.borrow().initialized || target.borrow().snapshot.settings.wake_enabled {
+        if !target.borrow().initialized {
+            return;
+        }
+        if !target.borrow().snapshot.settings.onboarding_complete && !onboarding::trial() {
+            onboarding::open();
+            return;
+        }
+        if target.borrow().snapshot.settings.wake_enabled {
             return;
         }
         let Ok(e) = e.dyn_into::<web_sys::MouseEvent>() else {
@@ -3050,6 +3064,19 @@ pub fn start() -> Result<(), JsValue> {
                     }
                     let onboard = !snapshot.settings.onboarding_complete;
                     target.borrow_mut().snapshot = snapshot;
+                    let recovery = target.borrow().snapshot.setup_required;
+                    if !recovery {
+                        target.borrow_mut().setup_prompted = false;
+                    }
+                    if recovery
+                        && !target.borrow().setup_prompted
+                        && !dialog("panel").open()
+                        && !dialog("setup-panel").open()
+                    {
+                        target.borrow_mut().setup_prompted = true;
+                        onboarding::open();
+                    }
+
                     if !target.borrow().initialized {
                         apply_theme(target.borrow().snapshot.settings.hue);
                         target.borrow_mut().initialized = true;

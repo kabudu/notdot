@@ -1,6 +1,6 @@
 # v0.7.0 acceptance plan
 
-This work is in progress. Each result must identify its revision and distinguish automated checks from hardware tests.
+Implementation and validation are tracked in [the validation report](validation/2026-11-09-housekeeping.md). Automated, simulated and hardware evidence are distinguished there; unchecked hardware boundaries are not release passes.
 
 | Area | Required behaviour | Evidence required |
 | --- | --- | --- |
