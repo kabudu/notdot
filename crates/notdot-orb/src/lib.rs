@@ -1794,7 +1794,7 @@ async fn browser_voice(view: Shared) -> Result<(), String> {
         if target.borrow().generation != generation {
             return;
         }
-        {
+        let discarded = {
             let mut v = target.borrow_mut();
             v.recording = None;
             v.stream = None;
@@ -1807,9 +1807,13 @@ async fn browser_voice(view: Shared) -> Result<(), String> {
             v.speech_end = None;
             v.discard_capture = false;
             v.local_phase = if discard { None } else { Some("transcribing") };
-            if discard {
-                return;
-            }
+            discard
+        };
+        if discarded {
+            onboarding::capture_ended(
+                "I didn’t hear a request. Check your microphone, then try a conversation again.",
+            );
+            return;
         }
         let pieces = js_sys::Array::new();
         for blob in chunks.borrow_mut().drain(..) {
@@ -2053,6 +2057,7 @@ pub fn start() -> Result<(), JsValue> {
     on(window().as_ref(), "keydown", move |e| {
         if let Ok(e) = e.dyn_into::<web_sys::KeyboardEvent>() {
             let modal = dialog("panel").open()
+                || dialog("setup-panel").open()
                 || dialog("about").open()
                 || document()
                     .get_element_by_id("composer")
@@ -2073,6 +2078,9 @@ pub fn start() -> Result<(), JsValue> {
             }
             if action == Some(interaction::KeyboardAction::Cancel) {
                 stop_audio(&target);
+                onboarding::capture_ended(
+                    "The conversation test was cancelled. Try again when you’re ready.",
+                );
             }
             if action == Some(interaction::KeyboardAction::Voice) {
                 e.prevent_default();
@@ -2681,7 +2689,14 @@ pub fn start() -> Result<(), JsValue> {
                     });
                 stop_audio(&owner);
                 owner.borrow_mut().update_listening = None;
-                if let Some(failure) = failure {
+                let notice = failure.as_deref().unwrap_or(if event["phase"] == "empty" {
+                    "I didn’t hear a request. Check your microphone, then try a conversation again."
+                } else {
+                    "The conversation test was cancelled. Try again when you’re ready."
+                });
+                if !onboarding::capture_ended(notice)
+                    && let Some(failure) = failure
+                {
                     message(failure);
                     open_panel(&owner);
                 }

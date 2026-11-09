@@ -45,6 +45,9 @@ async fn command(action: &str) -> Result<Value, String> {
         .map_err(|e| e.to_string())
 }
 pub(crate) fn open() {
+    open_with_notice(None);
+}
+fn open_with_notice(notice: Option<String>) {
     if dialog("setup-panel").open() {
         return;
     }
@@ -53,11 +56,14 @@ pub(crate) fn open() {
     if !dialog("setup-panel").open() {
         let _ = dialog("setup-panel").show_modal();
     }
-    spawn_local(async {
+    spawn_local(async move {
         match command("check").await {
             Ok(v) => {
                 if dialog("setup-panel").open() {
                     show_status(&v);
+                    if let Some(notice) = &notice {
+                        element("setup-status").set_text_content(Some(notice));
+                    }
                 }
             }
             Err(e) => show_error(&e),
@@ -119,9 +125,7 @@ pub(crate) fn install(view: &Shared) {
                     // This explicit test button permits manual capture even if wake is selected.
                     owner.borrow_mut().snapshot.settings.onboarding_complete = true;
                     if let Err(e) = voice(owner.clone()).await {
-                        TESTING.with(|s| *s.borrow_mut() = false);
-                        open();
-                        element("setup-status").set_text_content(Some(&e));
+                        capture_ended(&e);
                     }
                 }
                 Err(e) => show_error(&e),
@@ -165,12 +169,10 @@ pub(crate) fn install(view: &Shared) {
         let testing = TESTING.with(|s| *s.borrow());
         let waiting = WAITING.with(|s| *s.borrow());
         if testing && DEADLINE.with(|s| js_sys::Date::now() > *s.borrow()) {
-            TESTING.with(|s| *s.borrow_mut() = false);
             stop_audio(&owner);
-            open();
-            element("setup-status").set_text_content(Some(
+            capture_ended(
                 "The test timed out. Check microphone access and Voice settings, then try again.",
-            ));
+            );
             return;
         }
         if (!testing && !waiting) || BUSY.with(|s| s.replace(true)) {
@@ -215,4 +217,14 @@ pub(crate) fn install(view: &Shared) {
 }
 pub(crate) fn trial() -> bool {
     TESTING.with(|s| *s.borrow())
+}
+
+/// A silent, cancelled or failed first conversation must not strand setup at the orb.
+pub(crate) fn capture_ended(message: &str) -> bool {
+    if !TESTING.with(|s| s.replace(false)) {
+        return false;
+    }
+    WAITING.with(|s| *s.borrow_mut() = false);
+    open_with_notice(Some(message.into()));
+    true
 }

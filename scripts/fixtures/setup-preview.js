@@ -77,7 +77,19 @@
         ok('voice settings preserve incomplete setup',!settings.onboarding_complete);
         el('save-settings').click();await until(()=>el('setup-panel').open);
         ok('saving settings does not skip the spoken test',!settings.onboarding_complete);
-        el('setup-try').click();await until(()=>count('capture')>0);submit('What is five plus seven?');
+        el('setup-try').click();await until(()=>count('capture')>0);
+        const emptyToken=state.wake.capture_token;state.wake.phase='paused';emit('empty',emptyToken);
+        await until(()=>el('setup-panel').open&&el('setup-status').textContent.includes('didn’t hear'));
+        ok('empty capture returns immediately to setup without completing it',!settings.onboarding_complete&&el('setup-finish').hidden);
+        el('setup-try').click();await until(()=>count('capture')>1);
+        window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+        await until(()=>el('setup-panel').open&&el('setup-status').textContent.includes('cancelled'));
+        ok('cancelled trial returns to setup and permits retry',!settings.onboarding_complete&&el('setup-finish').hidden);
+        el('setup-try').click();await until(()=>count('capture')>2);
+        const clock=Date.now;Date.now=()=>clock()+121000;
+        try{await until(()=>el('setup-panel').open&&el('setup-status').textContent.includes('timed out'));}finally{Date.now=clock;}
+        ok('expired trial returns to setup without accepting a stale result',!settings.onboarding_complete&&el('setup-finish').hidden);
+        el('setup-try').click();await until(()=>count('capture')>3);submit('What is five plus seven?');
         await until(()=>!el('setup-finish').hidden,12000);
         ok('spoken test returns to an explicit audible confirmation',!settings.onboarding_complete);
         el('setup-finish').click();await until(()=>settings.onboarding_complete);
