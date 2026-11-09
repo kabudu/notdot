@@ -1,4 +1,8 @@
-Chat permissions now take effect when saved, and task updates are available to screen readers.
+An easier first conversation, more careful memories and less background work.
 
-- **Reliable chat permissions.** Changing access to other Codex chats refreshes the connection automatically, including when returning to Read only.
-- **Accessible task updates.** The orb’s accessible label includes the current task status and updates when that status changes.
+- **Guided setup.** Connect Codex, follow official installation guidance, sign in and test a spoken conversation, with clear retry and cancellation.
+- **Grounded memories.** New learned facts preserve your original wording, with bounded memory checks that skip simple acknowledgements.
+- **Clearer check-ins.** Ask why a recent update was suggested, say “Later” or dismiss it by voice, with existing quiet hours and permissions respected.
+- **Lower overhead.** Idle memory-analysis runtimes close after two minutes, task-status polling avoids unnecessary journal copies, and the orb draws fewer frames behind Settings.
+- **No extra pass for empty speech.** An empty transcription no longer triggers a second batch request.
+- **Easier troubleshooting.** Export a small report without keys, chats, memories or recordings.

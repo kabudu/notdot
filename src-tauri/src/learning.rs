@@ -52,7 +52,14 @@ impl Learning {
             // Own a separate runtime: memory inference cannot overflow the companion's
             // event stream or change its connected-tool configuration.
             let mut client: Option<Arc<Bridge>> = None;
-            while let Some(job) = receiver.recv().await {
+            loop {
+                let job = tokio::select! {
+                    job = receiver.recv() => match job {Some(job)=>job,None=>break},
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(120)), if client.is_some() => {
+                        if let Some(bridge)=client.take(){bridge.shutdown().await;}
+                        continue;
+                    }
+                };
                 if ledger.learning_ticket() != Some(job.ticket)
                     || (job.voice && !proposals.is_current(job.epoch))
                 {
@@ -103,6 +110,7 @@ impl Learning {
                     let response = response?;
                     let mut batch: LearningBatch = serde_json::from_str(&response)
                         .map_err(|_| "The AI returned notes that could not be saved. Your chat still works.")?;
+                    batch.ground_notes();
                     let skipped_summary = batch.discard_invalid_digest(&plan);
                     if job.voice && !batch.notes.is_empty() {
                         if ledger.plan_is_current(&plan) { proposals.stage(plan,batch,job.epoch)?; }

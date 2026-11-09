@@ -37,7 +37,7 @@ visualState({payload:{mode:'idle',help:'Hey Ava',pressed:null}});
 assert.equal(attributes.get('aria-label'),'notdot voice companion. Ready. Hey Ava');
 // Exercise the actual WASM bridge producer, not a separately reimplemented payload.
 const source=readFileSync(new URL('../crates/notdot-orb/src/lib.rs',import.meta.url),'utf8');
-const bridge=source.slice(source.indexOf('export function installOrbControls(){'),source.indexOf('export async function resize')).replace('export function','function');
+const bridge=source.slice(source.indexOf('export function installOrbControls(){'),source.indexOf('let resizeQueue=')).replace('export function','function');
 const observers=[],forwarded=[];
 const statusNode={textContent:'One task needs attention.'};
 const orb={dataset:{state:'idle'},title:'Hey Ava',getAttribute:()=>null};
@@ -50,3 +50,19 @@ assert.equal(forwarded.at(-1).status,'One task needs attention.');
 statusNode.textContent='All tasks finished.';statusObserver.notify();
 assert.equal(forwarded.at(-1).status,'All tasks finished.');
 console.log('Orb accessibility: task status producer and native label passed.');
+
+// Settings-to-setup transitions issue overlapping native size changes.
+// The last requested window must win even when the first operation is slow.
+const nativeSizes=[], nativeModes=[];
+let releaseFirst;
+const gate=new Promise(resolve=>{releaseFirst=resolve;});
+let reads=0;
+const nativeWindow={setSize:async size=>nativeSizes.push([size.width,size.height]),outerPosition:async()=>({x:16,y:16}),outerSize:async()=>({width:450,height:540}),setPosition:async()=>{}};
+const resizeContext={screen:{availWidth:1920,availHeight:1080},window:{__TAURI__:{core:{invoke:async(name,p)=>nativeModes.push(p.collapsed)},window:{getCurrentWindow:()=>nativeWindow,currentMonitor:async()=>{if(++reads===1)await gate;return null;}},dpi:{LogicalSize:class{constructor(width,height){this.width=width;this.height=height;}}}}}};
+const resizeSource=source.slice(source.indexOf('let resizeQueue='),source.indexOf('"#)]')).replace('export function resize','function resize');
+vm.runInNewContext(resizeSource+';this.resize=resize;',resizeContext);
+const shrinking=resizeContext.resize(360,360), reopening=resizeContext.resize(450,540);
+await flush();releaseFirst();await Promise.all([shrinking,reopening]);
+assert.deepEqual(nativeSizes,[[360,360],[450,540]]);
+assert.equal(nativeModes.at(-1),false);
+console.log('Native resize ordering: setup remains expanded after Settings closes.');

@@ -1,9 +1,11 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod credentials;
+mod diagnostics;
 mod initiative;
 mod learning;
 mod memory_confirmation;
+mod onboarding;
 mod orb_input;
 mod profile_access;
 mod profile_context;
@@ -39,6 +41,7 @@ use tauri::{
 use tokio::sync::Mutex;
 #[derive(Clone, Serialize)]
 struct Snapshot {
+    setup_required: bool,
     profile_id: String,
     settings: Settings,
     phase: String,
@@ -63,6 +66,7 @@ struct Snapshot {
     settings_pending: Option<String>,
 }
 struct AppState {
+    setup: onboarding::Setup,
     profiles: profile_context::ProfileContexts,
     active_context: std::sync::RwLock<Arc<profile_context::ProfileContext>>,
     identity: std::sync::Mutex<Option<notdot_core::profiles::TurnLock>>,
@@ -112,6 +116,12 @@ async fn report_visual(state: State<'_, Arc<AppState>>, report: Value) -> Result
     let Ok(mut log) = state.visual.try_lock() else {
         return Ok(());
     };
+    if mode == "speaking"
+        && state.setup.trial.load(Ordering::Relaxed)
+        && state.setup.received.load(Ordering::Relaxed)
+    {
+        state.setup.spoken.store(true, Ordering::Relaxed);
+    }
     let changed = log.current["mode"] != mode;
     if !changed
         && log
@@ -241,6 +251,7 @@ async fn snapshot(
         window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
     snapshot.updates = app.state::<Arc<updates::Updates>>().status();
     snapshot.wake = state.wake.status();
+    snapshot.setup_required = state.setup.needs_attention.load(Ordering::Relaxed);
     if !snapshot.window_visible {
         context
             .settings_consent
@@ -329,7 +340,7 @@ async fn wake_activity(state: State<'_, Arc<AppState>>, ready: bool) -> Result<(
                 && state.credentials.cached(s.settings.transcription_id())
                 && !s.key_checking
                 && !s.settings.voice_id.is_empty()
-                && s.settings.onboarding_complete));
+                && (s.settings.onboarding_complete || state.setup.trial.load(Ordering::Relaxed))));
     state.wake.ready(allowed);
     Ok(())
 }
@@ -468,6 +479,15 @@ async fn start_capture(
         return Err("Show notdot before speaking".into());
     }
     let s = state.snapshot.lock().await;
+    if !s.settings.onboarding_complete
+        && !state.setup.trial.load(Ordering::Relaxed)
+        && !state.speakers.is_enrol_capture(&token)
+    {
+        return Err(
+            "Finish setup before speaking. Open App, Connection, then Check setup and sign-in."
+                .into(),
+        );
+    }
     if s.phase != "idle"
         || s.active_turn.is_some()
         || ((!s.key_configured || !state.credentials.cached(s.settings.transcription_id()))
@@ -624,6 +644,8 @@ async fn save_settings(
     {
         return Err("Choose an installed voice backend".into());
     }
+    // Only the guided spoken test can complete a new installation.
+    settings.onboarding_complete = snap.settings.onboarding_complete;
     settings.thread_id = snap.settings.thread_id.clone();
     if let Some(key) = key.filter(|k| !k.is_empty()) {
         if key.len() > 512 {
@@ -743,15 +765,35 @@ async fn connect(state: Arc<AppState>, allow_interrupt: bool) -> Result<(), Stri
     }
     let existing_thread = context.thread_id.lock().await.clone();
     let policy = state.chat_policy(identity.clone(), &settings, existing_thread.clone());
-    let bridge = Arc::new(
-        Bridge::connect_with_profile_tools(
-            &startup::runtime(),
-            &std::env::current_exe().map_err(|e| e.to_string())?,
-            &state.path,
-            policy,
-        )
-        .await?,
-    );
+    let bridge = match Bridge::connect_with_profile_tools(
+        &startup::runtime(),
+        &std::env::current_exe().map_err(|e| e.to_string())?,
+        &state.path,
+        policy,
+    )
+    .await
+    {
+        Ok(bridge) => Arc::new(bridge),
+        Err(error) => {
+            state.setup.needs_attention.store(true, Ordering::Relaxed);
+            return Err(error);
+        }
+    };
+    let account = tokio::time::timeout(
+        Duration::from_secs(15),
+        bridge.call("account/read", json!({"refreshToken":false})),
+    )
+    .await;
+    match account {
+        Ok(Ok(value)) if onboarding::account_connected(&value) => {
+            state.setup.needs_attention.store(false, Ordering::Relaxed)
+        }
+        _ => {
+            state.setup.needs_attention.store(true, Ordering::Relaxed);
+            bridge.shutdown().await;
+            return Err("Connect or sign in to Codex to continue.".into());
+        }
+    }
     let settings = state.snapshot.lock().await.settings.clone();
     let cwd = state.path.parent().ok_or("App data directory missing")?;
     let tid = bridge
@@ -991,6 +1033,9 @@ async fn send_message(
         if s.active_turn.is_some() || s.phase == "thinking" {
             return Err("Wait for the current turn".into());
         }
+    }
+    if capture_token.is_some() && state.setup.trial.load(Ordering::Relaxed) {
+        state.setup.received.store(true, Ordering::Relaxed);
     }
     context
         .settings_consent
@@ -1822,6 +1867,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             orb_input::orb_input_mode,
             snapshot,
+            onboarding::setup_codex,
+            diagnostics::export_diagnostics,
             save_settings,
             model_catalog,
             clear_voice_key,
@@ -1964,7 +2011,9 @@ fn main() {
                 credentials::Credentials::default()
             };
             let state = Arc::new(AppState {
+                setup: onboarding::Setup::default(),
                 snapshot: Mutex::new(Snapshot {
+                    setup_required: false,
                     profile_id: active_context.id.to_string(),
                     settings,
                     phase: "connecting".into(),
@@ -2007,6 +2056,7 @@ fn main() {
                 streaming: transcription::Streaming::default(),
             });
             app.manage(state.clone());
+            onboarding::spawn(state.clone());
             transcription::spawn(app.handle().clone(), state.clone(), capture_input);
             profile_access::spawn_revocation_watch(state.clone());
             speakers::spawn_archive_worker(state.clone());

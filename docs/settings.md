@@ -2,6 +2,14 @@
 
 Right-click the orb or press **Cmd/Ctrl+,** to open Settings. Drag the header to move the window. Choose **Personalise**, **Voice**, **Codex**, **Memory** or **App** to see the settings you need. Use **Find a setting** to search across them. Each section opens and closes when you select its heading; clearing search returns to where you were. Changes take effect when you choose **Save**; **Close** leaves your saved choices as they were.
 
+## First-time setup
+
+The floating setup panel checks Codex and offers the official installation guide if it cannot start. Installation is completed through OpenAI’s own installer; notdot does not silently install software or ask for your ChatGPT password. Sign-in opens in your browser and returns you to notdot after it succeeds. Keep the setup panel open during sign-in, or cancel and continue later.
+
+Choose your companion’s name and speech services, save their keys in the secure key store, then choose **Try a conversation**. Speak, pause and listen for the reply. Choose **I heard it. Finish setup** only when you hear the answer. Saving Settings alone does not complete setup. Silence or Escape brings you back to setup so you can try again. Setup does not grant microphone access on your behalf.
+
+Learning and unsolicited spoken check-ins are separate choices, both off by default. Existing installations keep their completed setup and saved keys. You can reopen setup under **App → Connection → Check setup and sign-in**. Codex’s desktop window does not need to stay open: notdot starts the conversation runtime itself.
+
 ## Change settings by speaking
 
 Ask what your settings are, or say what you want to change. For example: **“Change your colour to blue”**, **“Turn on follow-up listening for ten seconds”** or **“Use medium thinking.”** notdot reads back the proposed change before saving it. Say **“Yes, please change those settings”** to approve; a plain “yes” does not approve a change.
@@ -118,7 +126,7 @@ This feature is experimental and works in English. It can miss you or wake by mi
 
 ## Memory
 
-Turn on **Remember useful details** to learn preferences, goals and important facts. Before saving a new fact from speech, notdot reads it back and listens for your answer. Say **“yes, please save that memory”** to save it, or **“no”** if it heard you wrongly. “Yes” alone, silence or Escape saves nothing. You can then repeat the corrected detail. This also applies to “Remember…” requests. Memory checks and spoken confirmations use your selected AI and voice services.
+Turn on **Remember useful details** to learn preferences, goals and important facts. New learned facts retain the user’s original evidence clause, preserving names, negation and qualifications instead of relying on an AI paraphrase. Fragments that drop a surrounding qualification are rejected. Correcting a fact retires other records containing that same outdated mixed quote, so it cannot remain in recall under a second label. Before saving a new fact from speech, notdot reads it back and listens for your answer. Say **“yes, please save that memory”** to save it, or **“no”** if it heard you wrongly. “Yes” alone, silence or Escape saves nothing. You can then repeat the corrected detail. This also applies to “Remember…” requests. Memory checks and spoken confirmations use your selected AI and voice services.
 
 **Review memories** lets you read, confirm, correct and forget notes. **Tidy memories** reviews notes and makes shorter summaries. The review shows where a note came from and how sure the AI was; that confidence is an estimate, not a guarantee.
 
@@ -142,6 +150,8 @@ Remembering something does not give notdot permission to interrupt you. Choose o
 
 Try “Remind me in ten minutes to take a break.” Use whole-number minutes, hours or days, up to 30 days. Other date formats are not supported yet. Ask “What are my reminders?” to hear what is waiting.
 
+After a spoken update, ask “Why did you suggest that?”, say “Later” to snooze it for one hour, or “Stop asking about this” to dismiss that saved item. These phrases refer to the exact update spoken within the last two minutes; if that reference is unavailable, choose the item in Follow-ups.
+
 Choose which suggested check-ins may be spoken. Quiet hours, the daily limit and the minimum gap can delay them. **Snooze** delays an item for an hour; **Dismiss** removes it from the list. These settings do not allow notdot to send messages, change files or take other outside actions without a separate request.
 
 ## Startup and updates
@@ -150,9 +160,11 @@ Choose **notdot → Check for Updates…** from the app menu, or open **Startup 
 
 **Start when I sign in** opens notdot after you sign in. You can choose to wait until Codex / ChatGPT opens. notdot’s conversation service runs separately, so the desktop window does not have to stay in front. Opening the desktop app in the background is available on macOS.
 
-When update checks are on, notdot checks every six hours. It asks before installing, shows progress and restarts afterward. Installed-update testing is still a release requirement; there is no public binary release yet.
+When update checks are on, notdot checks every six hours. It asks before installing, shows progress and restarts afterward. The same published installers are available from GitHub Releases.
 
 ## Connection and privacy
+
+**Save troubleshooting report** writes a small JSON report to Downloads for you to review before sharing. It includes the app version, platform, connection state and service-readiness flags. It excludes API keys, authentication details, names, chats, memories and recordings. Reports are never uploaded automatically.
 
 **Reconnect companion** restarts the conversation service. It interrupts any reply in progress. **Remove voice key** removes the saved service key.
 

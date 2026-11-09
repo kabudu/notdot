@@ -28,6 +28,7 @@ https://github.com/user-attachments/assets/27db5b3f-e31a-40ee-a8dd-37ecc9c2b6b5
 - **Use your other Codex chats.** Find and read relevant history by voice. Optional controls let you send work, add instructions and stop tasks notdot started, with your chosen confirmation setting.
 - **Know how work is going.** Ask “What needs me?” or “What’s still running?” Subtle orb cues show work, attention and results. Requested spoken reports distinguish success, failure, partial results and unverified work, while respecting quiet hours.
 - **Pick up where you left off.** Continue the same chat after restarting notdot. You can view its history in Codex.
+- **Start with guided setup.** Check Codex, sign in and test your voice connection without hunting through settings.
 - **Choose what it remembers.** Turn learning on or off, review and edit saved memories, forget individual notes or reset them all.
 - **Share without sharing everything.** Add trusted voices with separate conversations and memories, then choose which Codex chats each person may read or message. Remove someone at any time, or let them remove themselves by voice with a confirmation on screen. Voice matching is a convenience, not authentication.
 - **Make it yours.** Choose its name, orb colour, voice and how much it can interrupt you. Ask for settings changes by voice, hear them read back, then approve.
@@ -50,7 +51,7 @@ To use it, you need:
 2. A supported speech service and your own API key. Deepgram can transcribe your speech; ElevenLabs can provide the spoken replies. Service charges may apply.
 3. A microphone and speakers or headphones.
 
-Install and open notdot, then right-click the orb to open Settings. Add your speech-service keys, choose a voice and give your companion a name. Click the orb to speak, or enable hands-free listening and use its wake phrase.
+Open notdot and follow the setup panel: connect Codex, sign in through your browser if needed, choose a voice and try a conversation. If Codex is missing, the panel links to the official installation guide. You can stop and continue later. After setup, right-click the orb to change Settings.
 
 The [Settings guide](docs/settings.md) explains the options. To build notdot yourself, follow the [developer guide](docs/guide.md).
 

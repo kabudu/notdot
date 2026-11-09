@@ -365,11 +365,15 @@ impl VoiceBackend for ElevenLabs {
             })?;
         let value: Value = serde_json::from_slice(&body(response, 1_000_000).await?)
             .map_err(|_| "Transcription returned invalid JSON")?;
-        value["text"]
-            .as_str()
-            .filter(|s| !s.trim().is_empty() && s.len() <= 24_000)
-            .map(str::to_owned)
-            .ok_or_else(|| VoiceError::from("No usable speech was transcribed"))
+        match value["text"].as_str() {
+            Some(text) if text.len() > 24_000 => Err("Transcription exceeded its limit".into()),
+            Some(text) if text.trim().is_empty() => Err(VoiceError::new(
+                VoiceErrorKind::NoSpeech,
+                "No speech was transcribed. Please try again.",
+            )),
+            Some(text) => Ok(text.to_owned()),
+            None => Err("Transcription returned invalid text".into()),
+        }
     }
     async fn synthesize(&self, text: &str, voice: &str) -> Result<AudioClip, VoiceError> {
         if !valid_id(voice) {

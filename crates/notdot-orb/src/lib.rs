@@ -4,6 +4,7 @@ mod conversation;
 #[cfg(all(debug_assertions, target_arch = "wasm32"))]
 mod cue_acceptance;
 mod interaction;
+mod onboarding;
 mod orb_renderer;
 mod settings_navigation;
 mod shader_renderer;
@@ -42,7 +43,13 @@ return window.__TAURI__.event.listen('orb-control',e=>{
     else if(p.action==='key'){c.focus();c.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key:p.key,metaKey:p.meta,ctrlKey:p.ctrl,repeat:p.repeat}));}
     else if(p.action==='blur')c.blur();
 })}
-export async function resize(w,h){
+let resizeQueue=Promise.resolve();
+export function resize(w,h){
+    const next=resizeQueue.catch(()=>{}).then(()=>resizeWindow(w,h));
+    resizeQueue=next;
+    return next;
+}
+async function resizeWindow(w,h){
     const api=window.__TAURI__, win=api.window.getCurrentWindow();
     await api.core.invoke('orb_input_mode',{collapsed:false}).catch(()=>{});
     const monitor=await api.window.currentMonitor();
@@ -106,6 +113,8 @@ struct Settings {
 }
 #[derive(Clone, Default, Deserialize)]
 struct Snapshot {
+    #[serde(default)]
+    setup_required: bool,
     #[serde(default)]
     profile_id: String,
     settings: Settings,
@@ -208,6 +217,7 @@ struct View {
     last_mode: visual_state::Mode,
     last_task_cue: String,
     last_task_description: String,
+    setup_prompted: bool,
     last_wake_enabled: bool,
     last_wake_status: String,
     last_report: f64,
@@ -730,7 +740,7 @@ fn wake_ready(view: &Shared, snapshot: &Snapshot) -> bool {
         && (!v.conversation.active() || v.native_manual)
         && (snapshot.settings.wake_enabled || v.native_manual)
         && !snapshot.settings.microphone_muted
-        && snapshot.settings.onboarding_complete
+        && (snapshot.settings.onboarding_complete || onboarding::trial())
         && snapshot.key_configured
         && snapshot.stt_ready
         && !snapshot.key_checking
@@ -762,6 +772,9 @@ async fn wake_request(view: Shared, id: u64, generation: u64) -> Result<(), Stri
     if text.trim().is_empty() {
         if view.borrow().generation == generation {
             stop_audio(&view);
+            onboarding::capture_ended(
+                "I didn’t catch a request. Try speaking a little closer to the microphone, then try again.",
+            );
         }
         return Ok(());
     }
@@ -1556,6 +1569,10 @@ async fn voice(view: Shared) -> Result<(), String> {
     voice_inner(view, false).await
 }
 async fn voice_inner(view: Shared, followup: bool) -> Result<(), String> {
+    if !view.borrow().snapshot.settings.onboarding_complete && !onboarding::trial() {
+        onboarding::open();
+        return Ok(());
+    }
     let expected_generation = view.borrow().generation;
     if followup && !view.borrow().conversation.starting() {
         return Ok(());
@@ -1780,7 +1797,7 @@ async fn browser_voice(view: Shared) -> Result<(), String> {
         if target.borrow().generation != generation {
             return;
         }
-        {
+        let discarded = {
             let mut v = target.borrow_mut();
             v.recording = None;
             v.stream = None;
@@ -1793,9 +1810,13 @@ async fn browser_voice(view: Shared) -> Result<(), String> {
             v.speech_end = None;
             v.discard_capture = false;
             v.local_phase = if discard { None } else { Some("transcribing") };
-            if discard {
-                return;
-            }
+            discard
+        };
+        if discarded {
+            onboarding::capture_ended(
+                "I didn’t hear a request. Check your microphone, then try a conversation again.",
+            );
+            return;
         }
         let pieces = js_sys::Array::new();
         for blob in chunks.borrow_mut().drain(..) {
@@ -1908,7 +1929,14 @@ pub fn start() -> Result<(), JsValue> {
     });
     let target = view.clone();
     on(canvas.as_ref(), "click", move |e| {
-        if !target.borrow().initialized || target.borrow().snapshot.settings.wake_enabled {
+        if !target.borrow().initialized {
+            return;
+        }
+        if !target.borrow().snapshot.settings.onboarding_complete && !onboarding::trial() {
+            onboarding::open();
+            return;
+        }
+        if target.borrow().snapshot.settings.wake_enabled {
             return;
         }
         let Ok(e) = e.dyn_into::<web_sys::MouseEvent>() else {
@@ -2032,6 +2060,7 @@ pub fn start() -> Result<(), JsValue> {
     on(window().as_ref(), "keydown", move |e| {
         if let Ok(e) = e.dyn_into::<web_sys::KeyboardEvent>() {
             let modal = dialog("panel").open()
+                || dialog("setup-panel").open()
                 || dialog("about").open()
                 || document()
                     .get_element_by_id("composer")
@@ -2051,7 +2080,18 @@ pub fn start() -> Result<(), JsValue> {
                 return;
             }
             if action == Some(interaction::KeyboardAction::Cancel) {
+                let trial = onboarding::trial() && !modal;
+                // Consume Escape only when it opens recovery. An existing
+                // dialog must retain its normal Escape-to-close behaviour.
+                if trial {
+                    e.prevent_default();
+                }
                 stop_audio(&target);
+                if trial {
+                    onboarding::capture_ended(
+                        "The conversation test was cancelled. Try again when you’re ready.",
+                    );
+                }
             }
             if action == Some(interaction::KeyboardAction::Voice) {
                 e.prevent_default();
@@ -2427,7 +2467,7 @@ pub fn start() -> Result<(), JsValue> {
         settings.wake_enabled = input("wake-enabled").checked();
         settings.wake_name_only = select("wake-phrase").value() == "name";
         settings.microphone_muted = input("microphone-muted").checked();
-        settings.onboarding_complete = true;
+        settings.onboarding_complete = target.borrow().snapshot.settings.onboarding_complete;
         let key = input("key").value();
         let stt_key = input("stt-key").value();
         let target = target.clone();
@@ -2444,6 +2484,7 @@ pub fn start() -> Result<(), JsValue> {
                     message("");
                     target.borrow_mut().snapshot.settings = settings;
                     close_panel(&target);
+                    if !target.borrow().snapshot.settings.onboarding_complete {onboarding::open();}
                 }
                 Err(e) => message(e),
             }
@@ -2659,7 +2700,14 @@ pub fn start() -> Result<(), JsValue> {
                     });
                 stop_audio(&owner);
                 owner.borrow_mut().update_listening = None;
-                if let Some(failure) = failure {
+                let notice = failure.as_deref().unwrap_or(if event["phase"] == "empty" {
+                    "I didn’t hear a request. Check your microphone, then try a conversation again."
+                } else {
+                    "The conversation test was cancelled. Try again when you’re ready."
+                });
+                if !onboarding::capture_ended(notice)
+                    && let Some(failure) = failure
+                {
                     message(failure);
                     open_panel(&owner);
                 }
@@ -3048,6 +3096,19 @@ pub fn start() -> Result<(), JsValue> {
                     }
                     let onboard = !snapshot.settings.onboarding_complete;
                     target.borrow_mut().snapshot = snapshot;
+                    let recovery = target.borrow().snapshot.setup_required;
+                    if !recovery {
+                        target.borrow_mut().setup_prompted = false;
+                    }
+                    if recovery
+                        && !target.borrow().setup_prompted
+                        && !dialog("panel").open()
+                        && !dialog("setup-panel").open()
+                    {
+                        target.borrow_mut().setup_prompted = true;
+                        onboarding::open();
+                    }
+
                     if !target.borrow().initialized {
                         apply_theme(target.borrow().snapshot.settings.hue);
                         target.borrow_mut().initialized = true;
@@ -3059,7 +3120,7 @@ pub fn start() -> Result<(), JsValue> {
                     if *first.borrow() {
                         *first.borrow_mut() = false;
                         if onboard {
-                            open_panel(&target);
+                            onboarding::open();
                         }
                     }
                     if let Some(id) = memory_check {
@@ -3252,6 +3313,7 @@ pub fn start() -> Result<(), JsValue> {
         100,
     )?;
     tick.forget();
+    onboarding::install(&view);
     animate(canvas, view)?;
     Ok(())
 }
@@ -3271,7 +3333,10 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
         let mut v = view.borrow_mut();
         if v.initialized
             && v.snapshot.window_visible
-            && let Some(frame_seconds) = v.frame_clock.tick(now, reduced)
+            && let Some(frame_seconds) = v.frame_clock.tick(
+                now,
+                reduced || dialog("panel").open() || dialog("setup-panel").open(),
+            )
         {
             let w = canvas.client_width() as f64;
             let h = canvas.client_height() as f64;

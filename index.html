@@ -19,6 +19,22 @@
   <p aria-live="polite" class="sr-only" id="orb-status" role="status">
    Ready. Press Enter or Space to speak.
   </p>
+  <dialog id="setup-panel" aria-labelledby="setup-heading">
+   <header><p class="eyebrow">WELCOME TO NOTDOT</p><h1 id="setup-heading">Let’s get you talking</h1></header>
+   <p>Connect Codex, choose your voice, then try one conversation.</p>
+   <p id="setup-status" role="status" aria-live="polite">Checking your connection…</p>
+   <div class="setup-actions">
+    <button type="button" id="setup-install" hidden>Get Codex</button>
+    <button type="button" id="setup-signin" hidden>Sign in with ChatGPT</button>
+    <button type="button" id="setup-check">Check again</button>
+    <button type="button" id="setup-cancel" hidden>Cancel sign-in</button>
+    <button type="button" id="setup-voice" hidden>Choose name, voice and privacy</button>
+    <button type="button" id="setup-try" hidden>Try a conversation</button>
+    <button type="button" id="setup-finish" hidden>I heard it. Finish setup</button>
+    <button type="button" id="setup-later">Continue later</button>
+   </div>
+   <p class="hint">Speech services may charge for use. Remembering details and speaking unprompted are separate choices, both off by default. Setup progress is saved on this computer.</p>
+  </dialog>
   <dialog aria-labelledby="heading" id="panel">
    <form id="settings">
     <header aria-label="Drag this header to move Settings" class="panel-drag" id="panel-drag">
@@ -604,6 +620,8 @@
      </summary>
      <div class="settings-body">
       <div class="tool-actions">
+       <button id="setup-open" type="button">Check setup and sign-in</button>
+       <button id="export-diagnostics" type="button">Save troubleshooting report</button>
        <button id="retry" type="button">
         Reconnect companion
        </button>

@@ -103,6 +103,7 @@ pub struct Journal {
     pub day: String,
     pub delivered_today: u8,
     pub last_delivery: u64,
+    pub last_entry: Option<String>,
 }
 impl Journal {
     pub fn insert(&mut self, entry: Entry, now: u64) -> Result<(), String> {
@@ -197,8 +198,56 @@ impl Journal {
         if !e.task_report() {
             self.delivered_today += 1;
         }
+        self.last_entry = Some(e.id.clone());
         self.last_delivery = now;
         Ok(e.message.clone())
+    }
+    pub fn respond(&mut self, text: &str, now: u64) -> Option<String> {
+        let text = text
+            .trim()
+            .trim_end_matches(['.', '?', '!'])
+            .to_lowercase()
+            .replace('’', "'");
+        let action = match text.as_str() {
+            "why did you suggest that" | "why that suggestion" => "why",
+            "later" | "snooze that" | "remind me later" => "snooze",
+            "stop asking about this" | "dismiss that suggestion" => "dismiss",
+            _ => return None,
+        };
+        let entry = self.last_entry.as_ref().and_then(|id| {
+            self.entries
+                .iter()
+                .find(|e| &e.id == id && !e.dismissed && e.expires > now && e.origin_allowed())
+        });
+        let Some(entry) =
+            entry.filter(|_| now >= self.last_delivery && now - self.last_delivery <= 120)
+        else {
+            return Some(
+                "Please choose the item in Follow-ups so I know which one you mean.".into(),
+            );
+        };
+        if action == "why" {
+            return Some(format!(
+                "This update comes from {}. {}",
+                if entry.source.starts_with("memory:") {
+                    "a detail you allowed notdot to remember"
+                } else if entry.task.is_some() {
+                    "the task you asked notdot to follow"
+                } else {
+                    "your reminder request"
+                },
+                entry.evidence
+            ));
+        }
+        let id = entry.id.clone();
+        Some(match self.action(&id, action, now) {
+            Ok(()) if action == "snooze" => {
+                "Snoozed for one hour. Your quiet hours and announcement settings still apply."
+                    .into()
+            }
+            Ok(()) => "Dismissed. I won’t ask about this saved item again.".into(),
+            Err(e) => e,
+        })
     }
     pub fn action(&mut self, id: &str, action: &str, now: u64) -> Result<(), String> {
         let e = self
@@ -307,6 +356,40 @@ mod tests {
             task: None,
         }
     }
+    #[test]
+    fn conversational_actions_bind_to_one_recent_delivery_and_survive_restart() {
+        let now = 100_000;
+        let mut j = Journal::default();
+        j.insert(item(now), now).unwrap();
+        let p = Policy {
+            behaviour: Behaviour::Proactive,
+            ..Policy::default()
+        };
+        assert!(j.respond("later", now).unwrap().contains("choose"));
+        j.claim("a", &p, now, "day", 600).unwrap();
+        let mut j: Journal = serde_json::from_str(&serde_json::to_string(&j).unwrap()).unwrap();
+        assert!(
+            j.respond("Why did you suggest that?", now + 1)
+                .unwrap()
+                .contains("remind me")
+        );
+        assert!(j.respond("Later", now + 2).unwrap().contains("one hour"));
+        assert_eq!(j.entries[0].due, now + 3602);
+        assert!(
+            j.next(&p, now + 3602, "day", 1380).is_none(),
+            "Snooze never bypasses quiet hours"
+        );
+        assert!(
+            j.respond("stop asking about this", now + 3)
+                .unwrap()
+                .contains("Dismissed")
+        );
+        j.insert(item(now + 4), now + 4).unwrap();
+        assert_eq!(j.entries.len(), 1);
+        assert!(j.entries[0].dismissed);
+        assert!(j.respond("later", now + 121).unwrap().contains("choose"));
+    }
+
     #[test]
     fn policies_quiet_limits_restart_and_tombstones() {
         let mut j = Journal::default();

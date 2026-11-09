@@ -1,0 +1,104 @@
+{
+  "active_synthetic_statements": [
+    {
+      "content": "still with British spelling",
+      "key": "preferred_spelling"
+    },
+    {
+      "content": "I now want detailed answers",
+      "key": "preferred_answer_length"
+    },
+    {
+      "content": "My name is Jo.",
+      "key": "user_name"
+    },
+    {
+      "content": "I am building a birdhouse for my garden this month.",
+      "key": "garden_birdhouse_project"
+    },
+    {
+      "content": "I do not drink coffee after lunch, except on holiday.",
+      "key": "coffee_after_lunch"
+    }
+  ],
+  "cases": [
+    {
+      "case": "communication",
+      "milliseconds": 5586,
+      "model_called": true,
+      "passed": true,
+      "proposed_notes": 2
+    },
+    {
+      "case": "qualified_preference",
+      "milliseconds": 12345,
+      "model_called": true,
+      "passed": true,
+      "proposed_notes": 1
+    },
+    {
+      "case": "project",
+      "milliseconds": 14266,
+      "model_called": true,
+      "passed": true,
+      "proposed_notes": 1
+    },
+    {
+      "case": "temporary_request",
+      "milliseconds": 12274,
+      "model_called": true,
+      "passed": true,
+      "proposed_notes": 0
+    },
+    {
+      "case": "hypothetical",
+      "milliseconds": 6122,
+      "model_called": true,
+      "passed": true,
+      "proposed_notes": 0
+    },
+    {
+      "case": "quoted_fiction",
+      "milliseconds": 6152,
+      "model_called": true,
+      "passed": true,
+      "proposed_notes": 0
+    },
+    {
+      "case": "acknowledgement",
+      "milliseconds": 0,
+      "model_called": false,
+      "passed": true,
+      "proposed_notes": 0
+    },
+    {
+      "case": "secret",
+      "milliseconds": 0,
+      "model_called": false,
+      "passed": true,
+      "proposed_notes": 0
+    },
+    {
+      "case": "short_name",
+      "milliseconds": 6886,
+      "model_called": true,
+      "passed": true,
+      "proposed_notes": 1
+    },
+    {
+      "case": "correction",
+      "milliseconds": 9526,
+      "model_called": true,
+      "passed": true,
+      "proposed_notes": 2
+    }
+  ],
+  "correction_kept": true,
+  "effort": "medium",
+  "failures": 0,
+  "method": "Real Codex structured extraction; synthetic source; direct test-only confirmation, not voice-consent E2E",
+  "model": "GPT-6.1 Terra",
+  "name_recalled": true,
+  "qualification_kept": true,
+  "source_sha256": "6c7e2a7a04bfd0603095bd3a5f865f0a3d659ff8a6a5ad0636a6c7f4c701ba48"
+}

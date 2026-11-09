@@ -33,9 +33,10 @@ impl Confirmations {
     pub fn stage(
         &self,
         plan: LearningPlan,
-        batch: LearningBatch,
+        mut batch: LearningBatch,
         epoch: u64,
     ) -> Result<(), String> {
+        batch.ground_notes();
         batch.validate_for(&plan)?;
         if batch.notes.is_empty() {
             return Ok(());

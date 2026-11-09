@@ -232,18 +232,7 @@ impl ElevenStream {
                                 }
                                 continue;
                             }
-                            "committed_transcript" => {
-                                match value["text"]
-                                    .as_str()
-                                    .filter(|s| !s.trim().is_empty() && s.len() <= 65536)
-                                {
-                                    Some(text) => Ok(text.trim().to_owned()),
-                                    None => Err(error(
-                                        VoiceErrorKind::Provider,
-                                        "Live transcription returned no usable speech",
-                                    )),
-                                }
-                            }
+                            "committed_transcript" => committed_text(&value),
                             kind => {
                                 if let Some(e) = protocol_error(kind) {
                                     Err(e)
@@ -342,6 +331,22 @@ impl Drop for ElevenStream {
         self.reader.abort();
     }
 }
+fn committed_text(value: &Value) -> Result<String, VoiceError> {
+    match value["text"].as_str() {
+        Some(text) if text.len() > 65536 => Err(error(
+            VoiceErrorKind::Provider,
+            "Live transcription exceeded its limit",
+        )),
+        // An empty segment can follow valid earlier segments. The host
+        // classifies the complete utterance, rather than discarding that text.
+        Some(text) if text.trim().is_empty() => Ok(String::new()),
+        Some(text) => Ok(text.trim().to_owned()),
+        None => Err(error(
+            VoiceErrorKind::Provider,
+            "Live transcription returned invalid text",
+        )),
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,6 +411,27 @@ mod tests {
         assert_eq!(stream.stats().committed_segments, 1);
         stream.close().await;
         server.await.unwrap();
+    }
+    #[test]
+    fn empty_segments_are_valid_but_invalid_responses_are_provider_errors() {
+        for text in ["", " \n\t"] {
+            assert_eq!(committed_text(&json!({"text": text})).unwrap(), "");
+        }
+        for value in [
+            json!({}),
+            json!({"text": null}),
+            json!({"text": 12}),
+            json!({"text": "x".repeat(65537)}),
+        ] {
+            assert_eq!(
+                committed_text(&value).unwrap_err().kind,
+                VoiceErrorKind::Provider
+            );
+        }
+        assert_eq!(
+            committed_text(&json!({"text":" five plus seven "})).unwrap(),
+            "five plus seven"
+        );
     }
     #[test]
     fn provider_error_bodies_are_never_copied_into_messages() {

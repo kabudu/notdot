@@ -104,8 +104,26 @@ impl Initiative {
         policy: &notdot_core::initiative::Policy,
         profile: &notdot_core::profiles::ProfileId,
     ) -> Status {
-        let mut j = self.journal.lock().await.clone();
-        j.entries.retain(|entry| visible_to(entry, profile));
+        let j = self.journal.lock().await;
+
+        let filtered;
+        let j = if j.entries.iter().all(|entry| visible_to(entry, profile)) {
+            &*j
+        } else {
+            filtered = Journal {
+                entries: j
+                    .entries
+                    .iter()
+                    .filter(|entry| visible_to(entry, profile))
+                    .cloned()
+                    .collect(),
+                day: j.day.clone(),
+                delivered_today: j.delivered_today,
+                last_delivery: j.last_delivery,
+                last_entry: j.last_entry.clone(),
+            };
+            &filtered
+        };
         let date = Local::now();
         let next = j.next(
             policy,
@@ -121,6 +139,7 @@ impl Initiative {
             tasks: notdot_core::task_awareness::Awareness::new(
                 j.entries
                     .iter()
+                    .filter(|entry| visible_to(entry, profile))
                     .filter_map(|entry| entry.task_cue(now()).cloned())
                     .collect(),
             ),
@@ -266,6 +285,19 @@ impl Initiative {
         })
     }
     pub async fn command(&self, text: &str, behaviour: Behaviour) -> Option<String> {
+        {
+            let mut journal = self.journal.lock().await;
+            let mut changed = journal.clone();
+            if let Some(answer) = changed.respond(text, now()) {
+                if changed != *journal {
+                    if let Err(error) = self.save(&changed).await {
+                        return Some(error);
+                    }
+                    *journal = changed;
+                }
+                return Some(answer);
+            }
+        }
         if [
             "what are my reminders",
             "what are my suggestions",

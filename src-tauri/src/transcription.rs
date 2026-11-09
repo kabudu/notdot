@@ -349,8 +349,8 @@ async fn process_stream(
                 }
                 if text.trim().is_empty() {
                     return Err(VoiceError::new(
-                        VoiceErrorKind::Provider,
-                        "No usable speech was transcribed",
+                        VoiceErrorKind::NoSpeech,
+                        "No speech was transcribed. Please try again.",
                     ));
                 }
                 return Ok(text);
@@ -359,6 +359,9 @@ async fn process_stream(
     }
 }
 fn append(text: &mut String, segment: &str) -> Result<(), VoiceError> {
+    if segment.trim().is_empty() {
+        return Ok(());
+    }
     if text.len() + segment.len() + 1 > 65536 {
         return Err(VoiceError::new(
             VoiceErrorKind::InvalidInput,
@@ -652,6 +655,47 @@ mod tests {
                 }
             );
             assert_eq!(stats.committed_segments, if continuous { 1 } else { 2 });
+        }
+    }
+    struct TextStream(std::collections::VecDeque<String>);
+    #[async_trait::async_trait]
+    impl notdot_voice::realtime::StreamingTranscriber for TextStream {
+        async fn send(&mut self, _: &[u8]) -> Result<(), VoiceError> {
+            Ok(())
+        }
+        async fn commit(&mut self) -> Result<String, VoiceError> {
+            Ok(self.0.pop_front().expect("expected commit"))
+        }
+        async fn close(&mut self) {}
+        fn stats(&self) -> StreamStats {
+            StreamStats::default()
+        }
+    }
+    #[tokio::test]
+    async fn empty_final_segment_keeps_earlier_speech_but_empty_utterance_is_no_speech() {
+        for first in ["five plus seven", ""] {
+            let (tx, rx) = mpsc::channel(32);
+            for sequence in 0..21 {
+                tx.send(Input::Audio {
+                    sequence,
+                    pcm: vec![0; 32000],
+                })
+                .await
+                .unwrap();
+            }
+            tx.send(Input::Finish { sequence: 21 }).await.unwrap();
+            let result = run_stream(
+                Box::new(TextStream([first.into(), "".into()].into())),
+                16000,
+                rx,
+            )
+            .await
+            .result;
+            if first.is_empty() {
+                assert_eq!(result.unwrap_err().kind, VoiceErrorKind::NoSpeech);
+            } else {
+                assert_eq!(result.unwrap(), first);
+            }
         }
     }
     #[tokio::test]
