@@ -15,7 +15,7 @@ use std::{
 use tauri::{Manager, State};
 
 struct Probe {
-    detector: Mutex<Option<crate::wake::probe::Detector>>,
+    detector: Mutex<Option<crate::wake::standalone::Detector>>,
     fixtures: PathBuf,
     started: Instant,
     player: Mutex<Option<std::process::Child>>,
@@ -25,7 +25,7 @@ struct Probe {
 fn probe_reset(state: State<'_, Probe>, phrase: String) -> Result<(), String> {
     let models = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/wake");
     *state.detector.lock().map_err(|_| "probe")? =
-        Some(crate::wake::probe::Detector::new(&models, &phrase)?);
+        Some(crate::wake::standalone::Detector::new(&models, &phrase)?);
     Ok(())
 }
 /// Feed 16 kHz mono PCM; returns milliseconds since probe start when the

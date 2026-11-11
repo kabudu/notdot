@@ -1324,13 +1324,16 @@ impl Worker {
     }
 }
 
-/// The production detector, exposed only to the debug echo probe.
-#[cfg(debug_assertions)]
-pub mod probe {
+/// The production detector for audio that does not come from the native
+/// microphone worker: interruption listening and the debug echo probe.
+pub mod standalone {
     pub struct Detector(super::Detector);
     impl Detector {
         pub fn new(models: &std::path::Path, phrase: &str) -> Result<Self, String> {
             super::Detector::new(models, phrase).map(Self)
+        }
+        pub fn reset(&mut self) {
+            self.0.reset();
         }
         pub fn accept(&mut self, rate: u32, samples: &[f32]) -> bool {
             let hit = self.0.accept(rate, samples);

@@ -337,6 +337,7 @@ async fn install(
     let result: Result<(), String> = async {
         // Keep the guard alive through installation/restart. Failure drops it,
         // allowing fresh frontend leases without resurrecting an old recording.
+        state.interrupt.unload();
         let _decoder_release = state.wake.release_decoder_for_update().await?;
         let (overflow, mut exceeded) = tokio::sync::watch::channel(false);
         let mut received = 0u64;

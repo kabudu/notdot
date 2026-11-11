@@ -33,6 +33,9 @@ pub struct Settings {
     pub followup_seconds: u32,
     pub wake_enabled: bool,
     pub wake_name_only: bool,
+    /// Say the wake phrase while notdot speaks to interrupt it. Needs wake
+    /// listening and webview echo cancellation.
+    pub interrupt_enabled: bool,
     pub microphone_muted: bool,
 }
 impl Default for Settings {
@@ -60,6 +63,7 @@ impl Default for Settings {
             followup_seconds: 8,
             wake_enabled: false,
             wake_name_only: false,
+            interrupt_enabled: false,
             microphone_muted: false,
         }
     }
