@@ -62,7 +62,7 @@ Use notdot to send messages in its chat. Keep the Codex app for viewing that cha
 
 ## Privacy and memory
 
-Wake detection runs on your computer. Background listening is not sent to a speech service. With voice interruption enabled, speech detected during replies is also sent to your recognition service. Silence stays local. After activation, your chosen services transcribe your request and generate the spoken reply. Codex receives your request and any relevant memories. Notes and lists are the exception: notdot handles them on your computer and does not send them to Codex, although your dictation still goes to the recognition service and anything read back goes to the voice service. If you ask about another local Codex chat, selected messages from that chat are also supplied to the model.
+Wake detection runs on your computer. Audio used to wait for the wake phrase is not sent to a speech service. With voice interruption enabled, speech detected during replies is also sent to your recognition service. Silence stays local. After activation, your chosen services transcribe your request and generate the spoken reply. Codex receives your request and any relevant memories. Notes and lists are the exception: notdot handles them on your computer and does not send them to Codex, although your dictation still goes to the recognition service and anything read back goes to the voice service. If you ask about another local Codex chat, selected messages from that chat are also supplied to the model.
 
 Voice matching runs on your computer. Saved voiceprints are encrypted there, and setup recordings are discarded once a voiceprint is made. Removing a person deletes their voiceprint and private memories.
 

@@ -58,4 +58,10 @@ function fixture() {
   f.nodes[0].port.onmessage({ data: new Float32Array(1600) }); await flush();
   assert.equal(stream.track.stopped, true, 'endpoint releases the microphone before waiting for recognition');
 }
-console.log('Interruption lifecycle: 3 regression scenarios passed');
+{
+  const f = fixture(); const support = f.box.interruptSupport();
+  const stream = f.stream(); stream.track.getSettings = () => { throw Error('settings unavailable'); };
+  f.requests[0].resolve(stream); await support;
+  assert.equal(stream.track.stopped, true, 'capability errors must release microphone tracks');
+}
+console.log('Interruption lifecycle: 4 regression scenarios passed');

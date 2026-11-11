@@ -23,9 +23,12 @@ export async function interruptSupport() {
     let stream;
     try { stream = await bounded('microphone check', request, 5000); }
     catch (error) { expired = true; throw error; }
-    const settings = stream.getAudioTracks()[0]?.getSettings?.() || {};
-    for (const track of stream.getTracks()) track.stop();
-    return settings.echoCancellation === true ? 'ok' : 'unsupported: track reports echoCancellation=' + settings.echoCancellation;
+    try {
+      const settings = stream.getAudioTracks()[0]?.getSettings?.() || {};
+      return settings.echoCancellation === true ? 'ok' : 'unsupported: track reports echoCancellation=' + settings.echoCancellation;
+    } finally {
+      for (const track of stream.getTracks()) track.stop();
+    }
   } catch (error) {
     return 'unsupported: ' + (error && error.name || error);
   }

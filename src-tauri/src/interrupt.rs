@@ -241,6 +241,7 @@ pub async fn interrupt_support(
     if !echo_cancellation {
         i.session = None;
         i.triggered = None;
+        i.capture = None;
     }
     Ok(())
 }
