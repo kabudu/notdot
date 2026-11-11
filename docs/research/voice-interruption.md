@@ -1,3 +1,9 @@
+## Current candidate: unprefixed speech interruption
+
+The v0.8.0 candidate now uses Silero speech detection on the webview's echo-cancelled audio, not wake-word detection. It retains a half-second pre-roll, pauses on speech onset and keeps the same microphone stream until 600 ms of silence (maximum 12 seconds). The selected streaming recognition backend receives the completed bounded utterance in a single session; this path currently starts recognition after endpointing, rather than uploading ongoing overlap audio. Only the original reply owner is admitted, and cancellation revokes admission. No raw audio is stored on disk. Two lifecycle regressions, native onset/buffer/owner tests and simulated production-WASM interruption checks cover software behaviour. They do not establish real-person overlapping speech reliability. External-person overlap and Windows/Linux webview capability checks remain pending.
+
+The findings below describe the earlier wake-only investigation and its limitations, not the current trigger design.
+
 # Voice interruption: design note and findings
 
 Status: not shipped in 0.8.0. This note records what was tried and what a supported version needs.

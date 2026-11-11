@@ -1,15 +1,8 @@
-//! Interrupting a spoken reply by saying the wake phrase.
-//!
-//! While a reply plays, the webview captures the microphone with its own
-//! echo cancellation, which uses notdot's playback as the reference, and
-//! sends 16 kHz PCM here over local IPC. The on-device wake detector runs on
-//! it. Nothing leaves the computer until the wake phrase is detected; the
-//! request after it is captured and recognised exactly like a click.
-//!
-//! The feature only runs when the webview has reported a working echo-
-//! cancelled track in this session. Without it, overlapping reply audio hides
-//! the wake phrase and a reply that says the wake phrase can trigger itself,
-//! so the control stays off rather than running unfiltered.
+//! Optional interruption without a wake phrase. The webview supplies locally
+//! echo-cancelled PCM; Silero detects speech onset and preserves a bounded
+//! pre-roll. The same stream continues until silence, with no mic handoff.
+//! Only the active reply owner may supply a replacement request. Recognition
+//! uses the selected voice backend, and cancellation revokes admission.
 use crate::AppState;
 use serde::Serialize;
 use std::{
@@ -29,7 +22,7 @@ const IDLE_LIMIT: Duration = Duration::from_secs(5);
 pub struct Interrupt {
     inner: Mutex<Inner>,
     /// The detector and the wake phrase it was built for.
-    detector: Mutex<Option<(String, crate::wake::standalone::Detector)>>,
+    detector: Mutex<Option<(String, crate::wake::speech::SpeechGate)>>,
     models: PathBuf,
 }
 #[derive(Default)]
@@ -59,6 +52,38 @@ struct Session {
     id: String,
     last_audio: Instant,
     owner: Owner,
+    utterance: Utterance,
+}
+
+#[derive(Default)]
+struct Utterance {
+    audio: zeroize::Zeroizing<Vec<f32>>,
+    speaking: bool,
+    quiet: usize,
+    complete: bool,
+}
+impl Utterance {
+    fn push(&mut self, samples: &[f32], speech: bool) -> bool {
+        if self.complete {
+            return false;
+        }
+        let onset = speech && !self.speaking;
+        self.speaking |= speech;
+        self.audio.extend_from_slice(samples);
+        if !self.speaking {
+            let excess = self.audio.len().saturating_sub(8_000);
+            self.audio.drain(..excess);
+        } else {
+            self.quiet = if speech {
+                0
+            } else {
+                self.quiet + samples.len()
+            };
+            self.complete = self.quiet >= 9_600 || self.audio.len() >= 192_000;
+            self.audio.truncate(192_000);
+        }
+        onset
+    }
 }
 
 impl Interrupt {
@@ -142,8 +167,6 @@ async fn refusal(state: &AppState) -> Option<&'static str> {
     let s = state.snapshot.lock().await;
     if !s.settings.interrupt_enabled {
         Some("Interrupting by voice is off")
-    } else if !s.settings.wake_enabled {
-        Some("Interrupting needs wake listening")
     } else if s.settings.microphone_muted {
         Some("The microphone is muted")
     } else if !s.window_visible || !s.settings.onboarding_complete || !s.key_configured {
@@ -181,7 +204,11 @@ pub async fn current_owner(state: &AppState) -> Result<Owner, String> {
 /// while that same reply is still current. A refusal never switches person.
 pub async fn admit(state: &AppState, token: &str, identity: &TurnLock) -> Result<(), String> {
     let Some(owner) = state.interrupt.capture_owner(token) else {
-        return Ok(());
+        return if token.starts_with("interrupt-") {
+            Err("That interruption was cancelled".into())
+        } else {
+            Ok(())
+        };
     };
     let current = current_owner(state).await;
     let identification = state.speakers.needs_identification();
@@ -243,10 +270,8 @@ pub async fn interrupt_begin(
     if owner.turn != turn {
         return Err("That reply is no longer speaking".into());
     }
-    let phrase = {
-        let s = state.snapshot.lock().await;
-        crate::wake::phrase(&s.settings.name, s.settings.wake_name_only)?
-    };
+    let id = uuid::Uuid::new_v4().to_string();
+    let detector_id = id.clone();
     let interrupt = state.inner().clone();
     let models = interrupt.interrupt.models.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -255,15 +280,11 @@ pub async fn interrupt_begin(
             .detector
             .lock()
             .map_err(|_| "interrupt detector")?;
-        match slot.as_mut() {
-            Some((built_for, detector)) if *built_for == phrase => detector.reset(),
-            // The name or "name only" changed: build for the new phrase.
-            _ => {
-                *slot = Some((
-                    phrase.clone(),
-                    crate::wake::standalone::Detector::new(&models, &phrase)?,
-                ))
-            }
+        if let Some((owner, detector)) = slot.as_mut() {
+            detector.reset();
+            *owner = detector_id;
+        } else {
+            *slot = Some((detector_id, crate::wake::speech::SpeechGate::new(&models)?));
         }
         Ok::<(), String>(())
     })
@@ -273,7 +294,6 @@ pub async fn interrupt_begin(
     if current_owner(&state).await.as_ref() != Ok(&owner) {
         return Err("That reply is no longer speaking".into());
     }
-    let id = uuid::Uuid::new_v4().to_string();
     let mut i = state
         .interrupt
         .inner
@@ -283,20 +303,21 @@ pub async fn interrupt_begin(
         id: id.clone(),
         last_audio: Instant::now(),
         owner,
+        utterance: Utterance::default(),
     });
     i.triggered = None;
     i.capture = None;
     Ok(id)
 }
-/// Feed echo-cancelled 16 kHz audio. Returns true when the wake phrase is
-/// heard; the session then ends and waits for its request capture.
+/// Feed echo-cancelled 16 kHz audio. Returns true once at speech onset.
+/// Keep feeding the same stream until interrupt_collect finishes.
 #[tauri::command]
 pub async fn interrupt_audio(
     state: State<'_, std::sync::Arc<AppState>>,
     session: String,
     samples: Vec<f32>,
     guarded: bool,
-) -> Result<bool, String> {
+) -> Result<serde_json::Value, String> {
     if samples.len() > MAX_CHUNK || samples.iter().any(|s| !s.is_finite()) {
         return Err("Invalid audio".into());
     }
@@ -322,27 +343,31 @@ pub async fn interrupt_audio(
         open.owner.clone()
     };
     let interrupt = state.inner().clone();
-    let heard = tauri::async_runtime::spawn_blocking(move || {
-        let mut detector = interrupt.interrupt.detector.lock().ok()?;
-        let (_, detector) = detector.as_mut()?;
-        let mut heard = false;
-        for chunk in samples.chunks(320) {
-            heard |= detector.accept(16_000, chunk);
+    let packet = samples.clone();
+    let detector_session = session.clone();
+    let voiced = tauri::async_runtime::spawn_blocking(move || {
+        let mut detector = interrupt
+            .interrupt
+            .detector
+            .lock()
+            .map_err(|_| "interrupt detector")?;
+        let (id, gate) = detector
+            .as_mut()
+            .ok_or("Interrupt detector unavailable".to_string())?;
+        if *id != detector_session {
+            return Err("Interrupt listening ended".into());
         }
-        Some(heard)
+        gate.accept(&packet, 16_000)
     })
     .await
-    .map_err(|e| e.to_string())?
-    .ok_or("Interrupt detector unavailable")?;
-    // While a reply sentence that contains the wake name plays, a detection
-    // is treated as notdot hearing itself.
-    if !heard || guarded {
-        return Ok(false);
-    }
+    .map_err(|e| e.to_string())??;
+    // The echo-cancelled stream is classified for speech, not a keyword. Keep
+    // the pre-roll so short commands such as Stop are never clipped at onset.
+    let _ = guarded; // Compatibility with older webviews; no wake-name guard.
     // Revalidate after detection work: the same reply must still be playing.
     if current_owner(&state).await.ok().as_ref() != Some(&owner) {
         state.interrupt.end();
-        return Ok(false);
+        return Ok(serde_json::json!(false));
     }
     let mut i = state
         .interrupt
@@ -350,12 +375,107 @@ pub async fn interrupt_audio(
         .lock()
         .map_err(|_| "interrupt state")?;
     if i.session.as_ref().is_none_or(|s| s.id != session) {
-        return Ok(false);
+        return Ok(serde_json::json!(false));
     }
-    i.session = None;
-    i.triggered = Some((session, owner, Instant::now()));
-    Ok(true)
+    let onset = i
+        .session
+        .as_mut()
+        .expect("checked session")
+        .utterance
+        .push(&samples, voiced);
+    if onset {
+        i.triggered = Some((session, owner, Instant::now()));
+    }
+    let complete = i.session.as_ref().is_some_and(|s| s.utterance.complete);
+    Ok(if complete {
+        serde_json::json!("complete")
+    } else {
+        serde_json::json!(onset)
+    })
 }
+/// Collect the same echo-cancelled stream that detected speech. No microphone
+/// handoff, lost first word, temporary WAV or second transcription request.
+#[tauri::command]
+pub async fn interrupt_collect(
+    state: State<'_, std::sync::Arc<AppState>>,
+    session: String,
+    token: String,
+) -> Result<serde_json::Value, String> {
+    notdot_core::request_cancel::Requests::validate(&token)?;
+    let owner = state
+        .interrupt
+        .take_trigger(&session, &token)
+        .ok_or("Interruption expired")?;
+    let started = Instant::now();
+    let audio = loop {
+        if refusal(&state).await.is_some()
+            || current_owner(&state).await.as_ref() != Ok(&owner)
+            || state.interrupt.capture_owner(&token).as_ref() != Some(&owner)
+        {
+            return Err("Interruption cancelled".into());
+        }
+        let ready = {
+            let mut i = state
+                .interrupt
+                .inner
+                .lock()
+                .map_err(|_| "interrupt state")?;
+            let capture = i
+                .session
+                .as_mut()
+                .filter(|s| s.id == session)
+                .ok_or("Interruption cancelled")?;
+            if capture.last_audio.elapsed() > IDLE_LIMIT {
+                return Err("Microphone stopped".into());
+            }
+            if capture.utterance.complete {
+                Some(std::mem::take(&mut capture.utterance.audio))
+            } else {
+                None
+            }
+        };
+        if let Some(audio) = ready {
+            break audio;
+        }
+        if started.elapsed() > Duration::from_secs(14) {
+            return Err("Interruption timed out".into());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let continuity = if state.speakers.needs_identification() {
+        Some((
+            16_000,
+            zeroize::Zeroizing::new(
+                audio
+                    .iter()
+                    .flat_map(|s| ((s.clamp(-1., 1.) * 32767.) as i16).to_le_bytes())
+                    .collect(),
+            ),
+        ))
+    } else {
+        None
+    };
+    let generation = state.quota.generation();
+    let provider = state
+        .snapshot
+        .lock()
+        .await
+        .settings
+        .transcription_id()
+        .to_string();
+    let heard =
+        crate::transcription::interruption(state.inner().clone(), token.clone(), &audio).await;
+    let heard = match heard {
+        Err(error) if error.kind == notdot_voice::VoiceErrorKind::Refused => {
+            Err(crate::Heard::Refused(error.to_string()))
+        }
+        result => crate::quota::finish(&state, &provider, generation, "stt", result)
+            .await
+            .map_err(crate::Heard::Failed),
+    };
+    Ok(crate::interrupt_result(&state, &token, heard, continuity).await)
+}
+
 #[tauri::command]
 pub fn interrupt_end(state: State<'_, std::sync::Arc<AppState>>) {
     state.interrupt.end();
@@ -456,6 +576,66 @@ pub fn classify(transcript: &str, reply: &str, wake_name: &str) -> Outcome {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn speech_onset_keeps_short_commands_and_bounds_silence_and_audio() {
+        let mut capture = super::Utterance::default();
+        for _ in 0..100 {
+            assert!(!capture.push(&[0.; 1600], false));
+        }
+        assert_eq!(
+            capture.audio.len(),
+            8000,
+            "idle audio is only a half-second pre-roll"
+        );
+        assert!(
+            capture.push(&[0.2; 1600], true),
+            "speech starts without a wake phrase"
+        );
+        assert!(
+            !capture.push(&[0.2; 1600], true),
+            "only one onset per utterance"
+        );
+        for _ in 0..6 {
+            capture.push(&[0.; 1600], false);
+        }
+        assert!(capture.complete, "600 ms silence submits even a short Stop");
+        assert!(capture.audio.contains(&0.2), "first word is retained");
+        let mut long = super::Utterance::default();
+        for _ in 0..200 {
+            long.push(&[0.2; 1600], true);
+        }
+        assert_eq!(
+            long.audio.len(),
+            192000,
+            "all buffers are capped at twelve seconds"
+        );
+        assert!(long.complete);
+    }
+    #[test]
+    fn shipped_speech_model_detects_speech_without_a_wake_phrase() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut gate = crate::wake::speech::SpeechGate::new(&root.join("resources/wake")).unwrap();
+        let mut wav = hound::WavReader::open(root.join("tests/fixtures/negative.wav")).unwrap();
+        let rate = wav.spec().sample_rate;
+        let pcm: Vec<f32> = wav
+            .samples::<i16>()
+            .map(|s| f32::from(s.unwrap()) / 32768.)
+            .collect();
+        let mut heard = false;
+        for chunk in pcm.chunks((rate / 10) as usize) {
+            heard |= gate.accept(chunk, rate).unwrap();
+        }
+        assert!(
+            heard,
+            "ordinary speech with no keyword must open interruption capture"
+        );
+        gate.reset();
+        assert!(
+            !gate.accept(&[0.; 16000], 16000).unwrap(),
+            "silence is not an interruption"
+        );
+    }
+
     use super::*;
     #[test]
     fn interruptions_are_classified_without_guessing() {
@@ -607,6 +787,25 @@ mod tests {
             )
             .await
             .is_err()
+        );
+
+        state.interrupt.end();
+        let cancelled_token = "interrupt-cancelled";
+        assert!(
+            crate::profile_access::bind_capture(
+                state.clone(),
+                cancelled_token,
+                16_000,
+                &[],
+                Some(lock(&state, cancelled_token, &member))
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            state.context().id,
+            owner,
+            "cancelled audio cannot switch profile"
         );
 
         // The owner, for the same reply, is admitted. Detections are single use.

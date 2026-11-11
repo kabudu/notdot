@@ -1,7 +1,7 @@
 //! On-device keyword spotting. One worker owns inference and microphone capture;
 //! the real-time callback only downmixes into a bounded queue. No network access.
 mod fallback;
-mod speech;
+pub(crate) mod speech;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use notdot_core::settings::Settings;
 use serde::Serialize;
@@ -1324,16 +1324,13 @@ impl Worker {
     }
 }
 
-/// The production detector for audio that does not come from the native
-/// microphone worker: interruption listening and the debug echo probe.
+/// Production wake detector exposed to the debug-only echo probe.
+#[cfg(debug_assertions)]
 pub mod standalone {
     pub struct Detector(super::Detector);
     impl Detector {
         pub fn new(models: &std::path::Path, phrase: &str) -> Result<Self, String> {
             super::Detector::new(models, phrase).map(Self)
-        }
-        pub fn reset(&mut self) {
-            self.0.reset();
         }
         pub fn accept(&mut self, rate: u32, samples: &[f32]) -> bool {
             let hit = self.0.accept(rate, samples);

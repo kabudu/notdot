@@ -239,6 +239,7 @@ struct View {
     /// The capture token of the current hold; results for others are ignored.
     interrupt_token: Option<String>,
     interrupt_session: Option<String>,
+    interrupt_callback: Option<Closure<dyn FnMut()>>,
     interrupt_starting: bool,
     /// This webview's echo cancellation, checked once per session.
     interrupt_supported: Option<bool>,

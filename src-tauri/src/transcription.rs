@@ -160,6 +160,45 @@ impl Streaming {
         }
     }
 }
+/// Recognise one bounded echo-cancelled interruption through the configured
+/// streaming backend and the same native speaker-admission path as captures.
+pub async fn interruption(
+    state: Arc<AppState>,
+    token: String,
+    samples: &[f32],
+) -> Result<String, VoiceError> {
+    if samples.len() > 192_000 || samples.iter().any(|s| !s.is_finite()) {
+        return Err(VoiceError::new(
+            VoiceErrorKind::InvalidInput,
+            "Invalid interruption audio",
+        ));
+    }
+    let (send, input) = mpsc::channel(64);
+    let mut sequence = 0;
+    for chunk in samples.chunks(3_200) {
+        let pcm = chunk
+            .iter()
+            .flat_map(|s| ((s.clamp(-1., 1.) * 32767.) as i16).to_le_bytes())
+            .collect();
+        send.try_send(Input::Audio { sequence, pcm }).map_err(|_| {
+            VoiceError::new(VoiceErrorKind::InvalidInput, "Interruption is too long")
+        })?;
+        sequence += 1;
+    }
+    send.try_send(Input::Finish { sequence })
+        .map_err(|_| VoiceError::new(VoiceErrorKind::InvalidInput, "Interruption is too long"))?;
+    drop(send);
+    tokio::time::timeout(Duration::from_secs(15), run(state, token, 16_000, input))
+        .await
+        .map_err(|_| {
+            VoiceError::new(
+                VoiceErrorKind::Network,
+                "Interruption recognition timed out",
+            )
+        })?
+        .result
+}
+
 async fn run(
     state: Arc<AppState>,
     token: String,
@@ -258,8 +297,11 @@ async fn run(
         Ok(stream) => stream,
         Err(error) => return Completion::failed(error),
     };
-    let valid =
-        || state.speakers.validate(&identity).is_ok() && state.context().id == identity.profile;
+    let valid = || {
+        state.speakers.validate(&identity).is_ok()
+            && state.context().id == identity.profile
+            && (!token.starts_with("interrupt-") || state.interrupt.capture_owner(&token).is_some())
+    };
     run_stream_with_prelude(stream, rate, input, prelude, &valid).await
 }
 #[cfg(test)]

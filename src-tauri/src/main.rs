@@ -776,7 +776,7 @@ async fn save_settings(
     let disabled_memory = !settings.memory_enabled;
     snap.settings = settings;
     state.wake.configure(&snap.settings);
-    if snap.settings.interrupt_enabled && snap.settings.wake_enabled {
+    if snap.settings.interrupt_enabled {
         state.interrupt.end();
     } else {
         state.interrupt.unload();
@@ -1989,6 +1989,7 @@ fn main() {
             interrupt::interrupt_begin,
             interrupt::interrupt_audio,
             interrupt::interrupt_end,
+            interrupt::interrupt_collect,
             save_settings,
             model_catalog,
             clear_voice_key,

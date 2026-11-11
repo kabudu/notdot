@@ -24,6 +24,7 @@ https://github.com/user-attachments/assets/27db5b3f-e31a-40ee-a8dd-37ecc9c2b6b5
 ## What you can do
 
 - **Talk naturally.** Say your wake phrase or click once, speak, then pause to send. Press Escape to cancel.
+- **Interrupt naturally.** Enable voice interruption to say “Stop”, “Actually…” or a new request during a reply, without a wake phrase. Requires echo cancellation on your computer.
 - **Follow up without starting again.** Turn on an optional listening window after replies. Keep talking, or say “That’s all” to stop.
 - **Use your other Codex chats.** Find and read relevant history by voice. Optional controls let you send work, add instructions and stop tasks notdot started, with your chosen confirmation setting.
 - **Know how work is going.** Ask “What needs me?” or “What’s still running?” Subtle orb cues show work, attention and results. Requested spoken reports distinguish success, failure, partial results and unverified work, while respecting quiet hours.
@@ -61,7 +62,7 @@ Use notdot to send messages in its chat. Keep the Codex app for viewing that cha
 
 ## Privacy and memory
 
-Wake detection runs on your computer. Background listening is not sent to a speech service. After activation, your chosen services transcribe your request and generate the spoken reply. Codex receives your request and any relevant memories. Notes and lists are the exception: notdot handles them on your computer and does not send them to Codex, although your dictation still goes to the recognition service and anything read back goes to the voice service. If you ask about another local Codex chat, selected messages from that chat are also supplied to the model.
+Wake detection runs on your computer. Background listening is not sent to a speech service. With voice interruption enabled, speech detected during replies is also sent to your recognition service. Silence stays local. After activation, your chosen services transcribe your request and generate the spoken reply. Codex receives your request and any relevant memories. Notes and lists are the exception: notdot handles them on your computer and does not send them to Codex, although your dictation still goes to the recognition service and anything read back goes to the voice service. If you ask about another local Codex chat, selected messages from that chat are also supplied to the model.
 
 Voice matching runs on your computer. Saved voiceprints are encrypted there, and setup recordings are discarded once a voiceprint is made. Removing a person deletes their voiceprint and private memories.
 

@@ -1,8 +1,8 @@
-//! Interrupt a spoken reply by saying the wake phrase.
+//! Interrupt a spoken reply without repeating the wake phrase.
 //!
 //! The webview captures the microphone with echo cancellation, which uses
 //! notdot's own playback as its reference, and streams 16 kHz audio to the
-//! on-device wake detector. Playback holds on a detection; the request after
+//! on-device speech detector. Playback holds on speech onset; the utterance
 //! it decides whether the reply stops, is replaced or carries on.
 use crate::{Shared, call, message, stop_audio};
 use serde_json::json;
@@ -70,11 +70,11 @@ export async function interruptStart(session, onDetect) {
     throw error;
   }
   state.node.port.onmessage = ({ data }) => {
-    // At most two chunks in flight; older audio is dropped, never queued.
-    if (state.stopped || state.busy >= 2) return;
+    // One ordered chunk in flight; overload drops audio instead of queuing it.
+    if (state.stopped || state.busy >= 1) return;
     state.busy++;
     invoke('interrupt_audio', { session, samples: Array.from(data), guarded })
-      .then(heard => { if (heard && !state.stopped) { teardown(state); onDetect(); } })
+      .then(heard => { if (heard === 'complete') { teardown(state); } else if (heard === true && !state.stopped && !state.detected) { state.detected = true; onDetect(); } })
       .catch(() => { teardown(state); })
       .finally(() => { state.busy--; });
   };
@@ -134,7 +134,6 @@ pub fn wanted(view: &Shared) -> bool {
     let s = &v.snapshot;
     v.interrupt_supported == Some(true)
         && s.settings.interrupt_enabled
-        && s.settings.wake_enabled
         && !s.settings.microphone_muted
         && s.window_visible
         && s.settings.onboarding_complete
@@ -159,15 +158,31 @@ pub fn sync(view: &Shared) {
                 let turn = target.borrow().snapshot.speech.turn.clone();
                 let session = call("interrupt_begin", json!({"turn":turn})).await?;
                 let session = session.as_string().ok_or("No session")?;
-                let detected = target.clone();
-                let on_detect = Closure::once_into_js(move || hold(&detected));
-                let ok = JsFuture::from(interrupt_start(&session, on_detect.unchecked_ref()))
-                    .await
-                    .map_err(crate::js_error)?;
+                if !wanted(&target) {
+                    stop_listening().await;
+                    return Ok(());
+                }
+                let detected = std::rc::Rc::downgrade(&target);
+                let on_detect = Closure::<dyn FnMut()>::new(move || {
+                    if let Some(view) = detected.upgrade() {
+                        hold(&view);
+                    }
+                });
+                let ok = JsFuture::from(interrupt_start(
+                    &session,
+                    on_detect.as_ref().unchecked_ref(),
+                ))
+                .await
+                .map_err(crate::js_error)?;
                 if ok.as_bool() != Some(true) {
                     return Err("Echo cancellation was not available".to_string());
                 }
+                if !wanted(&target) {
+                    stop_listening().await;
+                    return Ok(());
+                }
                 target.borrow_mut().interrupt_session = Some(session);
+                target.borrow_mut().interrupt_callback = Some(on_detect);
                 Ok::<(), String>(())
             }
             .await;
@@ -195,7 +210,7 @@ pub async fn stop_listening() {
 /// Per-poll housekeeping: check support once when needed, keep listening in
 /// step with playback, and never leave a reply held without a capture.
 pub fn tick(view: &Shared, snapshot: &crate::Snapshot) {
-    let enabled = snapshot.settings.interrupt_enabled && snapshot.settings.wake_enabled;
+    let enabled = snapshot.settings.interrupt_enabled;
     let check = {
         let v = view.borrow();
         enabled
@@ -219,6 +234,7 @@ pub fn tick(view: &Shared, snapshot: &crate::Snapshot) {
             let age = js_sys::Date::now() - since;
             age > 15_000.
                 || (age > 2_500.
+                    && v.interrupt_token.is_none()
                     && v.local_phase != Some("transcribing")
                     && v.capture_token.as_deref() != snapshot.wake["capture_token"].as_str()
                     && snapshot.wake["request_id"].is_null())
@@ -240,14 +256,10 @@ pub fn label(view: &Shared, snapshot: &crate::Snapshot) {
             "Listening. Paused my reply. Say your request, or Stop. Escape cancels.",
         );
     } else if v.interrupt_session.is_some() {
-        let phrase = snapshot.wake["phrase"]
-            .as_str()
-            .unwrap_or("your wake phrase");
+        let _ = snapshot;
         let _ = orb.set_attribute(
             "aria-label",
-            &format!(
-                "Speaking. Say {phrase} to interrupt, then your request or Stop. Escape stops."
-            ),
+            "Speaking. You can interrupt with Stop or a new request. Escape stops.",
         );
     }
 }
@@ -266,9 +278,7 @@ fn hold(view: &Shared) {
         }
         v.interrupt_hold = Some(js_sys::Date::now());
         v.interrupt_token = Some(token.clone());
-        v.capture_token = Some(token.clone());
-        v.native_manual = true;
-        v.local_phase = Some("starting_capture");
+        v.local_phase = Some("listening");
         let _ = v.meter.wake_cue();
     }
     let _ = crate::element("orb").set_attribute(
@@ -276,14 +286,35 @@ fn hold(view: &Shared) {
         "Listening. Paused my reply. Say your request, or Stop. Escape cancels.",
     );
     let target = view.clone();
+    let generation = target.borrow().generation;
     spawn_local(async move {
-        let started = call(
-            "start_capture",
-            json!({"token":token,"limit":12,"followup":false,"interrupt":session}),
+        let result = call(
+            "interrupt_collect",
+            json!({"session":session,"token":token}),
         )
         .await;
-        if started.is_err() {
-            resume(&target, None);
+        // Keep the same stream until the complete interruption has arrived.
+        // Stop capture before any resumed or replacement reply can play.
+        stop_listening().await;
+        let current = {
+            let v = target.borrow();
+            v.generation == generation && v.interrupt_token.as_deref() == Some(token.as_str())
+        };
+        if !current {
+            return;
+        }
+        match result {
+            Ok(value) => match serde_wasm_bindgen::from_value::<serde_json::Value>(value) {
+                Ok(result) => outcome(target, &result, &token, generation).await,
+                Err(_) => resume(
+                    &target,
+                    Some("I couldn't hear that clearly, so I'll carry on."),
+                ),
+            },
+            Err(_) => resume(
+                &target,
+                Some("I couldn't hear that clearly, so I'll carry on."),
+            ),
         }
     });
 }
@@ -376,27 +407,22 @@ pub async fn outcome(view: Shared, result: &serde_json::Value, token: &str, gene
     }
 }
 
-/// Explain the control in Settings. It is unavailable without wake
-/// listening, and checks this computer's echo cancellation when switched on.
+/// Explain the optional echo-cancelled interruption control.
 pub fn render_settings(view: &Shared) {
-    let wake = crate::input("wake-enabled").checked();
-    let control = crate::input("interrupt-enabled");
-    control.set_disabled(!wake);
-    if !wake {
-        control.set_checked(false);
-    }
-    let status = match (wake, view.borrow().interrupt_supported) {
-        (false, _) => "Turn on wake listening to use this.",
-        (true, Some(false)) => {
+    let status = match view.borrow().interrupt_supported {
+        Some(false) => {
             "This computer's echo cancellation isn't available, so interrupting stays off."
         }
-        (true, Some(true)) => "Echo cancellation is available on this computer.",
-        (true, None) => "",
+        Some(true) => {
+            "Say Stop, Actually, or a new request while notdot speaks. No wake phrase needed."
+        }
+        None => "Checks this computer's echo cancellation when enabled.",
     };
     crate::element("interrupt-status").set_text_content(Some(status));
 }
 pub fn install(view: &Shared) {
-    for id in ["wake-enabled", "interrupt-enabled"] {
+    {
+        let id = "interrupt-enabled";
         let target = view.clone();
         crate::on(crate::element(id).as_ref(), "change", move |_| {
             render_settings(&target);

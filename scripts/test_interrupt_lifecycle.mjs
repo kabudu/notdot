@@ -6,12 +6,12 @@ const source = readFileSync(new URL('../crates/notdot-orb/src/interruption.rs', 
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const flush = async () => { for (let n = 0; n < 15; n++) await Promise.resolve(); };
 function fixture() {
-  const requests = [], contexts = [], timers = [];
+  const requests = [], contexts = [], timers = [], nodes = [];
   const box = {
-    window: { __TAURI__: { core: { invoke: async () => false } } },
+    window: { __TAURI__: { core: { invoke: async () => box.invokeResult || false } } },
     navigator: { mediaDevices: { getSupportedConstraints: () => ({ echoCancellation: true }), getUserMedia: () => { const d = deferred(); requests.push(d); return d.promise; } } },
     setTimeout: fn => { timers.push(fn); return timers.length; },
-    AudioWorkletNode: class { constructor() { this.port = {}; } disconnect() {} },
+    AudioWorkletNode: class { constructor() { this.port = {}; nodes.push(this); } disconnect() {} },
     AudioContext: class {
       constructor() { this.state = 'running'; this.closed = deferred(); contexts.push(this); this.audioWorklet = { addModule: async () => {} }; }
       resume() { return Promise.resolve(); }
@@ -21,7 +21,7 @@ function fixture() {
   };
   vm.createContext(box); vm.runInContext(source, box);
   const stream = () => { const track = { stopped: false, stop() { this.stopped = true; }, getSettings: () => ({ echoCancellation: true }) }; return { track, getTracks: () => [track], getAudioTracks: () => [track] }; };
-  return { box, requests, contexts, timers, stream };
+  return { box, requests, contexts, timers, nodes, stream };
 }
 {
   const f = fixture();
@@ -44,4 +44,18 @@ function fixture() {
   const late = f.stream(); f.requests[0].resolve(late); await flush();
   assert.equal(late.track.stopped, true, 'timed-out permission request releases late track');
 }
-console.log('Interruption lifecycle: 2 regression scenarios passed');
+{
+  const f = fixture(); let detections = 0;
+  const started = f.box.interruptStart('speech', () => { detections++; });
+  const stream = f.stream(); f.requests[0].resolve(stream); await started;
+  f.box.invokeResult = true;
+  f.nodes[0].port.onmessage({ data: new Float32Array(1600) }); await flush();
+  assert.equal(detections, 1);
+  assert.equal(stream.track.stopped, false, 'speech onset keeps the same capture for the first word');
+  f.nodes[0].port.onmessage({ data: new Float32Array(1600) }); await flush();
+  assert.equal(detections, 1, 'no repeated hold from continued speech');
+  f.box.invokeResult = 'complete';
+  f.nodes[0].port.onmessage({ data: new Float32Array(1600) }); await flush();
+  assert.equal(stream.track.stopped, true, 'endpoint releases the microphone before waiting for recognition');
+}
+console.log('Interruption lifecycle: 3 regression scenarios passed');

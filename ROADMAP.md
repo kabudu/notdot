@@ -4,6 +4,8 @@ Completed work and the next additions planned for notdot. Priorities may change 
 
 ## Implemented
 
+- **Interrupt without a wake phrase.** With optional voice interruption on, say “Stop”, “Actually…” or a new request while notdot speaks. Uses local echo cancellation and the selected speech recognition service.
+
 - **Voice notes and lists.** Dictate a titled note or list, then read it back, add to it, tick items off, rename, find, export or delete it by voice. Notes stay on this computer, separate from memories, with their own copy for each person. [Settings guide](docs/settings.md#notes-and-lists).
 
 - **Correct memories by speaking.** Hear the exact saved wording a correction replaces and confirm with “yes, replace that memory”. Unclear corrections are asked about, not guessed. [Settings guide](docs/settings.md#correct-a-memory-by-speaking).
@@ -42,7 +44,6 @@ A new backend needs streaming where supported, reliable cancellation, clear erro
 
 ## More natural conversations
 
-- **Interrupt by speaking.** Stop a reply with your voice, without the assistant reacting to its own speaker output.
 - **More languages.** Expand recognition, wake phrases and spoken replies together, with clear choices for the languages each service supports.
 - **Clearer names and numbers.** Improve recognition of names, dates and similar-sounding words, with tests in different rooms and on different microphones.
 

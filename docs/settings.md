@@ -100,7 +100,7 @@ With wake listening off, click the orb once. A short chime tells you the microph
 
 **Keep the conversation going** is off by default. Turn it on in the wake and microphone settings, choose a follow-up window from **3 to 20 seconds** (normally **8**), then **Save**. After the complete spoken reply finishes, a short chime and a glow inside the orb show that notdot is listening for another request. You do not need another click or wake phrase. If you start speaking within the window, you can finish your request normally; a pause sends it.
 
-Say **“That’s all”** while it is listening, or press **Escape**, to end the exchange. It also stops on silence, mute, opening Settings or About, hiding the window, loss of voice-service access or an error. Ending an exchange returns to the usual wake or click mode. To interrupt a reply while it is speaking, use Escape; voice interruption is a separate planned feature.
+Say **“That’s all”** while it is listening, or press **Escape**, to end the exchange. It also stops on silence, mute, opening Settings or About, hiding the window, loss of voice-service access or an error. Ending an exchange returns to the usual wake or click mode. To interrupt while notdot speaks, turn on **Interrupt while notdot speaks**. Say “Stop”, “Actually…” or a new request; no wake phrase is needed. The orb glows and pauses the reply when it detects speech. A clear stop ends it, a new request replaces it, and empty, unclear or refused speech lets it carry on. Escape always cancels. The setting is off by default and stays unavailable if the microphone cannot provide echo cancellation. Speech detected during a reply goes to your selected recognition service, with its usual usage charges; idle audio stays local. A reply or background sound can still be mistaken for speech, so use mute whenever you want listening to stop.
 
 Follow-up audio is sent to your chosen speech-recognition service and may count towards its usage. The microphone stays closed during notdot’s spoken reply and the short pause afterwards. Follow-up listening currently requires a streaming speech service.
 
@@ -122,7 +122,7 @@ If you use Windows through Windows App on a Mac, enable **Microphone** in the sa
 
 Turn on **Listen for my wake phrase** to try “Hey” followed by your companion’s name. Wait for the orb to respond, then speak. A pause ends the request. Detection happens on your computer; only the request after activation goes to the voice service.
 
-This feature is experimental and works in English. It can miss you or wake by mistake. A wake phrase is not proof of who is speaking. **Mute microphone** stops both wake listening and recording. Listening pauses while Settings is open or notdot speaks.
+This feature is experimental and works in English. It can miss you or wake by mistake. A wake phrase is not proof of who is speaking. **Mute microphone** stops both wake listening and recording. Wake listening pauses while Settings is open or notdot speaks. Optional voice interruption uses separate echo-cancelled listening only during replies.
 
 ## Memory
 

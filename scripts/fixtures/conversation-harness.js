@@ -33,7 +33,7 @@
   // Interruption scenarios: a fake echo-cancelled track and worklet. Detections
   // are injected after "capture" and are SYNTHETIC, not acoustic evidence.
   const interruptMode=location.hash.startsWith('#interrupt');
-  let fakeAec=location.hash!=='#interrupt-unsupported',injectDetection=false,interruptResult=null,micTracks=0,sessions=0;
+  let fakeAec=location.hash!=='#interrupt-unsupported',injectDetection=false,interruptResult=null,interruptPending=null,micTracks=0,sessions=0;
   if(interruptMode&&navigator.mediaDevices){
     navigator.mediaDevices.getSupportedConstraints=()=>({echoCancellation:true});
     navigator.mediaDevices.getUserMedia=async c=>{const ec=c&&c.audio&&c.audio.echoCancellation;if(window.gumDelay)await sleep(window.gumDelay);micTracks++;record('mic-open',{ec});const track={stopped:false,getSettings:()=>({echoCancellation:fakeAec&&ec===true}),stop(){if(!this.stopped){this.stopped=true;micTracks--;record('mic-stop');}}};return {getAudioTracks:()=>[track],getTracks:()=>[track]};};
@@ -82,7 +82,8 @@
     if(cmd==='interrupt_support'){record('interrupt-support',{ok:args.echoCancellation,detail:args.detail});return null;}
     if(cmd==='interrupt_begin'){if(args.turn!==state.speech.turn)throw Error('That reply is no longer speaking');sessions++;record('interrupt-begin',{turn:args.turn});return 'session-'+sessions;}
     if(cmd==='interrupt_audio'){record('interrupt-audio',{guarded:args.guarded});if(injectDetection&&args.session==='session-'+sessions){injectDetection=false;record('synthetic-detection');return true;}return false;}
-    if(cmd==='interrupt_end'){record('interrupt-end');return null;}
+    if(cmd==='interrupt_collect'){record('interrupt-capture',{token:args.token});return await new Promise(resolve=>{interruptPending=resolve;});}
+    if(cmd==='interrupt_end'){record('interrupt-end');if(interruptPending){const done=interruptPending;interruptPending=null;done({interrupt:'resume',line:'Capture cancelled.'});}return null;}
     if(cmd==='start_capture'&&args.interrupt){if(args.interrupt!=='session-'+sessions)throw Error('Interruption is no longer available');capture++;state.wake={phase:'capturing',capture_token:args.token,request_id:null,manual:true,rms:0};record('interrupt-capture',{token:args.token});emit('capturing',args.token);return null;}
     if(cmd==='start_capture'){
       if(active || state.phase!=='idle') throw Error('Capture overlapped playback/model');
@@ -137,7 +138,7 @@
   const count = name => log.filter(x=>x.event===name).length;
   function pressEscape(){window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));}
   function orbClick(){const orb=document.getElementById('orb');for(const type of ['mousedown','click'])orb.dispatchEvent(new MouseEvent(type,{bubbles:true,button:0,clientX:180,clientY:180}));}
-  function submit(text){transcript=text;state.wake.phase='ready';state.wake.request_id=++capture;emit('ready',state.wake.capture_token);}
+  function submit(text){if(interruptPending){const done=interruptPending;interruptPending=null;const result=interruptResult||{interrupt:'resume',line:'I did not hear speech, so I will carry on.'};interruptResult=null;const delay=window.transcribeDelay||0;window.transcribeDelay=0;later(delay,()=>done(result));return;}transcript=text;state.wake.phase='ready';state.wake.request_id=++capture;emit('ready',state.wake.capture_token);}
   async function initial(){const n=count('capture');orbClick();await until(()=>count('capture')===n+1);submit('Help me plan tomorrow.');}
   async function nextWindow(){const n=count('capture');await until(()=>count('capture')===n+1);await until(()=>document.getElementById('orb').dataset.state==='followup');}
   async function clean(){pressEscape();for(const id of timers)clearTimeout(id);timers.clear();active=0;Object.assign(settings,{followup_enabled:true,followup_seconds:3,wake_enabled:false,microphone_muted:false});state.session_pending=null;cancelSettings();state.settings_pending=null;state.initiative={};state.window_visible=true;state.phase='idle';state.wake={phase:'paused'};state.speech={turn:'',text:'',done:false,failed:false};document.getElementById('panel').close();await sleep(650);}
@@ -184,11 +185,11 @@
         await reply();
         ok('listening starts only during a reply, with an echo-cancelled track',log.find(e=>e.event==='mic-open').ec===true&&log.filter(e=>e.event==='interrupt-support').pop().ok===true);
         await until(()=>count('interrupt-audio')>3);ok('echo-cancelled audio goes only to the local detector',count('message')===1);
-        await until(()=>(orb.getAttribute('aria-label')||'').startsWith('Speaking. Say'),3000).catch(e=>{throw Error('orb label was: '+orb.getAttribute('aria-label'))});ok('the orb explains how to interrupt',true);
+        await until(()=>(orb.getAttribute('aria-label')||'').includes('interrupt with Stop'),3000).catch(e=>{throw Error('orb label was: '+orb.getAttribute('aria-label'))});ok('the orb explains how to interrupt',true);
         let captures=count('interrupt-capture'),plays=count('play'),messages=count('message');
         await held();
         ok('a detection pauses the reply and captures the request',count('interrupt-capture')===captures+1);
-        ok('listening is released before the request is captured',micTracks===0&&count('context-closed')>=1);
+        ok('the same echo-cancelled microphone keeps the complete interruption',micTracks===1);
         await until(()=>(orb.getAttribute('aria-label')||'').includes('Paused my reply'),3000);ok('the orb says the reply is paused',true);
         interruptResult={interrupt:'resume',line:'That sounded like my own voice, so I will carry on.'};submit('ignored');
         await until(()=>count('play')>plays);ok('echo, silence or another voice resumes the same reply',count('message')===messages&&count('stop')===0);
@@ -204,11 +205,11 @@
         await until(()=>count('stop')>stops);await sleep(400);
         ok('Stop ends the reply without a new request',count('message')===messages&&micTracks===0);
         await reply();plays=count('play');
-        await held();state.wake={phase:'paused'};
+        await held();submit('');
         await until(()=>count('play')>plays,6000);ok('a capture that ends silently resumes the reply',count('message')===messages+1);
         await until(()=>count('interrupt-begin')>=5);
         await held();const cancels=count('cancel'),ends=count('interrupt-end');pressEscape();
-        await until(()=>count('cancel')>cancels);await sleep(300);
+        await until(()=>count('interrupt-end')>ends);await sleep(300);
         ok('Escape during a held reply cancels it and releases listening',micTracks===0&&count('interrupt-end')>ends);
         await reply();const ended=count('interrupt-end');settings.microphone_muted=true;
         await until(()=>count('interrupt-end')>ended&&micTracks===0);ok('muting stops interruption listening',true);
