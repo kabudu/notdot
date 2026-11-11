@@ -17,7 +17,12 @@ export async function interruptSupport() {
     const supported = navigator.mediaDevices?.getSupportedConstraints?.() || {};
     if (!supported.echoCancellation) return 'unsupported: no echoCancellation constraint';
     if (typeof AudioWorkletNode === 'undefined') return 'unsupported: no AudioWorklet';
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true } });
+    let expired = false;
+    const request = navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true } });
+    request.then(stream => { if (expired) for (const track of stream.getTracks()) track.stop(); }, () => {});
+    let stream;
+    try { stream = await bounded('microphone check', request, 5000); }
+    catch (error) { expired = true; throw error; }
     const settings = stream.getAudioTracks()[0]?.getSettings?.() || {};
     for (const track of stream.getTracks()) track.stop();
     return settings.echoCancellation === true ? 'ok' : 'unsupported: track reports echoCancellation=' + settings.echoCancellation;
@@ -36,12 +41,14 @@ async function teardown(state) {
   if (active === state) active = null;
   if (state.node) { state.node.port.onmessage = null; state.node.disconnect(); }
   if (state.stream) for (const t of state.stream.getTracks()) t.stop();
-  if (state.context && state.context.state !== 'closed') await state.context.close().catch(() => {});
+  if (state.context && state.context.state !== 'closed') await bounded('audio close', state.context.close(), 2000).catch(() => {});
 }
 export async function interruptStart(session, onDetect) {
-  if (active) await teardown(active);
+  const previous = active;
   const state = { session, stream: null, context: null, node: null, busy: 0, stopped: false };
   active = state;
+  if (previous) await teardown(previous);
+  if (state.stopped || active !== state) return false;
   try {
     const request = navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     // A stream that arrives after this attempt ended is released at once.
