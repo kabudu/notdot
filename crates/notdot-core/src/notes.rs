@@ -19,6 +19,8 @@ pub const MAX_REVISION: u64 = u64::MAX - 1;
 pub const FOCUS_SECONDS: u64 = 120;
 /// How long a spoken delete or rewrite confirmation stays valid.
 pub const CONFIRM_SECONDS: u64 = 120;
+/// How long a creation question ("What should I call it?") waits for an answer.
+pub const DRAFT_SECONDS: u64 = 60;
 const SPOKEN_LIMIT: usize = 1500;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -264,9 +266,10 @@ pub enum Target {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
+    /// `title: None` starts a short dialogue asking for the name.
     Create {
         kind: Kind,
-        title: String,
+        title: Option<String>,
         content: Option<String>,
     },
     Add {
@@ -382,6 +385,10 @@ pub fn target(text: &str) -> Option<Target> {
     let named = strip_any(text, &["the ", "my ", "our "])
         .unwrap_or(text)
         .trim();
+    // "my list" or "a note" names no particular note: ask, never guess.
+    if let Some(kind) = kind_word(named) {
+        return Some(Target::That(Some(kind)));
+    }
     let (title, kind) = match named.rsplit_once(' ') {
         Some((title, last)) if kind_word(last).is_some() => (title.trim(), kind_word(last)),
         _ => (named, None),
@@ -393,6 +400,97 @@ pub fn target(text: &str) -> Option<Target> {
         title: title.to_owned(),
         kind,
     })
+}
+
+/// Creation forms: "create a list called Groceries", "make a shopping list",
+/// "start a packing list with socks", "take a note", "take a note saying ...".
+/// A missing name is asked for; nothing else is guessed.
+fn creation(rest: &str) -> Option<Command> {
+    let rest = strip_any(
+        rest,
+        &["me a new ", "me a ", "a new ", "a ", "an ", "my ", "new "],
+    )
+    .unwrap_or(rest);
+    let content_separators = |kind| -> &'static [&'static str] {
+        match kind {
+            Kind::Note => &[
+                " saying ",
+                " that says ",
+                ": ",
+                " with the text ",
+                " that ",
+                " of ",
+                " about ",
+            ],
+            Kind::List => &[" with ", ": ", " containing ", " of "],
+        }
+    };
+    let content = |text: &str| Some(text.trim().to_owned()).filter(|c| !c.is_empty());
+    // "a list called Groceries ...", "a note titled Plans saying ..."
+    if let Some((word, tail)) = rest.split_once(' ')
+        && let Some(kind) = kind_word(word)
+    {
+        if let Some(named) = strip_any(tail, &["called ", "named ", "titled ", "for "]) {
+            let (title, body) = match split_ci(named, content_separators(kind)) {
+                Some((title, body)) => (title, content(body)),
+                None => (named, None),
+            };
+            return Some(Command::Create {
+                kind,
+                title: Some(title.trim().to_owned()),
+                content: body,
+            });
+        }
+        // "take a note saying ...", "a list with eggs": ask for the name.
+        let lower = tail.to_ascii_lowercase();
+        return content_separators(kind)
+            .iter()
+            .find_map(|sep| strip_ci(&format!(" {lower}"), sep).map(|_| sep.len() - 1))
+            .map(|skip| Command::Create {
+                kind,
+                title: None,
+                content: content(&tail[skip..]),
+            });
+    }
+    if let Some(kind) = kind_word(rest) {
+        return Some(Command::Create {
+            kind,
+            title: None,
+            content: None,
+        });
+    }
+    // "a shopping list", "a packing list with socks": the spoken words,
+    // including "list", are the name. At most five words before the kind.
+    for kind in [Kind::List, Kind::Note] {
+        let word = format!(" {}", kind.word());
+        let lower = rest.to_ascii_lowercase();
+        let Some(at) = lower.find(&word) else {
+            continue;
+        };
+        let end = at + word.len();
+        let tail = &rest[end..];
+        let body = if tail.is_empty() {
+            None
+        } else {
+            match content_separators(kind)
+                .iter()
+                .find_map(|sep| strip_ci(tail, sep))
+            {
+                Some(body) => content(body),
+                None => continue,
+            }
+        };
+        let title = &rest[..end];
+        if title.split_whitespace().count() > 6 {
+            return None;
+        }
+        return Some(Command::Create {
+            kind,
+            title: Some(title.trim().to_owned()),
+            content: body,
+        });
+    }
+    None
 }
 
 /// Recognise a notes request. Returns `None` for ordinary conversation.
@@ -433,25 +531,19 @@ pub fn parse(text: &str) -> Option<Command> {
             query: query.to_owned(),
         });
     }
-    if let Some(rest) = strip_any(text, &["create ", "make ", "start ", "take ", "new "]) {
-        let rest =
-            strip_any(rest, &["me a new ", "me a ", "a new ", "a ", "an ", "new "]).unwrap_or(rest);
-        let (word, rest) = rest.split_once(' ')?;
-        let kind = kind_word(word)?;
-        let rest = strip_any(rest, &["called ", "named ", "titled ", "for "])?;
-        let separators: &[&str] = match kind {
-            Kind::Note => &[" saying ", " that says ", ": ", " with the text "],
-            Kind::List => &[" with ", ": ", " containing "],
-        };
-        let (title, content) = match split_ci(rest, separators) {
-            Some((title, content)) => (title, Some(content.trim().to_owned())),
-            None => (rest, None),
-        };
-        return Some(Command::Create {
-            kind,
-            title: title.trim().to_owned(),
-            content: content.filter(|c| !c.is_empty()),
-        });
+    if let Some(rest) = strip_any(
+        text,
+        &[
+            "create ",
+            "make ",
+            "start ",
+            "take ",
+            "new ",
+            "begin ",
+            "jot down ",
+        ],
+    ) {
+        return creation(rest);
     }
     if let Some(rest) = strip_any(text, &["add ", "append ", "put "]) {
         let (item, place) = rsplit_ci(rest, &[" to ", " onto ", " on "])?;
@@ -607,11 +699,39 @@ struct Pending {
 pub struct Session {
     focus: Option<(String, u64)>,
     pending: Option<Pending>,
+    draft: Option<(Draft, u64)>,
+}
+/// A creation or addition waiting for one short spoken answer.
+#[derive(Clone, Debug)]
+enum Draft {
+    Title {
+        kind: Kind,
+        content: Option<String>,
+    },
+    Body {
+        title: String,
+    },
+    /// "eggs and milk" without commas: one item or several?
+    Split {
+        whole: String,
+        parts: Vec<String>,
+        into: SplitInto,
+    },
+}
+#[derive(Clone, Debug)]
+enum SplitInto {
+    New(String),
+    Existing { id: String, revision: u64 },
 }
 impl Session {
     pub fn cancel(&mut self) {
         self.focus = None;
         self.pending = None;
+        self.draft = None;
+    }
+    fn ask(&mut self, draft: Draft, now: u64, question: String) -> Outcome {
+        self.draft = Some((draft, now + DRAFT_SECONDS));
+        Outcome::Reply(question)
     }
     pub fn waiting(&self, now: u64) -> bool {
         self.pending.as_ref().is_some_and(|p| now < p.expires)
@@ -729,6 +849,246 @@ pub fn split_items(text: &str) -> Vec<String> {
     parts.retain(|p| !p.is_empty());
     parts
 }
+enum Items {
+    Clear(Vec<String>),
+    /// "a and b" without commas could be one item or two.
+    Unclear(String, Vec<String>),
+}
+fn list_items(text: &str) -> Items {
+    let text = text.trim();
+    if text.contains(',') {
+        return Items::Clear(split_items(text));
+    }
+    let lower = text.to_ascii_lowercase();
+    if lower.contains(" and ") {
+        let mut parts = Vec::new();
+        let mut start = 0;
+        for (at, _) in lower.match_indices(" and ") {
+            parts.push(text[start..at].trim().to_owned());
+            start = at + " and ".len();
+        }
+        parts.push(text[start..].trim().to_owned());
+        parts.retain(|p| !p.is_empty());
+        if parts.len() > 1 {
+            return Items::Unclear(text.to_owned(), parts);
+        }
+    }
+    Items::Clear(vec![text.to_owned()])
+}
+fn split_question(whole: &str, parts: &[String]) -> String {
+    format!(
+        "Should I save {whole} as one item, or as {} separate items: {}? Say one item or separate items.",
+        parts.len(),
+        spoken_join(parts.iter().map(String::as_str).collect())
+    )
+}
+/// "Take a note of that": notes can only keep what is said to them.
+fn vague(content: &str) -> bool {
+    matches!(
+        confirmation_words(content).as_str(),
+        "that" | "this" | "it" | "what you said" | "what i said" | "everything"
+    )
+}
+fn strip_title_answer(text: &str) -> &str {
+    let text = text.trim();
+    strip_any(
+        text,
+        &[
+            "call it ",
+            "it's called ",
+            "it is called ",
+            "name it ",
+            "title it ",
+            "called ",
+            "the title is ",
+            "its title is ",
+        ],
+    )
+    .unwrap_or(text)
+}
+
+/// Answer a creation question, or `None` to handle the text as a new request.
+fn answer_draft(
+    book: &Notebook,
+    session: &mut Session,
+    draft: Draft,
+    text: &str,
+    now: u64,
+) -> Option<Outcome> {
+    let spoken = prepare(text);
+    let words = confirmation_words(&spoken);
+    if matches!(
+        words.as_str(),
+        "cancel"
+            | "never mind"
+            | "nevermind"
+            | "no"
+            | "stop"
+            | "forget it"
+            | "nothing"
+            | "don t save it"
+    ) {
+        return Some(Outcome::Reply("Okay, I won't save that.".into()));
+    }
+    // A different notes request replaces the question.
+    if parse(&spoken).is_some() {
+        return None;
+    }
+    match draft {
+        Draft::Title { kind, content } => {
+            let title = strip_title_answer(&spoken);
+            let content = content.filter(|c| !vague(c));
+            if title.split_whitespace().count() > 8 {
+                // Too long to be a name: treat it as a new request.
+                return None;
+            }
+            Some(run(
+                book,
+                session,
+                Command::Create {
+                    kind,
+                    title: Some(title.to_owned()),
+                    content,
+                },
+                now,
+            ))
+        }
+        Draft::Body { title } => Some(run(
+            book,
+            session,
+            Command::Create {
+                kind: Kind::Note,
+                title: Some(title),
+                content: Some(spoken.clone()),
+            },
+            now,
+        )),
+        Draft::Split { whole, parts, into } => {
+            let items = match words.as_str() {
+                "one item" | "one" | "as one item" | "one thing" | "together"
+                | "keep it together" => vec![whole],
+                "separate items" | "separately" | "separate" | "as separate items"
+                | "split them" | "separate ones" => parts,
+                _ => {
+                    return Some(Outcome::Reply(
+                        "I didn't catch one item or separate items, so nothing was added.".into(),
+                    ));
+                }
+            };
+            Some(match into {
+                SplitInto::New(title) => create_list(book, session, title, items, now),
+                SplitInto::Existing { id, revision } => {
+                    if book.revision != revision || book.get(&id).is_none() {
+                        Outcome::Reply(
+                            "That list changed, so nothing was added. Please say it again.".into(),
+                        )
+                    } else {
+                        add_items(book, session, &id, items, now)
+                    }
+                }
+            })
+        }
+    }
+}
+fn next_revision(book: &Notebook) -> Option<Notebook> {
+    let mut next = book.clone();
+    next.version = 1;
+    next.revision = book.revision.checked_add(1).filter(|r| *r < MAX_REVISION)?;
+    Some(next)
+}
+const EXHAUSTED: &str = "Your notes can't take more changes. Export them and start a new notebook.";
+fn create_list(
+    book: &Notebook,
+    session: &mut Session,
+    title: String,
+    items: Vec<String>,
+    now: u64,
+) -> Outcome {
+    let Some(mut next) = next_revision(book) else {
+        return Outcome::Reply(EXHAUSTED.into());
+    };
+    if book.notes.len() >= MAX_NOTES {
+        return Outcome::Reply(
+            "You have 200 notes and lists, the most I can keep. Delete one first.".into(),
+        );
+    }
+    if items.len() > MAX_ITEMS {
+        return Outcome::Reply("That is more than 100 items.".into());
+    }
+    let mut note = Note {
+        id: new_id(),
+        title,
+        kind: Kind::List,
+        body: String::new(),
+        items: Vec::new(),
+        created: now,
+        updated: now,
+    };
+    for item in items {
+        match clean_text(&item, MAX_ITEM_BYTES) {
+            Ok(text) => note.items.push(Item {
+                id: new_id(),
+                text,
+                done: false,
+            }),
+            Err(e) => return Outcome::Reply(e),
+        }
+    }
+    let reply = match note.items.len() {
+        0 => format!("Created a list called {}.", note.title),
+        n => format!(
+            "Created a list called {} with {n} {}: {}.",
+            note.title,
+            if n == 1 { "item" } else { "items" },
+            spoken_join(note.items.iter().map(|i| i.text.as_str()).collect())
+        ),
+    };
+    session.focus(&note.id, now);
+    next.notes.push(note);
+    Outcome::Changed(next, reply)
+}
+fn add_items(
+    book: &Notebook,
+    session: &mut Session,
+    id: &str,
+    items: Vec<String>,
+    now: u64,
+) -> Outcome {
+    let Some(mut next) = next_revision(book) else {
+        return Outcome::Reply(EXHAUSTED.into());
+    };
+    let note = next.get_mut(id).expect("resolved note");
+    if note.items.len() + items.len() > MAX_ITEMS {
+        return Outcome::Reply(format!(
+            "{} already has {} items. A list can hold 100.",
+            note.title,
+            note.items.len()
+        ));
+    }
+    let mut added = Vec::new();
+    for item in items {
+        match clean_text(&item, MAX_ITEM_BYTES) {
+            Ok(text) => {
+                added.push(text.clone());
+                note.items.push(Item {
+                    id: new_id(),
+                    text,
+                    done: false,
+                });
+            }
+            Err(e) => return Outcome::Reply(e),
+        }
+    }
+    note.updated = now;
+    let reply = format!(
+        "Added {} to {}.",
+        spoken_join(added.iter().map(String::as_str).collect()),
+        note.title
+    );
+    session.focus(id, now);
+    Outcome::Changed(next, reply)
+}
+
 fn read_note(note: &Note) -> String {
     let mut spoken = match note.kind {
         Kind::Note if note.body.is_empty() => format!("Your {} note is empty.", note.title),
@@ -768,6 +1128,12 @@ fn read_note(note: &Note) -> String {
 /// Apply a confirmation answer or a new request. Every change is computed on a
 /// copy; the caller persists `Outcome::Changed` before replacing its notebook.
 pub fn handle(book: &Notebook, session: &mut Session, text: &str, now: u64) -> Outcome {
+    if let Some((draft, until)) = session.draft.take()
+        && now < until
+        && let Some(outcome) = answer_draft(book, session, draft, text, now)
+    {
+        return outcome;
+    }
     if let Some(pending) = session.pending.take() {
         let answer = confirmation_words(text);
         let expected = match &pending.action {
@@ -927,6 +1293,17 @@ fn run(book: &Notebook, session: &mut Session, command: Command, now: u64) -> Ou
             title,
             content,
         } => {
+            let Some(title) = title else {
+                let question = if content.as_deref().is_some_and(vague) {
+                    format!(
+                        "I can only save the words you say to me. What should I call the {}? I'll ask what it should say next.",
+                        kind.word()
+                    )
+                } else {
+                    format!("What should I call the {}?", kind.word())
+                };
+                return session.ask(Draft::Title { kind, content }, now, question);
+            };
             let title = match clean_title(&title) {
                 Ok(t) => t,
                 Err(e) => return Outcome::Reply(e),
@@ -947,53 +1324,47 @@ fn run(book: &Notebook, session: &mut Session, command: Command, now: u64) -> Ou
                     "You have 200 notes and lists, the most I can keep. Delete one first.".into(),
                 );
             }
-            let mut note = Note {
+            if kind == Kind::List {
+                return match content.as_deref().map(list_items) {
+                    None => create_list(book, session, title, Vec::new(), now),
+                    Some(Items::Clear(items)) => create_list(book, session, title, items, now),
+                    Some(Items::Unclear(whole, parts)) => {
+                        let question = split_question(&whole, &parts);
+                        session.ask(
+                            Draft::Split {
+                                whole,
+                                parts,
+                                into: SplitInto::New(title),
+                            },
+                            now,
+                            question,
+                        )
+                    }
+                };
+            }
+            let Some(content) = content else {
+                return session.ask(
+                    Draft::Body {
+                        title: title.clone(),
+                    },
+                    now,
+                    format!("What should the {title} note say?"),
+                );
+            };
+            let body = match clean_text(&content, MAX_BODY_BYTES) {
+                Ok(body) => body,
+                Err(e) => return Outcome::Reply(e),
+            };
+            let note = Note {
                 id: new_id(),
                 title,
                 kind,
-                body: String::new(),
+                body,
                 items: Vec::new(),
                 created: now,
                 updated: now,
             };
-            if let Some(content) = content {
-                match kind {
-                    Kind::Note => match clean_text(&content, MAX_BODY_BYTES) {
-                        Ok(body) => note.body = body,
-                        Err(e) => return Outcome::Reply(e),
-                    },
-                    Kind::List => {
-                        let items = split_items(&content);
-                        if items.len() > MAX_ITEMS {
-                            return Outcome::Reply("That is more than 100 items.".into());
-                        }
-                        for item in items {
-                            match clean_text(&item, MAX_ITEM_BYTES) {
-                                Ok(text) => note.items.push(Item {
-                                    id: new_id(),
-                                    text,
-                                    done: false,
-                                }),
-                                Err(e) => return Outcome::Reply(e),
-                            }
-                        }
-                    }
-                }
-            }
-            let reply = match (kind, note.items.len()) {
-                (Kind::Note, _) if note.body.is_empty() => format!(
-                    "Created a note called {}. Say add, then what to write, to that note.",
-                    note.title
-                ),
-                (Kind::Note, _) => format!("Saved a note called {}: {}", note.title, note.body),
-                (Kind::List, 0) => format!("Created a list called {}.", note.title),
-                (Kind::List, n) => format!(
-                    "Created a list called {} with {n} {}: {}.",
-                    note.title,
-                    if n == 1 { "item" } else { "items" },
-                    spoken_join(note.items.iter().map(|i| i.text.as_str()).collect())
-                ),
-            };
+            let reply = format!("Saved a note called {}: {}", note.title, note.body);
             session.focus(&note.id, now);
             next.notes.push(note);
             Outcome::Changed(next, reply)
@@ -1011,36 +1382,28 @@ fn run(book: &Notebook, session: &mut Session, command: Command, now: u64) -> Ou
                 Err(outcome) => return outcome,
             };
             let note = next.get_mut(&id).expect("resolved note");
+            if note.kind == Kind::List {
+                return match list_items(&text) {
+                    Items::Clear(items) => add_items(book, session, &id, items, now),
+                    Items::Unclear(whole, parts) => {
+                        let question = split_question(&whole, &parts);
+                        session.ask(
+                            Draft::Split {
+                                whole,
+                                parts,
+                                into: SplitInto::Existing {
+                                    id,
+                                    revision: book.revision,
+                                },
+                            },
+                            now,
+                            question,
+                        )
+                    }
+                };
+            }
             let reply = match note.kind {
-                Kind::List => {
-                    let items = split_items(&text);
-                    if note.items.len() + items.len() > MAX_ITEMS {
-                        return Outcome::Reply(format!(
-                            "{} already has {} items. A list can hold 100.",
-                            note.title,
-                            note.items.len()
-                        ));
-                    }
-                    let mut added = Vec::new();
-                    for item in items {
-                        match clean_text(&item, MAX_ITEM_BYTES) {
-                            Ok(text) => {
-                                added.push(text.clone());
-                                note.items.push(Item {
-                                    id: new_id(),
-                                    text,
-                                    done: false,
-                                });
-                            }
-                            Err(e) => return Outcome::Reply(e),
-                        }
-                    }
-                    format!(
-                        "Added {} to {}.",
-                        spoken_join(added.iter().map(String::as_str).collect()),
-                        note.title
-                    )
-                }
+                Kind::List => unreachable!("lists return above"),
                 Kind::Note => {
                     let text = match clean_text(&text, MAX_BODY_BYTES) {
                         Ok(t) => t,
@@ -1439,7 +1802,12 @@ mod tests {
         let mut book = Notebook::default();
         let mut s = Session::default();
         apply(&mut book, &mut s, "create a list called Hardware", 0);
-        apply(&mut book, &mut s, "create a note called Ideas", 1);
+        apply(
+            &mut book,
+            &mut s,
+            "create a note called Ideas saying owls",
+            1,
+        );
         // "That list" never falls back to another list when a note is focused.
         let r = apply(&mut book, &mut s, "add screws to that list", 2);
         assert!(r.contains("Ideas note"), "{r}");
@@ -1500,7 +1868,7 @@ mod tests {
             apply(
                 &mut book,
                 &mut s,
-                &format!("create a note called {title}"),
+                &format!("create a note called {title} saying x"),
                 0,
             );
         }
@@ -1589,5 +1957,142 @@ mod tests {
         let text = export_text(&book.notes.iter().collect::<Vec<_>>());
         assert_eq!(text, "Packing\n=======\n[ ] socks\n[x] hat\n\n");
         assert!(!text.contains(&book.notes[0].id));
+    }
+
+    #[test]
+    fn natural_creation_asks_only_for_what_is_missing() {
+        let mut book = Notebook::default();
+        let mut s = Session::default();
+        let r = apply(&mut book, &mut s, "Make a shopping list", 0);
+        assert_eq!(r, "Created a list called shopping list.");
+        let r = apply(&mut book, &mut s, "add oat milk to that list", 1);
+        assert_eq!(r, "Added oat milk to shopping list.");
+        let r = apply(&mut book, &mut s, "add bread to the shopping list", 2);
+        assert_eq!(r, "Added bread to shopping list.");
+        // Commas are unambiguous; "and" alone is asked about.
+        let r = apply(
+            &mut book,
+            &mut s,
+            "Start a packing list with socks and a charger",
+            3,
+        );
+        assert_eq!(
+            r,
+            "Should I save socks and a charger as one item, or as 2 separate items: socks and a charger? Say one item or separate items."
+        );
+        let r = apply(&mut book, &mut s, "Separate items.", 4);
+        assert_eq!(
+            r,
+            "Created a list called packing list with 2 items: socks and a charger."
+        );
+        let r = apply(&mut book, &mut s, "add salt and pepper to that list", 5);
+        assert!(r.starts_with("Should I save salt and pepper"), "{r}");
+        let r = apply(&mut book, &mut s, "one item", 6);
+        assert_eq!(r, "Added salt and pepper to packing list.");
+        // "Take a note" asks for a name, then the words, kept as spoken.
+        let r = apply(&mut book, &mut s, "Take a note", 10);
+        assert_eq!(r, "What should I call the note?");
+        let r = apply(&mut book, &mut s, "Call it Gate code", 11);
+        assert_eq!(r, "What should the Gate code note say?");
+        let r = apply(&mut book, &mut s, "The code is 4 7 1 9, ask Priya.", 12);
+        assert_eq!(
+            r,
+            "Saved a note called Gate code: The code is 4 7 1 9, ask Priya"
+        );
+        let r = apply(
+            &mut book,
+            &mut s,
+            "take a note saying the boiler was serviced in May",
+            20,
+        );
+        assert_eq!(r, "What should I call the note?");
+        let r = apply(&mut book, &mut s, "Boiler", 21);
+        assert_eq!(
+            r,
+            "Saved a note called Boiler: the boiler was serviced in May"
+        );
+        let r = apply(&mut book, &mut s, "make a note of that", 30);
+        assert!(r.starts_with("I can only save the words you say"), "{r}");
+        apply(&mut book, &mut s, "Parking", 31);
+        let r = apply(&mut book, &mut s, "Level 3, bay 12", 32);
+        assert_eq!(r, "Saved a note called Parking: Level 3, bay 12");
+        let r = apply(&mut book, &mut s, "make a list", 40);
+        assert_eq!(r, "What should I call the list?");
+        assert_eq!(
+            apply(&mut book, &mut s, "it's called Chores", 41),
+            "Created a list called Chores."
+        );
+        // Likely notes requests that can't run are explained locally.
+        let mut empty = Notebook::default();
+        let mut fresh = Session::default();
+        let r = apply(&mut empty, &mut fresh, "add milk to my list", 0);
+        assert!(r.starts_with("Which list do you mean?"), "{r}");
+        let r = apply(&mut empty, &mut fresh, "delete my note", 0);
+        assert!(r.starts_with("Which note do you mean?"), "{r}");
+    }
+
+    #[test]
+    fn creation_questions_expire_cancel_and_never_swallow_other_requests() {
+        let mut book = Notebook::default();
+        let mut s = Session::default();
+        assert_eq!(
+            apply(&mut book, &mut s, "make a list", 0),
+            "What should I call the list?"
+        );
+        // Expired: the answer is ordinary conversation again.
+        assert_eq!(
+            handle(&book, &mut s, "Groceries", DRAFT_SECONDS),
+            Outcome::NotMine
+        );
+        apply(&mut book, &mut s, "take a note", 100);
+        assert_eq!(
+            apply(&mut book, &mut s, "never mind", 101),
+            "Okay, I won't save that."
+        );
+        assert_eq!(handle(&book, &mut s, "Groceries", 102), Outcome::NotMine);
+        // A long sentence is not taken as a name.
+        apply(&mut book, &mut s, "make a list", 200);
+        assert_eq!(
+            handle(
+                &book,
+                &mut s,
+                "what is the weather going to be like in Leeds tomorrow",
+                201
+            ),
+            Outcome::NotMine
+        );
+        // A different notes request replaces the question.
+        apply(&mut book, &mut s, "make a list", 300);
+        let r = apply(&mut book, &mut s, "create a list called Hardware", 301);
+        assert_eq!(r, "Created a list called Hardware.");
+        // Cancelling (Escape, a speaker change) drops the question.
+        apply(&mut book, &mut s, "take a note", 400);
+        s.cancel();
+        assert_eq!(handle(&book, &mut s, "Secret plans", 401), Outcome::NotMine);
+        // An unclear split answer adds nothing; a changed list is not guessed.
+        apply(
+            &mut book,
+            &mut s,
+            "add nails and screws to the hardware list",
+            500,
+        );
+        assert!(apply(&mut book, &mut s, "maybe", 501).contains("nothing was added"));
+        apply(
+            &mut book,
+            &mut s,
+            "add nails and screws to the hardware list",
+            600,
+        );
+        let stale = book.clone();
+        apply(
+            &mut book,
+            &mut Session::default(),
+            "add glue to the hardware list",
+            601,
+        );
+        let r = apply(&mut book, &mut s, "separate items", 602);
+        assert!(r.contains("changed"), "{r}");
+        assert_ne!(stale, book);
+        assert_eq!(book.notes[0].items.len(), 1);
     }
 }

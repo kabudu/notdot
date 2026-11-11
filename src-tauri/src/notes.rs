@@ -512,4 +512,68 @@ mod tests {
         notes_delete(app.state(), owner_note).await.unwrap();
         assert!(notes_list(app.state()).await.unwrap().notes.is_empty());
     }
+
+    #[tokio::test]
+    async fn a_creation_question_belongs_to_the_person_who_was_asked() {
+        use notdot_core::profiles::{Actor, SpeakerOutcome};
+        let dir = tempfile::tempdir().unwrap();
+        let state = crate::test_support::state(dir.path());
+        let mut roster = state.speakers.roster().unwrap();
+        let owner = roster.owner().clone();
+        let member = roster.add_member(&Actor::LocalDevice, "Member").unwrap();
+        for id in [owner.clone(), member.clone()] {
+            roster
+                .set_voice_enrolled(&Actor::LocalDevice, &id, true)
+                .unwrap();
+        }
+        state.speakers.save_roster(roster).unwrap();
+        let recognised = |profile| SpeakerOutcome::Recognised {
+            profile,
+            score: 0.99,
+        };
+        let owner_lock = crate::test_support::admit(&state, recognised(owner.clone()))
+            .await
+            .unwrap();
+        let owner_context = state.context();
+        let asked = voice_command(&state, &owner_lock, &owner_context, "take a note").await;
+        assert_eq!(asked.as_deref(), Some("What should I call the note?"));
+        // The member answers: it is not taken as the owner's note name, and
+        // nothing is created for either person.
+        let member_lock = crate::test_support::admit(&state, recognised(member))
+            .await
+            .unwrap();
+        let member_context = state.context();
+        assert!(
+            voice_command(&state, &member_lock, &member_context, "Bank details")
+                .await
+                .is_none()
+        );
+        let owner_lock = crate::test_support::admit(&state, recognised(owner))
+            .await
+            .unwrap();
+        let owner_context = state.context();
+        assert!(
+            voice_command(&state, &owner_lock, &owner_context, "Bank details")
+                .await
+                .is_none()
+        );
+        assert!(
+            owner_context
+                .notes
+                .snapshot()
+                .await
+                .unwrap()
+                .notes
+                .is_empty()
+        );
+        assert!(
+            member_context
+                .notes
+                .snapshot()
+                .await
+                .unwrap()
+                .notes
+                .is_empty()
+        );
+    }
 }
