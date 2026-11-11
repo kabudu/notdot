@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>notdot echo probe</title>
+<body style="background:#111;color:#eee;font:13px system-ui;padding:16px">
+<h1>Echo-cancelled interruption probe</h1>
+<p>Synthetic audio only. Plays fixtures through the speakers and listens on the microphone. Nothing is recorded or sent anywhere.</p>
+<button id="start" type="button" style="font:inherit;padding:8px 16px">Start probe</button>
+<pre id="log" aria-live="polite"></pre>
+<script>
+'use strict';
+(async () => {
+  const logEl = document.getElementById('log');
+  const show = text => { logEl.textContent += text + '\n'; fetch('trace?' + encodeURIComponent(String(text).slice(0, 300))).catch(() => {}); };
+  const withTimeout = (label, promise, ms = 8000) => Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(label + ' timed out after ' + ms + ' ms')), ms)),
+  ]);
+  window.addEventListener('error', e => show('page error: ' + e.message));
+  window.addEventListener('unhandledrejection', e => show('unhandled: ' + e.reason));
+  const tauri = window.__TAURI__;
+  show('origin ' + location.origin + ' path ' + location.pathname + ' tauri=' + (typeof tauri?.core?.invoke));
+  const invoke = (cmd, args = {}, ms = 8000) => withTimeout('invoke ' + cmd, tauri.core.invoke(cmd, args), ms);
+  const log = text => { show(text); invoke('probe_log', { line: text }).catch(e => show('probe_log failed: ' + e)); };
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  let params = new URLSearchParams(location.search);
+  let trials = 4, personVolume = 1;
+  const report = { userAgent: navigator.userAgent, supported: navigator.mediaDevices?.getSupportedConstraints?.() || null, modes: [] };
+  try {
+    const pong = await invoke('probe_ping', { value: 'ping' });
+    show('ipc round trip: ' + pong);
+    params = new URLSearchParams(await invoke('probe_params'));
+    show('params ' + params.toString());
+    trials = Number(params.get('trials') || 4);
+    personVolume = Number(params.get('volume') || 1);
+    report.trials = trials;
+    report.personVolume = personVolume;
+  } catch (error) {
+    show('IPC FAILED: ' + error);
+    return;
+  }
+  const start = document.getElementById('start');
+  start.focus();
+  if (!params.has('auto')) {
+    show('Press Start to begin.');
+    await new Promise(resolve => start.addEventListener('click', resolve, { once: true }));
+  }
+  start.disabled = true;
+  const PHRASE_MS = 1370;
+  log('probe start ' + JSON.stringify(report.supported));
+  try {
+    for (const aec of [true, false]) {
+      const mode = { echoCancellation: aec, scenarios: [] };
+      report.modes.push(mode);
+      const stream = await withTimeout('getUserMedia', navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: aec, noiseSuppression: false, autoGainControl: false, channelCount: 1 } }));
+      const track = stream.getAudioTracks()[0];
+      mode.settings = track.getSettings();
+      mode.capabilities = track.getCapabilities ? track.getCapabilities() : null;
+      log(`mode echoCancellation=${aec} settings=${JSON.stringify(mode.settings)}`);
+      const ctx = new AudioContext();
+      await withTimeout('AudioContext resume', ctx.resume());
+      log('audio context ' + ctx.state + ' rate ' + ctx.sampleRate);
+      await withTimeout('worklet load', ctx.audioWorklet.addModule('aec-probe-worklet.js'));
+      log('worklet loaded');
+      const source = ctx.createMediaStreamSource(stream);
+      const node = new AudioWorkletNode(ctx, 'probe-16k');
+      source.connect(node);
+      await invoke('probe_reset', { phrase: 'Hey Ava' }, 30000);
+      log('detector loaded');
+      let hits = [], rms = [], inflight = Promise.resolve(), handleMs = [];
+      node.port.onmessage = ({ data }) => {
+        const samples = Array.from(data.samples);
+        const level = data.rms;
+        inflight = inflight.then(async () => {
+          const t0 = performance.now();
+          const at = await invoke('probe_frames', { samples });
+          handleMs.push(performance.now() - t0);
+          const now = await invoke('probe_now');
+          rms.push([now, level]);
+          if (at !== null) hits.push(at);
+        }).catch(error => log('frame error: ' + error));
+      };
+      const reply = new Audio();
+      const play = async name => { reply.src = name; reply.currentTime = 0; await reply.play(); };
+      const between = (from, to) => hits.filter(t => t >= from && t <= to);
+      const level = (from, to) => { const v = rms.filter(([t]) => t >= from && t <= to).map(([, r]) => r); return v.length ? Math.max(...v) : 0; };
+      const scenario = async (name, run) => {
+        for (let trial = 0; trial < trials; trial++) {
+          await inflight; await sleep(1200);
+          const start = await invoke('probe_now');
+          const detail = await run();
+          await inflight; await sleep(300);
+          const end = await invoke('probe_now');
+          const found = between(start, end);
+          const result = { name, trial, detections: found.length, peak_rms: level(start, end), ...detail };
+          if (detail.personStart !== undefined) {
+            result.latency_ms = found.length ? found[0] - (detail.personStart + PHRASE_MS) : null;
+          }
+          mode.scenarios.push(result);
+          log(JSON.stringify(result));
+        }
+      };
+      if (params.get('person') === 'external') {
+        // A real person or a separate device (not this computer's speakers).
+        const cue = document.createElement('p');
+        cue.setAttribute('role', 'status');
+        cue.style.font = 'bold 28px system-ui';
+        document.body.prepend(cue);
+        const prompt = async (text, phrase) => {
+          cue.textContent = text;
+          if (phrase) log('PROMPT ' + phrase);
+          return invoke('probe_now');
+        };
+        await scenario('external wake alone', async () => {
+          const personStart = await prompt('Say “Hey Ava” now', 'external wake alone');
+          await sleep(4000); cue.textContent = 'Wait…'; return { personStart, external: true };
+        });
+        await scenario('external wake over own reply', async () => {
+          await play('reply.wav'); await sleep(2500);
+          const personStart = await prompt('Say “Hey Ava” now, while it speaks', 'external wake over reply');
+          await sleep(4000); reply.pause(); cue.textContent = 'Wait…'; return { personStart, external: true };
+        });
+        await scenario('own reply says wake phrase', async () => { cue.textContent = 'Stay quiet'; await play('reply-quoting.wav'); await sleep(7500); reply.pause(); return {}; });
+        await scenario('external other words over own reply', async () => {
+          await play('reply.wav'); await sleep(2500);
+          const personStart = await prompt('Say “Have a nice day” now (not the wake phrase)', 'external other words');
+          await sleep(4000); reply.pause(); cue.textContent = 'Wait…'; return { personStart, external: true };
+        });
+        cue.textContent = 'Done';
+      } else {
+      await scenario('silence', async () => { await sleep(4000); return {}; });
+      await scenario('person wake alone', async () => {
+        const personStart = await invoke('probe_play_person', { name: 'hey-ava-uk.wav', volume: personVolume });
+        await sleep(3500); return { personStart };
+      });
+      await scenario('own reply only', async () => { await play('reply.wav'); await sleep(10000); reply.pause(); return {}; });
+      await scenario('own reply says wake phrase', async () => { await play('reply-quoting.wav'); await sleep(7500); reply.pause(); return {}; });
+      await scenario('person wake over own reply', async () => {
+        await play('reply.wav'); await sleep(2500);
+        const personStart = await invoke('probe_play_person', { name: 'hey-ava-uk.wav', volume: personVolume });
+        const cpu = await invoke('probe_cpu');
+        await sleep(3000); reply.pause(); return { personStart, cpu };
+      });
+      await scenario('person name only over own reply', async () => {
+        await play('reply.wav'); await sleep(2500);
+        const personStart = await invoke('probe_play_person', { name: 'ava.wav', volume: personVolume });
+        await sleep(3000); reply.pause(); return { personStart };
+      });
+      }
+      await inflight;
+      node.port.onmessage = null;
+      source.disconnect(); node.disconnect();
+      track.stop();
+      await ctx.close();
+      mode.cleanup = { trackState: track.readyState, contextState: ctx.state };
+      handleMs.sort((a, b) => a - b);
+      mode.ipc_ms_p95 = handleMs[Math.floor(handleMs.length * 0.95)] ?? null;
+      log(`cleanup ${JSON.stringify(mode.cleanup)} ipc_p95=${mode.ipc_ms_p95}`);
+    }
+    report.status = 'complete';
+  } catch (error) {
+    report.status = 'error';
+    report.error = String(error);
+    log('ERROR ' + error);
+  }
+  await invoke('probe_report', { report });
+  if (!params.has('stay')) await invoke('probe_done');
+})();
+</script>
+</body>
+</html>

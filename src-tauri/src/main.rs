@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#[cfg(debug_assertions)]
+mod aec_probe;
 mod backup;
 mod credentials;
 mod diagnostics;
@@ -1844,6 +1846,12 @@ fn main() {
             eprintln!("Speech evaluation failed: {error}");
             std::process::exit(1);
         }
+        return;
+    }
+
+    #[cfg(debug_assertions)]
+    if let Some(url) = std::env::args().skip_while(|a| a != "--aec-probe").nth(1) {
+        aec_probe::run(&url);
         return;
     }
 

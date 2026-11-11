@@ -1324,6 +1324,24 @@ impl Worker {
     }
 }
 
+/// The production detector, exposed only to the debug echo probe.
+#[cfg(debug_assertions)]
+pub mod probe {
+    pub struct Detector(super::Detector);
+    impl Detector {
+        pub fn new(models: &std::path::Path, phrase: &str) -> Result<Self, String> {
+            super::Detector::new(models, phrase).map(Self)
+        }
+        pub fn accept(&mut self, rate: u32, samples: &[f32]) -> bool {
+            let hit = self.0.accept(rate, samples);
+            if hit {
+                self.0.reset();
+            }
+            hit
+        }
+    }
+}
+
 // Cross-compiled test binaries need resources on the machine running the tests.
 // This override is test-only; production always uses Tauri's bundled resources.
 #[cfg(test)]
