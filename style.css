@@ -182,6 +182,7 @@ select:focus-visible {
 #speaker-confirm,
 #speaker-leave,
 #notes article,
+#voice-notes article,
 .usage-card {
   background: hsla(var(--hue), 26%, 17%, .35);
   border-color: hsla(var(--hue), 30%, 72%, .24);
@@ -214,6 +215,8 @@ select:focus-visible {
   #speaker-confirm,
   #speaker-leave,
   #notes article,
+  #voice-notes article,
+#voice-notes article,
   .usage-card,
   .tool-actions button,
   .session-modes label { background: var(--control-solid); }
@@ -226,6 +229,8 @@ select:focus-visible {
   #speaker-confirm,
   #speaker-leave,
   #notes article,
+  #voice-notes article,
+#voice-notes article,
   .usage-card {
     background: Canvas;
     color: CanvasText;
@@ -301,3 +306,9 @@ dialog { overflow-wrap: anywhere; }
 .setup-actions{display:flex;flex-direction:column;gap:12px;}
 .setup-actions button{min-height:44px;width:100%;}
 .setup-actions [hidden]{display:none;}
+#voice-notes article{margin-top:12px;padding:12px;border:1px solid #35465b;border-radius:12px;font-size:12px;line-height:1.5}
+#voice-notes h4{margin:0 0 6px;font-size:13px}
+#voice-notes p,#voice-notes li{white-space:pre-wrap;overflow-wrap:anywhere}
+#voice-notes ul{margin:0;padding-left:20px}
+#voice-notes li.done{text-decoration:line-through;opacity:.75}
+#voice-notes button{margin:8px 12px 8px 0}

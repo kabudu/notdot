@@ -4,7 +4,7 @@ use std::{cell::RefCell, rc::Rc};
 use wasm_bindgen::{JsCast, JsValue};
 
 const CATEGORIES: [&str; 5] = ["personalise", "voice", "codex", "memory", "app"];
-const SECTIONS: [(&str, usize, &str); 12] = [
+const SECTIONS: [(&str, usize, &str); 14] = [
     (
         "appearance-section",
         0,
@@ -44,6 +44,16 @@ const SECTIONS: [(&str, usize, &str); 12] = [
         "memory-section",
         3,
         "memory learn remember forget review notes reset",
+    ),
+    (
+        "voice-notes-section",
+        3,
+        "notes lists shopping list dictate export voice notes",
+    ),
+    (
+        "backup-section",
+        3,
+        "backup restore encrypted export import password",
     ),
     (
         "reminders-section",

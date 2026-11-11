@@ -466,6 +466,94 @@
       </section>
      </div>
     </details>
+    <details class="settings-section" id="voice-notes-section" data-settings-category="memory" hidden>
+     <summary>
+      <span>
+       <strong>
+        Notes &amp; lists
+       </strong>
+       <small>
+        What you dictate, kept as you said it
+       </small>
+      </span>
+     </summary>
+     <div class="settings-body">
+      <p class="hint">
+       Say “Make a shopping list”, “Add oat milk to that list”, “Take a note” or “Read my packing list”. Notes stay on this computer, apart from memories and reminders, and are not sent to Codex. Each person added in People and voices has their own.
+      </p>
+      <p class="hint">
+       Before anyone teaches notdot their voice, whoever uses this unlocked computer can use these notes, as with memories. Once voices are set up, notes need a recognised voice. Voice matching is not a password.
+      </p>
+      <div class="tool-actions">
+       <button id="review-voice-notes" type="button">
+        Review notes
+       </button>
+       <button id="export-voice-notes" type="button">
+        Export notes…
+       </button>
+      </div>
+      <p class="hint" id="voice-notes-status" role="status">
+      </p>
+      <section aria-label="Your notes and lists" id="voice-notes">
+      </section>
+     </div>
+    </details>
+    <details class="settings-section" id="backup-section" data-settings-category="memory" hidden>
+     <summary>
+      <span>
+       <strong>
+        Encrypted backup
+       </strong>
+       <small>
+        Save or restore memories and notes
+       </small>
+      </span>
+     </summary>
+     <div class="settings-body">
+      <p class="hint">
+       A backup holds the current person’s memories and notes, locked with a password you choose. The owner’s backup also keeps the colour and reminder limits. It never includes keys, sign-ins, saved voices, chat access, or listening and startup choices. notdot can’t recover a lost password.
+      </p>
+      <label>
+       Backup password
+       <input aria-describedby="backup-password-hint" autocomplete="new-password" id="backup-password" minlength="12" type="password"/>
+      </label>
+      <label>
+       Repeat password for a new backup
+       <input autocomplete="new-password" id="backup-password-repeat" minlength="12" type="password"/>
+      </label>
+      <p class="hint" id="backup-password-hint">
+       Use at least 12 characters.
+      </p>
+      <div class="tool-actions">
+       <button id="backup-save" type="button">
+        Save backup…
+       </button>
+       <button id="backup-open" type="button">
+        Restore from backup…
+       </button>
+      </div>
+      <section aria-labelledby="backup-confirm-heading" class="reset-confirm" hidden="" id="backup-confirm">
+       <h3 id="backup-confirm-heading">
+        Restore this backup?
+       </h3>
+       <p id="backup-preview">
+       </p>
+       <p class="hint">
+        Restoring adds to what is here. Nothing is replaced or deleted, and listening, startup and chat permissions stay as they are.
+       </p>
+       <div class="tool-actions">
+        <button id="backup-keep" type="button">
+         Don’t restore
+        </button>
+        <button id="backup-apply" type="button">
+         Restore
+        </button>
+       </div>
+      </section>
+      <p class="hint" id="backup-status" role="status">
+      </p>
+     </div>
+    </details>
     <details class="settings-section" id="reminders-section" data-settings-category="memory" hidden>
      <summary>
       <span>

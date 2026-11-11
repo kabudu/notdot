@@ -4,6 +4,7 @@ mod conversation;
 #[cfg(all(debug_assertions, target_arch = "wasm32"))]
 mod cue_acceptance;
 mod interaction;
+mod notes_panel;
 mod onboarding;
 mod orb_renderer;
 mod settings_navigation;
@@ -2593,6 +2594,7 @@ pub fn start() -> Result<(), JsValue> {
             }
         });
     });
+    notes_panel::install();
     on(element("reset-memory").as_ref(), "click", |_| {
         let _ = element("reset-memory-confirm").remove_attribute("hidden");
         if let Some(button) = element("cancel-memory-reset").dyn_ref::<web_sys::HtmlElement>() {
