@@ -91,6 +91,7 @@ pub async fn bind_capture(
                 .expect("settings consent")
                 .waiting()
             || old.learning.confirmations.waiting(&old.memory)
+            || old.notes.waiting().await
         {
             return Err(
                 "Finish or cancel the current confirmation before changing speaker.".into(),
@@ -113,6 +114,7 @@ pub async fn bind_capture(
         )?;
         old.learning.cancel();
         old.initiative.cancel();
+        old.notes.cancel().await;
         old.session_consent
             .lock()
             .expect("session consent")

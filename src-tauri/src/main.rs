@@ -2,9 +2,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod credentials;
 mod diagnostics;
+mod file_dialog;
 mod initiative;
 mod learning;
 mod memory_confirmation;
+mod notes;
 mod onboarding;
 mod orb_input;
 mod profile_access;
@@ -1061,7 +1063,12 @@ async fn send_message(
         _ => None,
     };
     let behaviour = state.snapshot.lock().await.settings.initiative.behaviour;
-    let local_reply = match removal_reply {
+    // Notes and lists are handled on this computer and never reach the model.
+    let notes_reply = match removal_reply {
+        Some(reply) => Some(reply),
+        None => notes::voice_command(&state, &identity, &context, &text).await,
+    };
+    let local_reply = match notes_reply {
         Some(reply) => Some(reply),
         None => {
             let runtime = context.session_runtime.lock().await.clone();
@@ -1218,6 +1225,7 @@ async fn stop(state: State<'_, Arc<AppState>>, request_id: Option<String>) -> Re
         .expect("settings consent")
         .cancel();
     context.initiative.cancel();
+    context.notes.cancel().await;
     let Some(turn) = snapshot.active_turn else {
         return Ok(());
     };
@@ -1869,6 +1877,9 @@ fn main() {
             snapshot,
             onboarding::setup_codex,
             diagnostics::export_diagnostics,
+            notes::notes_list,
+            notes::notes_delete,
+            notes::notes_export,
             save_settings,
             model_catalog,
             clear_voice_key,
@@ -2280,4 +2291,91 @@ fn main() {
                 });
             }
         });
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    //! A real `AppState` over a temporary data folder: real roster, profile
+    //! contexts, admission and stores. No microphone, model or network.
+    use super::*;
+    pub fn state(dir: &std::path::Path) -> Arc<AppState> {
+        let settings = Settings::default();
+        let speakers = speakers::Speakers::with_keys(
+            dir.to_owned(),
+            dir.join("no-speaker-model.onnx"),
+            Box::new(notdot_speakers::store::MemoryKeyStore::default()),
+            "Owner",
+        );
+        let roster = speakers.roster().unwrap();
+        speakers.save_roster(roster.clone()).unwrap();
+        let profiles = profile_context::ProfileContexts::open(
+            dir.to_owned(),
+            dir.join("no-runtime"),
+            roster.owner().clone(),
+            false,
+            settings.selection(),
+        )
+        .unwrap();
+        let active = profiles.owner();
+        let (events, _input) = tokio::sync::mpsc::channel(4);
+        let wake = wake::Wake::new(dir.join("no-wake-models"), &settings, events);
+        Arc::new(AppState {
+            setup: onboarding::Setup::default(),
+            snapshot: Mutex::new(Snapshot {
+                setup_required: false,
+                profile_id: active.id.to_string(),
+                settings,
+                phase: "idle".into(),
+                reply: String::new(),
+                speech: notdot_core::spoken_reply::SpokenReply::default(),
+                request_id: None,
+                error: None,
+                active_turn: None,
+                key_configured: false,
+                key_checking: false,
+                key_authorized: false,
+                stt_ready: false,
+                window_visible: true,
+                updates: updates::Status::default(),
+                quota: notdot_voice::quota::Ledger::default().status("", 0),
+                wake: wake::Status::default(),
+                learning: learning::Status::default(),
+                initiative: initiative::Status::default(),
+                version: "test".into(),
+                desktop_launch_supported: false,
+                session_pending: None,
+                settings_pending: None,
+            }),
+            credentials: Arc::new(credentials::Credentials::read_only()),
+            profiles,
+            active_context: std::sync::RwLock::new(active),
+            identity: std::sync::Mutex::new(None),
+            voice_presence: std::sync::Mutex::new(None),
+            speakers,
+            path: dir.join("settings.json"),
+            send_gate: Mutex::new(()),
+            requests: Mutex::new(notdot_core::request_cancel::Requests::default()),
+            generation: AtomicU64::new(0),
+            voice_http: reqwest::Client::new(),
+            voice_gate: tokio::sync::Semaphore::new(1),
+            visual: Mutex::new(VisualLog::default()),
+            waiting_for_desktop: AtomicBool::new(false),
+            quota: Arc::new(quota::Monitor::new(dir.join("voice-usage.json"))),
+            wake,
+            streaming: transcription::Streaming::default(),
+        })
+    }
+    /// Admit a capture as `outcome` and make that person active, exactly as
+    /// a recognised voice capture does.
+    pub async fn admit(
+        state: &Arc<AppState>,
+        outcome: notdot_core::profiles::SpeakerOutcome,
+    ) -> Result<notdot_core::profiles::TurnLock, String> {
+        let token = uuid::Uuid::new_v4().to_string();
+        let lock = match state.speakers.roster()?.admit(&token, &outcome) {
+            notdot_core::profiles::Admission::Admit(lock) => lock,
+            notdot_core::profiles::Admission::Refuse(why) => return Err(why.spoken().into()),
+        };
+        profile_access::bind_capture(state.clone(), &token, 16_000, &[], Some(lock)).await
+    }
 }

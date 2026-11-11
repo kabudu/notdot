@@ -20,6 +20,8 @@ pub struct ProfileContext {
     pub memory: Arc<Memory>,
     pub learning: Learning,
     pub initiative: Initiative,
+    /// User-authored notes and lists; never part of memory or chat context.
+    pub notes: crate::notes::Notes,
     pub bridge: Mutex<Option<Arc<Bridge>>>,
     pub session_runtime: Mutex<Option<Arc<SessionRuntime>>>,
     pub session_outcomes: Mutex<VecDeque<String>>,
@@ -35,6 +37,7 @@ struct ContextPaths<'a> {
     state: &'a Path,
     analysis: &'a Path,
     reminders: &'a Path,
+    notes: &'a Path,
 }
 impl ProfileContext {
     fn open(
@@ -50,6 +53,7 @@ impl ProfileContext {
         }
         let memory = Arc::new(Memory::open_with_learning(paths.memory, enabled)?);
         let initiative = Initiative::open(paths.reminders.to_owned())?;
+        let notes = crate::notes::Notes::open(paths.notes.to_owned());
         let learning = Learning::new(
             memory.clone(),
             paths.analysis.to_owned(),
@@ -61,6 +65,7 @@ impl ProfileContext {
             memory,
             learning,
             initiative,
+            notes,
             bridge: Mutex::new(None),
             session_runtime: Mutex::new(None),
             session_outcomes: Mutex::new(VecDeque::new()),
@@ -98,6 +103,7 @@ impl ProfileContexts {
                 state: &base.join("owner"),
                 analysis: &base.join("memory-analysis"),
                 reminders: &base.join("followups.json"),
+                notes: &base.join("owner").join("notes.json"),
             },
             &runtime,
             enabled,
@@ -196,6 +202,7 @@ impl ProfileContexts {
                 state: &namespace.state_dir,
                 analysis: &namespace.state_dir.join("memory-analysis"),
                 reminders: &namespace.state_dir.join("followups.json"),
+                notes: &namespace.state_dir.join("notes.json"),
             },
             &self.runtime,
             enabled,
