@@ -208,7 +208,7 @@
         await held();
         ok('a detection pauses the reply and captures the request',count('interrupt-capture')===captures+1);
         ok('the same echo-cancelled microphone keeps the complete interruption',micTracks===1);
-        await until(()=>(orb.getAttribute('aria-label')||'').includes('Paused my reply'),3000);ok('the orb says the reply is paused',true);
+        await until(()=>(orb.getAttribute('aria-label')||'').includes('Paused my reply'),3000);ok('the orb says the reply is paused',true);await until(()=>log.filter(e=>e.event==='visual').pop()?.mode==='listening',4000);ok('the orb visibly changes to its listening animation while the reply is held',true);
         interruptResult={interrupt:'resume',line:'That sounded like my own voice, so I will carry on.'};submit('ignored');
         await until(()=>count('play')>plays);ok('echo, silence or another voice resumes the same reply',count('message')===messages&&count('stop')===0);
         ok('the resume reason is shown',document.getElementById('error').textContent.includes('carry on'));

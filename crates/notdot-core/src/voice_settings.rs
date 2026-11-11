@@ -572,6 +572,9 @@ impl Consent {
         if p.patch.wake_enabled == Some(true) {
             detail.push_str(" The microphone will listen locally for your wake phrase.");
         }
+        if p.patch.interrupt_enabled == Some(true) {
+            detail.push_str(" This listens during my replies and sends detected speech to your speech recognition service, which may count towards its usage.");
+        }
         if p.patch.microphone_muted == Some(false) {
             detail.push_str(" This allows microphone use again when you speak to notdot.");
         }
@@ -869,6 +872,15 @@ mod tests {
         assert!(!approved.is_valid());
         assert!(!c.issued_valid(&id));
         assert!(!c.waiting());
+    }
+    #[test]
+    fn enabling_interruption_explains_capture_and_provider_usage_before_approval() {
+        let (mut consent, _, id) = staged(json!({"interrupt_enabled":true}));
+        let readback = consent.question(&id).unwrap();
+        assert!(readback.contains("during my replies"));
+        assert!(readback.contains("speech recognition service"));
+        assert!(readback.contains("usage"));
+        assert!(readback.contains("confirm"));
     }
     #[test]
     fn longer_settings_confirmation_is_exact_and_preserves_scope() {
