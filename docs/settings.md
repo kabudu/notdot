@@ -128,6 +128,12 @@ This feature is experimental and works in English. It can miss you or wake by mi
 
 Turn on **Remember useful details** to learn preferences, goals and important facts. New learned facts retain the user’s original evidence clause, preserving names, negation and qualifications instead of relying on an AI paraphrase. Fragments that drop a surrounding qualification are rejected. Correcting a fact retires other records containing that same outdated mixed quote, so it cannot remain in recall under a second label. Before saving a new fact from speech, notdot reads it back and listens for your answer. Say **“yes, please save that memory”** to save it, or **“no”** if it heard you wrongly. “Yes” alone, silence or Escape saves nothing. You can then repeat the corrected detail. This also applies to “Remember…” requests. Memory checks and spoken confirmations use your selected AI and voice services.
 
+### Correct a memory by speaking
+
+Say what changed, for example “Actually, my favourite tea is rooibos now.” If notdot already remembers something on that subject, it reads back both: “I'll replace ‘My favourite tea is jasmine’ with ‘my favourite tea is rooibos’.” Say **“yes, replace that memory”** to change it. “Yes, save that” or “Yes” alone does not replace anything, and other memories stay as they are. The old wording is kept in the memory's history, and summaries that used it are retired, so it won't come back from a later chat.
+
+If notdot can't tell which saved detail you mean, it says what it found and asks you to name the old detail. Nothing changes until you confirm. Words you quote from someone else, a message or a web page are not treated as your own correction. A confirmation belongs to the person who was asked: if someone else speaks, or you press Escape, it is cancelled.
+
 **Review memories** lets you read, confirm, correct and forget notes. **Tidy memories** reviews notes and makes shorter summaries. The review shows where a note came from and how sure the AI was; that confidence is an estimate, not a guarantee.
 
 Declining a proposed memory keeps it out of the memory ledger; it does not erase the original transcript from chat history. Unconfirmed proposals expire and are not kept across restarts.
@@ -137,6 +143,41 @@ With memory off, notdot stops saving and using these separate memories. Existing
 **Reset memory** deletes all local memories, their older stored versions, reminders and suggestions, then starts a fresh companion chat. It keeps your settings and saved key. Old chats in Codex / ChatGPT, backups and other copies remain. The confirmation explains what will be removed; the reset cannot be undone.
 
 A summary is checked separately from new facts. If it cannot be verified, notdot skips it and can still keep valid facts. The memory status tells you when a summary was skipped.
+
+## Notes and lists
+
+Dictate notes and lists by voice. They are kept exactly as you said them, separate from memories, reminders and chat history.
+
+| Say | What happens |
+| --- | --- |
+| “Make a shopping list” | Creates a list called *shopping list*. |
+| “Start a packing list with socks, a charger and a hat” | Creates the list with three items. |
+| “Add oat milk to that list” | Adds to the list you used in the last two minutes. |
+| “Take a note” | Asks for a name, then what the note should say. |
+| “Read my packing list” or “What's on my shopping list?” | Reads it back. |
+| “Tick off oat milk on the shopping list” | Marks the item done. |
+| “Remove bread from that list” | Removes the item. |
+| “Rename the shopping list to weekly shop” | Renames it. |
+| “Find my note about the boiler” | Finds notes that mention it. |
+| “What notes do I have?” | Lists their names. |
+| “Delete the packing list” | Reads back what will go, then waits for **“yes, delete that list”**. |
+| “Change my gate code note to say 5 5 5 1” | Reads back the new text, then waits for **“yes, replace that note”**. |
+
+“That list” and “it” only mean the note or list you used in the last two minutes. If that is unclear, or two names match, notdot asks which one you mean. When you say “eggs and milk” without a pause between items, notdot asks whether that is one item or separate items. If notdot asks for a name or text, answer within a minute or say “Never mind”.
+
+Notes are handled on this computer and are not sent to Codex. Your speech still goes to your chosen recognition service, and what notdot reads back goes to your chosen voice service, as with any request.
+
+Each person you add in **People and voices** has their own notes. Before anyone teaches notdot their voice, whoever uses your unlocked computer can use these notes, as with memories. Once voices are set up, notes need a recognised voice. Voice matching is a convenience, not a password.
+
+**Notes & lists** in Settings shows the current person's notes. You can export one note or all of them as plain text, and delete a note after confirming. Closing Settings or a change of speaker clears them from the screen. Resetting memory does not delete notes.
+
+## Encrypted backup
+
+**Encrypted backup** saves the current person's memories and notes in one file, locked with a password you choose. Use at least 12 characters. notdot never stores the password and can't recover it. The owner's backup also keeps the orb colour, quiet hours, reminder limits and follow-up length.
+
+A backup never includes voice-service keys, Codex sign-ins, saved voices, chat access, confirmations, or your microphone, wake, startup and check-in choices. It never includes anyone else's notes or memories.
+
+To restore, enter the password and choose **Restore from backup…**. notdot checks the file and shows what it will add before anything changes. Restoring only adds: memories you already have are skipped, and a note whose name is taken is added with “(restored)”. If your notes, memories or settings change before you confirm, or someone else starts speaking, choose the backup again for a fresh preview. A wrong password, a damaged or changed file, or a backup from a newer notdot is refused without changing anything. If a restore is interrupted, notdot undoes it the next time it starts.
 
 ## Reminders and check-ins
 

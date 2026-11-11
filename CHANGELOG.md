@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- **Voice notes and lists.** Dictate, read back, add to, tick off, rename, find, export and delete notes and lists by voice. “Add oat milk to that list” only uses the list you just used; anything unclear is asked about. Notes stay on this computer, separate for each person.
+- **Correct memories by speaking.** notdot reads back the exact saved detail it will replace and waits for “yes, replace that memory”. Quoted words can't change memory, and a replaced detail doesn't return later.
+- **Encrypted backup.** Save one person's memories and notes with a password, preview a restore before it happens, and keep keys, voices and permissions out of the file. An interrupted restore is undone at the next start.
+
 ## [0.7.0] - 2026-11-09
 
 An easier first conversation, more careful memories and less background work.
