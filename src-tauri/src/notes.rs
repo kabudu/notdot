@@ -176,7 +176,11 @@ impl Notes {
             return Err("That note no longer exists".into());
         }
         next.version = 1;
-        next.revision += 1;
+        next.revision = next
+            .revision
+            .checked_add(1)
+            .filter(|r| *r < notes::MAX_REVISION)
+            .ok_or("Your notes can't take more changes")?;
         let result = save_async(&self.path, &next).await;
         inner.session.cancel();
         settle(&mut inner.book, next, result)

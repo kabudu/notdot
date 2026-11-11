@@ -13,6 +13,8 @@ pub const MAX_TITLE_CHARS: usize = 80;
 pub const MAX_ITEM_BYTES: usize = 300;
 pub const MAX_BODY_BYTES: usize = 4000;
 pub const MAX_FILE_BYTES: u64 = 1024 * 1024;
+/// Upper bound for a stored revision, leaving room for one more change.
+pub const MAX_REVISION: u64 = u64::MAX - 1;
 /// How long "that list" keeps referring to the last note you used.
 pub const FOCUS_SECONDS: u64 = 120;
 /// How long a spoken delete or rewrite confirmation stays valid.
@@ -146,6 +148,11 @@ impl Notebook {
         }
         if self.notes.len() > MAX_NOTES {
             return Err("Too many notes".into());
+        }
+        // Every change advances the revision; an exhausted counter could
+        // otherwise wrap and revive a stale confirmation.
+        if self.revision >= MAX_REVISION {
+            return Err("This notes file has an invalid revision".into());
         }
         let mut ids = std::collections::BTreeSet::new();
         for note in &self.notes {
@@ -786,7 +793,14 @@ pub fn handle(book: &Notebook, session: &mut Session, text: &str, now: u64) -> O
             let Some(index) = next.notes.iter().position(|n| n.id == pending.note) else {
                 return Outcome::Reply("That note no longer exists. Nothing was changed.".into());
             };
-            next.revision += 1;
+            next.revision =
+                match book.revision.checked_add(1).filter(|r| *r < MAX_REVISION) {
+                    Some(r) => r,
+                    None => return Outcome::Reply(
+                        "Your notes can't take more changes. Export them and start a new notebook."
+                            .into(),
+                    ),
+                };
             return match pending.action {
                 PendingAction::Delete => {
                     let note = next.notes.remove(index);
@@ -840,7 +854,14 @@ pub fn handle(book: &Notebook, session: &mut Session, text: &str, now: u64) -> O
 fn run(book: &Notebook, session: &mut Session, command: Command, now: u64) -> Outcome {
     let mut next = book.clone();
     next.version = 1;
-    next.revision += 1;
+    next.revision = match book.revision.checked_add(1).filter(|r| *r < MAX_REVISION) {
+        Some(r) => r,
+        None => {
+            return Outcome::Reply(
+                "Your notes can't take more changes. Export them and start a new notebook.".into(),
+            );
+        }
+    };
     match command {
         Command::ListAll => {
             if book.notes.is_empty() {
