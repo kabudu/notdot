@@ -18,6 +18,8 @@ These checks used disposable profiles and the branch based on `55b372b`, with th
 
 Still required: real-person overlapping speech and trusted-speaker short commands, positive voice interruption, stronger acoustic self-echo evidence, and the blocked Windows/Linux provider-audio checks. Simulated interruption cases remain separate evidence.
 
+Later real-person check: the user confirmed that saying “Stop” during the clouds explanation stopped playback without another wake phrase. They also reported repetition and broken sound at the beginning. A regression reproduced a bare streamed `1. ` being emitted for synthesis before its sentence; the queue now waits for the following words. All 31 UI Rust tests and strict WASM Clippy pass. A numbered reply with interruption off still sounded slightly broken to the listener, while the voice preview sounded smooth, so the remaining audio issue is unresolved. This single successful Stop check does not establish replacement requests or trusted-speaker interruption acceptance.
+
 - Real Rust bridge starts Terra Medium, completes a turn, restarts and recalls the previous answer using the same persisted thread ID.
 - Native Tauri/WASM app completed a real user turn, and Desktop read the same completed history while notdot remained running. That native test used the earlier development composer; the default UI now excludes it.
 - Nine core/provider Rust tests cover settings restart/validation, explicit retention intent, memory restart/deletion and dependent-summary retraction, interleaved agent events/unsupported approval rejection, runtime exit, provider bad inputs, preview-URL safety, and voice search/pagination over a local HTTP fixture.

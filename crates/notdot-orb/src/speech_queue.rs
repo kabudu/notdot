@@ -47,7 +47,9 @@ impl SpeechQueue {
                 let list_number = word.chars().all(|c| c.is_ascii_digit())
                     && !word.is_empty()
                     && text[..i].trim() == word
-                    && !text[after..].trim().is_empty();
+                    // A streamed marker must wait for the sentence. A final
+                    // standalone number remains a valid complete answer.
+                    && (!self.done || !text[after..].trim().is_empty());
                 if c == '.'
                     && (list_number
                         || matches!(word, "Dr" | "Mr" | "Mrs" | "Ms" | "Prof" | "e.g" | "i.e")
@@ -111,6 +113,28 @@ mod tests {
         let mut q = SpeechQueue::default();
         q.update("12.", true).unwrap();
         assert_eq!(q.next().as_deref(), Some("12."));
+        assert!(q.finished());
+    }
+    #[test]
+    fn streamed_list_marker_waits_for_its_sentence() {
+        let mut q = SpeechQueue::default();
+        q.update("1. ", false).unwrap();
+        assert_eq!(q.next(), None);
+        q.update("1. Clouds form from water vapour. ", false)
+            .unwrap();
+        assert_eq!(
+            q.next().as_deref(),
+            Some("1. Clouds form from water vapour.")
+        );
+        q.update("1. Clouds form from water vapour. 2. ", false)
+            .unwrap();
+        assert_eq!(q.next(), None);
+        q.update(
+            "1. Clouds form from water vapour. 2. Water condenses.",
+            true,
+        )
+        .unwrap();
+        assert_eq!(q.next().as_deref(), Some("2. Water condenses."));
         assert!(q.finished());
     }
     #[test]
