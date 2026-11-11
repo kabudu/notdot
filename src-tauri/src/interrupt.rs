@@ -29,6 +29,8 @@ pub struct Interrupt {
 struct Inner {
     /// The webview reported an echo-cancelled track in this session.
     support: Option<Support>,
+    #[cfg(target_os = "linux")]
+    permission_until: Option<Instant>,
     session: Option<Session>,
     /// A detected session waiting for its request capture.
     triggered: Option<(String, Owner, Instant)>,
@@ -115,6 +117,10 @@ impl Interrupt {
             i.session = None;
             i.triggered = None;
             i.capture = None;
+            #[cfg(target_os = "linux")]
+            {
+                i.permission_until = None;
+            }
         }
     }
     /// The owner of an interruption capture, if `token` is one.
@@ -222,6 +228,85 @@ pub async fn admit(state: &AppState, token: &str, identity: &TurnLock) -> Result
     Ok(())
 }
 use notdot_core::profiles::TurnLock;
+
+/// A one-use, short-lived browser permission request. This never changes OS
+/// microphone permissions. The trusted UI calls it immediately before capture.
+#[tauri::command]
+pub async fn interrupt_permission(
+    window: tauri::WebviewWindow,
+    state: State<'_, std::sync::Arc<AppState>>,
+) -> Result<(), String> {
+    if window.label() != "main" || !window.is_visible().unwrap_or(false) {
+        return Err("Show notdot before using the microphone".into());
+    }
+    if state.snapshot.lock().await.settings.microphone_muted {
+        return Err("The microphone is muted".into());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        state
+            .interrupt
+            .inner
+            .lock()
+            .map_err(|_| "interrupt state")?
+            .permission_until = Some(Instant::now() + Duration::from_secs(6));
+    }
+    Ok(())
+}
+#[cfg(any(target_os = "linux", test))]
+fn trusted_media_page(label: &str, url: &tauri::Url, development: bool) -> bool {
+    if label != "main" || !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
+    match (url.scheme(), url.host_str(), url.port()) {
+        ("tauri", Some("localhost"), None) => true,
+        ("http" | "https", Some("tauri.localhost"), None) => true,
+        ("http", Some("localhost" | "127.0.0.1"), Some(1420)) if development => true,
+        _ => false,
+    }
+}
+#[cfg(any(target_os = "linux", test))]
+fn consume_permission(until: &mut Option<Instant>) -> bool {
+    until.take().is_some_and(|at| Instant::now() < at)
+}
+/// WebKitGTK has no browser chrome to ask for media permission. Grant only
+/// the app's own main page, following its explicit bounded request above.
+#[cfg(target_os = "linux")]
+pub fn webview_permission(
+    view: tauri::Webview,
+    kind: tauri::webview::PermissionKind,
+) -> tauri::webview::PermissionResponse {
+    use tauri::{
+        Manager,
+        webview::{PermissionKind, PermissionResponse},
+    };
+    if !matches!(kind, PermissionKind::Microphone) {
+        return PermissionResponse::Default;
+    }
+    let Ok(url) = view.url() else {
+        return PermissionResponse::Deny;
+    };
+    if !trusted_media_page(view.label(), &url, cfg!(debug_assertions)) {
+        return PermissionResponse::Deny;
+    }
+    let Some(state) = view.try_state::<std::sync::Arc<AppState>>() else {
+        return PermissionResponse::Deny;
+    };
+    let Ok(snapshot) = state.snapshot.try_lock() else {
+        return PermissionResponse::Deny;
+    };
+    if !snapshot.window_visible || snapshot.settings.microphone_muted {
+        return PermissionResponse::Deny;
+    }
+    let Ok(mut inner) = state.interrupt.inner.lock() else {
+        return PermissionResponse::Deny;
+    };
+    if consume_permission(&mut inner.permission_until) {
+        PermissionResponse::Allow
+    } else {
+        PermissionResponse::Deny
+    }
+}
 
 #[tauri::command]
 pub async fn interrupt_support(
@@ -577,6 +662,33 @@ pub fn classify(transcript: &str, reply: &str, wake_name: &str) -> Outcome {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn media_permission_is_one_use_expiring_and_restricted_to_owned_pages() {
+        let owned = tauri::Url::parse("tauri://localhost/index.html").unwrap();
+        assert!(super::trusted_media_page("main", &owned, false));
+        assert!(!super::trusted_media_page("orb-input", &owned, false));
+        for value in [
+            "https://example.com",
+            "https://tauri.localhost.evil.test",
+            "http://localhost:8109",
+            "file:///tmp/page.html",
+            "http://user@tauri.localhost",
+        ] {
+            assert!(
+                !super::trusted_media_page("main", &tauri::Url::parse(value).unwrap(), false),
+                "{value}"
+            );
+        }
+        let development = tauri::Url::parse("http://localhost:1420").unwrap();
+        assert!(!super::trusted_media_page("main", &development, false));
+        assert!(super::trusted_media_page("main", &development, true));
+        let mut lease = Some(std::time::Instant::now() + std::time::Duration::from_secs(6));
+        assert!(super::consume_permission(&mut lease));
+        assert!(!super::consume_permission(&mut lease));
+        lease = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        assert!(!super::consume_permission(&mut lease));
+    }
+
     #[test]
     fn speech_onset_keeps_short_commands_and_bounds_silence_and_audio() {
         let mut capture = super::Utterance::default();

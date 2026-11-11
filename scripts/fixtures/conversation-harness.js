@@ -79,6 +79,7 @@
     if(cmd==='wake_activity'){record('lease',{ready:args.ready});return null;}
     if(cmd==='model_catalog')return [{model:'gpt-6.1-terra',displayName:'Terra',supportedReasoningEfforts:[{reasoningEffort:'medium',description:'Medium'}]}];
     if(cmd==='voice_catalog')return {voices:[{id:'synthetic',name:'Synthetic',description:'Test adapter'}],next_cursor:null};
+    if(cmd==='interrupt_permission'){record('interrupt-permission');return null;}
     if(cmd==='interrupt_support'){record('interrupt-support',{ok:args.echoCancellation,detail:args.detail});return null;}
     if(cmd==='interrupt_begin'){if(args.turn!==state.speech.turn)throw Error('That reply is no longer speaking');sessions++;record('interrupt-begin',{turn:args.turn});return 'session-'+sessions;}
     if(cmd==='interrupt_audio'){record('interrupt-audio',{guarded:args.guarded});if(injectDetection&&args.session==='session-'+sessions){injectDetection=false;record('synthetic-detection');return true;}return false;}

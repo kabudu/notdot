@@ -25,7 +25,7 @@ function fixture() {
 }
 {
   const f = fixture();
-  const first = f.box.interruptStart('first', () => {});
+  const first = f.box.interruptStart('first', () => {}); await flush();
   const s1 = f.stream(); f.requests[0].resolve(s1); await first;
   const older = f.box.interruptStart('older', () => {}); // waits for first close
   const newer = f.box.interruptStart('newer', () => {});
@@ -39,14 +39,14 @@ function fixture() {
 }
 {
   const f = fixture();
-  const support = f.box.interruptSupport();
-  f.timers[0](); await support;
+  const support = f.box.interruptSupport(); await flush();
+  f.timers.at(-1)(); await support;
   const late = f.stream(); f.requests[0].resolve(late); await flush();
   assert.equal(late.track.stopped, true, 'timed-out permission request releases late track');
 }
 {
   const f = fixture(); let detections = 0;
-  const started = f.box.interruptStart('speech', () => { detections++; });
+  const started = f.box.interruptStart('speech', () => { detections++; }); await flush();
   const stream = f.stream(); f.requests[0].resolve(stream); await started;
   f.box.invokeResult = true;
   f.nodes[0].port.onmessage({ data: new Float32Array(1600) }); await flush();
@@ -59,7 +59,7 @@ function fixture() {
   assert.equal(stream.track.stopped, true, 'endpoint releases the microphone before waiting for recognition');
 }
 {
-  const f = fixture(); const support = f.box.interruptSupport();
+  const f = fixture(); const support = f.box.interruptSupport(); await flush();
   const stream = f.stream(); stream.track.getSettings = () => { throw Error('settings unavailable'); };
   f.requests[0].resolve(stream); await support;
   assert.equal(stream.track.stopped, true, 'capability errors must release microphone tracks');

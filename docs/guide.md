@@ -305,3 +305,7 @@ The in-memory running-task association does not survive application exit. Alread
 ## Voice release scorecard
 
 Use [release measures](release-measures.md) and `scripts/evaluate_release_measures.py` before voice acceptance. Record exact revision, platform, providers, hardware and human/generated evidence. Missing acoustic results remain unverified; deterministic tests are not a substitute.
+
+### Linux interruption microphone permission
+
+WebKitGTK media capture uses an explicit permission handler. It permits microphone requests only from the main app page after a one-use six-second request from the interruption UI. Other pages, windows and expired requests are refused; camera and unrelated permissions are not granted. Release builds do not trust development-server origins. This does not change OS microphone permissions. Native origin, expiry and replay tests cover the policy; actual device echo cancellation still needs platform validation.

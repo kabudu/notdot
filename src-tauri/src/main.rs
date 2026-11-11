@@ -1955,7 +1955,10 @@ fn main() {
         return;
     }
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "linux")]
+    let builder = builder.on_permission_request(interrupt::webview_permission);
+    builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -1984,6 +1987,7 @@ fn main() {
             backup::backup_inspect,
             backup::backup_restore,
             backup::backup_cancel,
+            interrupt::interrupt_permission,
             interrupt::interrupt_support,
             interrupt::interrupt_status,
             interrupt::interrupt_begin,

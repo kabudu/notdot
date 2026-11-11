@@ -18,6 +18,7 @@ export async function interruptSupport() {
     if (!supported.echoCancellation) return 'unsupported: no echoCancellation constraint';
     if (typeof AudioWorkletNode === 'undefined') return 'unsupported: no AudioWorklet';
     let expired = false;
+    await bounded('microphone permission', invoke('interrupt_permission', {}), 3000);
     const request = navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true } });
     request.then(stream => { if (expired) for (const track of stream.getTracks()) track.stop(); }, () => {});
     let stream;
@@ -53,6 +54,8 @@ export async function interruptStart(session, onDetect) {
   if (previous) await teardown(previous);
   if (state.stopped || active !== state) return false;
   try {
+    await bounded('microphone permission', invoke('interrupt_permission', {}), 3000);
+    if (state.stopped) return false;
     const request = navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     // A stream that arrives after this attempt ended is released at once.
     request.then(stream => { if (state.stopped) for (const t of stream.getTracks()) t.stop(); }, () => {});
