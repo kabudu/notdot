@@ -1,5 +1,5 @@
 //! Voice-derived facts stay in RAM until the user accepts a scoped read-back.
-use notdot_core::memory::{LearningBatch, LearningPlan, Memory};
+use notdot_core::memory::{LearningBatch, LearningPlan, Memory, Preview};
 use std::{
     sync::Mutex,
     time::{Duration, Instant},
@@ -16,6 +16,8 @@ struct Proposal {
     id: String,
     plan: LearningPlan,
     batch: LearningBatch,
+    /// Exactly what approval changes, computed at the plan's revision.
+    preview: Preview,
     created: Instant,
     offered: bool,
 }
@@ -35,6 +37,7 @@ impl Confirmations {
         plan: LearningPlan,
         mut batch: LearningBatch,
         epoch: u64,
+        preview: Preview,
     ) -> Result<(), String> {
         batch.ground_notes();
         batch.validate_for(&plan)?;
@@ -54,6 +57,7 @@ impl Confirmations {
             id: uuid::Uuid::new_v4().to_string(),
             plan,
             batch,
+            preview,
             created: Instant::now(),
             offered: false,
         });
@@ -84,16 +88,7 @@ impl Confirmations {
             .ok_or("That memory check is no longer available")?;
         p.offered = true;
         p.created = Instant::now();
-        let details = p
-            .batch
-            .notes
-            .iter()
-            .map(|n| n.content.as_str())
-            .collect::<Vec<_>>()
-            .join(". ");
-        Ok(format!(
-            "Please check this memory: {details}. Say yes, please save that memory to keep it, or no to discard it."
-        ))
+        Ok(read_back(&p.preview))
     }
     pub fn cancel(&self, id: Option<&str>) {
         let mut state = self.0.lock().expect("memory confirmation");
@@ -135,7 +130,7 @@ impl Confirmations {
             state.inflight = Some((id.to_owned(), epoch));
             (p, epoch)
         };
-        if !affirmative(text) {
+        if !affirmative(text, p.preview.replaces()) {
             self.cancel(Some(id));
             return Ok("Nothing saved. Tell me the corrected detail when you're ready.".into());
         }
@@ -163,17 +158,68 @@ impl Confirmations {
         .into())
     }
 }
-fn affirmative(text: &str) -> bool {
+/// The spoken read-back. A replacement names the exact saved wording it
+/// retires; an unidentified correction asks instead of guessing.
+fn read_back(preview: &Preview) -> String {
+    let quoted = |items: &[String]| {
+        items
+            .iter()
+            .map(|t| format!("“{}”", t.trim().trim_end_matches('.')))
+            .collect::<Vec<_>>()
+            .join(" and ")
+    };
+    if preview.replaces() {
+        let mut parts = Vec::new();
+        for change in &preview.changes {
+            let new = quoted(std::slice::from_ref(&change.content));
+            if change.replaces.is_empty() {
+                parts.push(format!("add {new}"));
+            } else {
+                parts.push(format!("replace {} with {new}", quoted(&change.replaces)));
+            }
+        }
+        return format!(
+            "Please check this change. I'll {}. Your other memories stay as they are. Say yes, replace that memory to change it, or no to keep what's saved.",
+            parts.join(", and ")
+        );
+    }
+    let details = preview
+        .changes
+        .iter()
+        .map(|c| c.content.as_str())
+        .collect::<Vec<_>>()
+        .join(". ");
+    if !preview.unresolved.is_empty() {
+        return format!(
+            "That sounds like a change, but I can't tell which saved detail it replaces. I have {}. Nothing has changed. To replace one, tell me the old detail and the new one together. Or say yes, please save that memory to keep {} as a new memory alongside them.",
+            quoted(&preview.unresolved),
+            quoted(std::slice::from_ref(&details))
+        );
+    }
+    format!(
+        "Please check this memory: {details}. Say yes, please save that memory to keep it, or no to discard it."
+    )
+}
+/// Exact scoped phrases only. A replacement needs its own phrase, so a habit
+/// of saying "yes, save that" never retires an existing memory.
+fn affirmative(text: &str, replaces: bool) -> bool {
     let words = text
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
         .map(str::to_lowercase)
         .collect::<Vec<_>>()
         .join(" ");
-    matches!(
-        words.as_str(),
-        "yes save that" | "yes remember that" | "yes please save that memory"
-    )
+    if replaces {
+        matches!(
+            words.as_str(),
+            "yes replace that memory" | "yes please replace that memory"
+        )
+    } else {
+        matches!(
+            words.as_str(),
+            "yes save that" | "yes remember that" | "yes please save that memory"
+        )
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -193,11 +239,15 @@ mod tests {
             "yes please send that message",
             "yes2 please save that memory",
         ] {
-            assert!(!affirmative(text));
+            assert!(!affirmative(text, false));
+            assert!(!affirmative(text, true));
         }
-        assert!(affirmative("Yes, save that."));
-        assert!(affirmative("Yes, remember that!"));
-        assert!(affirmative("Yes, please save that memory."));
+        assert!(affirmative("Yes, save that.", false));
+        assert!(!affirmative("Yes, save that.", true));
+        assert!(affirmative("Yes, please replace that memory.", true));
+        assert!(!affirmative("Yes, please replace that memory.", false));
+        assert!(affirmative("Yes, remember that!", false));
+        assert!(affirmative("Yes, please save that memory.", false));
     }
     async fn prepare(manager: &Confirmations, memory: &Memory, text: &str) -> String {
         let epoch = manager.reset();
@@ -214,7 +264,8 @@ mod tests {
             .unwrap()
             .unwrap();
         let batch=serde_json::from_value(serde_json::json!({"notes":[{"key":"food_preference","content":text,"evidence":text,"confidence":0.99}],"digest":null})).unwrap();
-        manager.stage(plan, batch, epoch).unwrap();
+        let preview = memory.preview(&plan, &batch).await.unwrap();
+        manager.stage(plan, batch, epoch, preview).unwrap();
         manager.pending(memory).unwrap()
     }
     #[tokio::test]
@@ -284,14 +335,48 @@ mod tests {
             "I now prefer apples as my favourite fruit.",
         )
         .await;
+        let question = manager.question(&memory, &id).unwrap();
+        assert_eq!(
+            question,
+            "Please check this change. I'll replace “My favourite fruit is mango” with “I now prefer apples as my favourite fruit”. Your other memories stay as they are. Say yes, replace that memory to change it, or no to keep what's saved."
+        );
+        // The ordinary save phrase does not authorise retiring a memory.
+        assert!(
+            manager
+                .answer(&memory, &id, "yes remember that")
+                .await
+                .unwrap()
+                .contains("Nothing saved")
+        );
+        assert!(
+            memory.review("").await.unwrap()[0]
+                .content
+                .contains("mango")
+        );
+        let id = prepare(
+            &manager,
+            &memory,
+            "I now prefer apples as my favourite fruit.",
+        )
+        .await;
         manager.question(&memory, &id).unwrap();
-        manager
-            .answer(&memory, &id, "yes remember that")
-            .await
-            .unwrap();
+        assert_eq!(
+            manager
+                .answer(&memory, &id, "Yes, replace that memory.")
+                .await
+                .unwrap(),
+            "Memory saved."
+        );
         let notes = memory.review("").await.unwrap();
         assert_eq!(notes.len(), 1);
         assert!(notes[0].content.contains("apples"));
+        // Replayed approval is refused.
+        assert!(
+            manager
+                .answer(&memory, &id, "yes replace that memory")
+                .await
+                .is_err()
+        );
     }
     #[tokio::test]
     async fn cancellation_expiry_policy_changes_and_stale_workers_cannot_save() {
@@ -326,9 +411,61 @@ mod tests {
             .unwrap()
             .unwrap();
         let batch=serde_json::from_value(serde_json::json!({"notes":[{"key":"drink","content":"I prefer peppermint tea.","evidence":"I prefer peppermint tea.","confidence":1}],"digest":null})).unwrap();
+        let preview = memory.preview(&plan, &batch).await.unwrap();
         manager.reset();
-        manager.stage(plan, batch, epoch).unwrap();
+        manager.stage(plan, batch, epoch, preview).unwrap();
         assert!(manager.pending(&memory).is_none());
         assert!(memory.review("").await.unwrap().is_empty());
+    }
+    #[tokio::test]
+    async fn a_pending_correction_belongs_to_one_person_and_a_speaker_change_revokes_it() {
+        use notdot_core::profiles::{Actor, SpeakerOutcome};
+        let dir = tempfile::tempdir().unwrap();
+        let state = crate::test_support::state(dir.path());
+        let mut roster = state.speakers.roster().unwrap();
+        let owner = roster.owner().clone();
+        let member = roster.add_member(&Actor::LocalDevice, "Member").unwrap();
+        for id in [owner.clone(), member.clone()] {
+            roster
+                .set_voice_enrolled(&Actor::LocalDevice, &id, true)
+                .unwrap();
+        }
+        state.speakers.save_roster(roster).unwrap();
+        let recognised = |profile| SpeakerOutcome::Recognised {
+            profile,
+            score: 0.99,
+        };
+        crate::test_support::admit(&state, recognised(owner.clone()))
+            .await
+            .unwrap();
+        let context = state.context();
+        context.memory.set_learning_enabled(true).await;
+        let confirmations = &context.learning.confirmations;
+        let id = prepare(
+            confirmations,
+            &context.memory,
+            "My favourite fruit is mango.",
+        )
+        .await;
+        confirmations.question(&context.memory, &id).unwrap();
+        // Another person cannot take over while the owner's check is open.
+        let refused = crate::test_support::admit(&state, recognised(member.clone())).await;
+        assert!(refused.unwrap_err().contains("Finish or cancel"));
+        assert_eq!(state.context().id, owner);
+        // Once cancelled, switching is allowed and the approval is gone.
+        confirmations.cancel(Some(&id));
+        crate::test_support::admit(&state, recognised(member.clone()))
+            .await
+            .unwrap();
+        assert_eq!(state.context().id, member);
+        assert!(
+            confirmations
+                .answer(&context.memory, &id, "yes save that")
+                .await
+                .is_err()
+        );
+        assert!(context.memory.review("").await.unwrap().is_empty());
+        // The member's ledger is separate and untouched.
+        assert!(state.context().memory.review("").await.unwrap().is_empty());
     }
 }

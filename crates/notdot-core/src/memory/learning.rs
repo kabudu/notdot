@@ -122,6 +122,9 @@ fn qualified_evidence(user: &str, evidence: &str) -> bool {
     };
     let quote = words(evidence);
     user.match_indices(evidence).any(|(start, _)| {
+        if inside_quotation(user, start) {
+            return false;
+        }
         let end = start + evidence.len();
         let a = user[..start]
             .rfind(['.', '!', '?', ';', '\n'])
@@ -146,6 +149,16 @@ fn qualified_evidence(user: &str, evidence: &str) -> bool {
         .iter()
         .all(|word| !sentence.contains(*word) || quote.contains(*word))
     })
+}
+/// Text the person quotes (someone else's words, a message, a search result)
+/// is not their own current statement and cannot create or correct memory.
+fn inside_quotation(text: &str, at: usize) -> bool {
+    let before = &text[..at];
+    let straight = before.matches('"').count() % 2 == 1;
+    let curly = before
+        .rfind('“')
+        .is_some_and(|open| !before[open..].contains('”'));
+    straight || curly
 }
 fn valid_digest(plan: &LearningPlan, digest: &Digest) -> bool {
     let ids: std::collections::BTreeSet<_> = digest.source_ids.iter().collect();
@@ -529,6 +542,11 @@ impl Memory {
             if locked && !user_confirmed {
                 continue;
             }
+            // Automatic inference cannot bring back a detail the person
+            // replaced themselves, even under a different key.
+            if !user_confirmed && user_superseded(&current, &n.content) {
+                continue;
+            }
             let existing = current
                 .iter()
                 .filter(|r| {
@@ -598,33 +616,8 @@ impl Memory {
                     continue;
                 }
             }
-            let semantic_old: Vec<_> = current
-                .iter()
-                .filter(|r| {
-                    (active(r) || provisional(r)) && r.metadata.get("semantic_key") == Some(&n.key)
-                })
-                .collect();
-            let replacing = user_confirmed
-                || ["actually", "instead", "no longer", "correction:", "i now "]
-                    .iter()
-                    .any(|cue| origin.user.to_lowercase().contains(cue));
-            // Two semantic keys can refer to the same original mixed clause.
-            // Replacing one must not leave that contradictory clause in recall
-            // through its sibling key. Keep lineage and original history.
-            let old: Vec<_> = current
-                .iter()
-                .filter(|r| {
-                    (active(r) || provisional(r))
-                        && (r.metadata.get("semantic_key") == Some(&n.key)
-                            || (replacing
-                                && semantic_old.iter().any(|prior| {
-                                    r.content == prior.content
-                                        && r.source_id == prior.source_id
-                                        && r.metadata.get("source_turn")
-                                            == prior.metadata.get("source_turn")
-                                })))
-                })
-                .collect();
+            let replacing = user_confirmed || correction_cue(&origin.user);
+            let old = replaced_records(&current, &n.key, replacing);
             let mut record = learned_record(&n.content, MemoryRecordKind::Fact);
             let origin = plan
                 .interaction
@@ -646,11 +639,7 @@ impl Memory {
             record
                 .metadata
                 .insert("learning_state".into(), "provisional".into());
-            let correction = user_confirmed
-                || (["actually", "instead", "no longer", "correction:", "i now "]
-                    .iter()
-                    .any(|cue| origin.user.to_lowercase().contains(cue))
-                    && !old.is_empty());
+            let correction = user_confirmed || (correction_cue(&origin.user) && !old.is_empty());
             if correction {
                 record.quality_state = MemoryQualityState::Active;
                 record.expires_at_unix_ms = None;
@@ -862,6 +851,154 @@ impl Memory {
         Ok(())
     }
 }
+/// Words that mark a direct, current change to an earlier statement.
+pub fn correction_cue(user: &str) -> bool {
+    let lower = user.to_lowercase().replace('’', "'");
+    [
+        "actually",
+        "instead",
+        "no longer",
+        "not anymore",
+        "any more",
+        "anymore",
+        "correction:",
+        "i now ",
+        "that's wrong",
+        "that is wrong",
+        "changed my mind",
+        "not true",
+    ]
+    .iter()
+    .any(|cue| lower.contains(cue))
+}
+/// Records a new fact under `key` would retire: the same key, plus records
+/// that shared the same original mixed clause when the fact is replaced.
+fn replaced_records<'a>(
+    current: &'a [MemoryRecord],
+    key: &str,
+    replacing: bool,
+) -> Vec<&'a MemoryRecord> {
+    let semantic_old: Vec<_> = current
+        .iter()
+        .filter(|r| {
+            (active(r) || provisional(r))
+                && r.metadata.get("semantic_key").map(String::as_str) == Some(key)
+        })
+        .collect();
+    current
+        .iter()
+        .filter(|r| {
+            (active(r) || provisional(r))
+                && (r.metadata.get("semantic_key").map(String::as_str) == Some(key)
+                    || (replacing
+                        && semantic_old.iter().any(|prior| {
+                            r.content == prior.content
+                                && r.source_id == prior.source_id
+                                && r.metadata.get("source_turn")
+                                    == prior.metadata.get("source_turn")
+                        })))
+        })
+        .collect()
+}
+fn user_authored(r: &MemoryRecord) -> bool {
+    r.metadata
+        .get("origin")
+        .is_some_and(|o| o == "user correction" || o == "voice confirmation")
+}
+/// True when `content` matches a record retired by a user-authored correction.
+fn user_superseded(current: &[MemoryRecord], content: &str) -> bool {
+    current.iter().any(|retired| {
+        retired.historical_state == MemoryHistoricalState::Superseded
+            && retired.content.trim().eq_ignore_ascii_case(content.trim())
+            && current.iter().any(|newer| {
+                user_authored(newer)
+                    && newer.lineage.iter().any(|l| {
+                        l.record_id == retired.id
+                            && l.relation == mnemara::LineageRelationKind::Supersedes
+                    })
+            })
+    })
+}
+
+/// What a voice proposal would change, computed against the plan's revision.
+/// Approval is valid only while that revision is current.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Change {
+    pub content: String,
+    /// Exact current wording of every active fact this one replaces.
+    pub replaces: Vec<String>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Preview {
+    pub changes: Vec<Change>,
+    /// A correction was stated but no exact earlier fact was identified:
+    /// possibly related saved details, to ask about rather than guess.
+    pub unresolved: Vec<String>,
+}
+impl Preview {
+    pub fn replaces(&self) -> bool {
+        self.changes.iter().any(|c| !c.replaces.is_empty())
+    }
+}
+impl Memory {
+    pub async fn preview(
+        &self,
+        plan: &LearningPlan,
+        batch: &LearningBatch,
+    ) -> Result<Preview, String> {
+        let _gate = self.mutations.lock().await;
+        if !self.plan_is_current(plan) {
+            return Err("Memory changed; this check is no longer current".into());
+        }
+        let current: Vec<_> = self
+            .store
+            .export(ExportRequest {
+                tenant_id: Some("local".into()),
+                namespace: Some("notdot".into()),
+                include_archived: false,
+            })
+            .await
+            .map_err(|e| e.to_string())?
+            .records
+            .into_iter()
+            .map(|r| r.record)
+            .collect();
+        let mut changes = Vec::new();
+        for note in &batch.notes {
+            let mut replaces: Vec<String> = replaced_records(&current, &note.key, true)
+                .into_iter()
+                .filter(|r| {
+                    active(r) && !r.content.trim().eq_ignore_ascii_case(note.content.trim())
+                })
+                .map(|r| r.content.clone())
+                .collect();
+            replaces.dedup();
+            changes.push(Change {
+                content: note.content.trim().to_owned(),
+                replaces,
+            });
+        }
+        let user = plan.interaction.as_ref().map_or("", |i| i.user.as_str());
+        let mut unresolved = Vec::new();
+        if correction_cue(user) && !changes.iter().any(|c| !c.replaces.is_empty()) {
+            let proposed: Vec<_> = changes.iter().map(|c| c.content.to_lowercase()).collect();
+            drop(_gate);
+            for record in self.recall(user, 4).await? {
+                if record.kind == MemoryRecordKind::Fact
+                    && !proposed.contains(&record.content.trim().to_lowercase())
+                    && unresolved.len() < 3
+                {
+                    unresolved.push(record.content);
+                }
+            }
+        }
+        Ok(Preview {
+            changes,
+            unresolved,
+        })
+    }
+}
+
 fn learned_record(text: &str, kind: MemoryRecordKind) -> MemoryRecord {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1696,5 +1833,152 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(m.review("").await.unwrap().len(), 1);
+    }
+
+    async fn confirm(m: &Memory, key: &str, user: &str, content: &str) -> (LearningPlan, Preview) {
+        let plan = m
+            .plan(m.learning_ticket().unwrap(), Some(source(user)))
+            .await
+            .unwrap()
+            .unwrap();
+        let batch = one(key, content, content);
+        let preview = m.preview(&plan, &batch).await.unwrap();
+        (plan, preview)
+    }
+    #[tokio::test]
+    async fn spoken_corrections_name_the_exact_fact_replaced_and_keep_unrelated_facts() {
+        let _fixture = TEST_STORE.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let m = Memory::open_with_learning(dir.path(), true).unwrap();
+        for (key, text) in [
+            ("favourite_tea", "My favourite tea is jasmine"),
+            ("home_city", "I live in Leeds"),
+        ] {
+            let plan = m
+                .plan(m.learning_ticket().unwrap(), Some(source(text)))
+                .await
+                .unwrap()
+                .unwrap();
+            m.apply_confirmed_learning(&plan, one(key, text, text))
+                .await
+                .unwrap();
+        }
+        let user = "Actually my favourite tea is rooibos now";
+        let (plan, preview) =
+            confirm(&m, "favourite_tea", user, "my favourite tea is rooibos").await;
+        assert_eq!(
+            preview.changes,
+            vec![Change {
+                content: "my favourite tea is rooibos".into(),
+                replaces: vec!["My favourite tea is jasmine".into()],
+            }]
+        );
+        assert!(preview.unresolved.is_empty());
+        m.apply_confirmed_learning(
+            &plan,
+            one(
+                "favourite_tea",
+                "my favourite tea is rooibos",
+                "my favourite tea is rooibos",
+            ),
+        )
+        .await
+        .unwrap();
+        let current: Vec<_> = m
+            .review("")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.content)
+            .collect();
+        assert!(current.contains(&"my favourite tea is rooibos".to_owned()));
+        assert!(current.contains(&"I live in Leeds".to_owned()));
+        assert!(!current.contains(&"My favourite tea is jasmine".to_owned()));
+        // The replaced fact keeps provenance through lineage.
+        let new = m.review("rooibos").await.unwrap().remove(0);
+        assert_eq!(new.metadata["origin"], "voice confirmation");
+        assert_eq!(new.lineage.len(), 1);
+        // A later automatic inference cannot resurrect the replaced fact.
+        let old = "My favourite tea is jasmine";
+        let plan = m
+            .plan(m.learning_ticket().unwrap(), Some(source(old)))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            m.apply_learning(&plan, one("tea_choice", old, old))
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(!m.review("").await.unwrap().iter().any(|r| r.content == old));
+    }
+    #[tokio::test]
+    async fn an_unidentified_correction_asks_instead_of_guessing() {
+        let _fixture = TEST_STORE.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let m = Memory::open_with_learning(dir.path(), true).unwrap();
+        let text = "I work at the bakery on Tuesdays";
+        let plan = m
+            .plan(m.learning_ticket().unwrap(), Some(source(text)))
+            .await
+            .unwrap()
+            .unwrap();
+        m.apply_confirmed_learning(&plan, one("work_days", text, text))
+            .await
+            .unwrap();
+        let user = "Actually I work at the bakery on Thursdays";
+        let (_, preview) = confirm(
+            &m,
+            "bakery_schedule",
+            user,
+            "I work at the bakery on Thursdays",
+        )
+        .await;
+        assert!(!preview.replaces());
+        assert_eq!(preview.unresolved, vec![text.to_owned()]);
+        // A stale plan cannot be previewed.
+        let (plan, _) = confirm(&m, "x", "I like owls a lot", "I like owls a lot").await;
+        m.remember("Independent change", "t").await.unwrap();
+        assert!(
+            m.preview(&plan, &one("x", "I like owls a lot", "I like owls a lot"))
+                .await
+                .is_err()
+        );
+    }
+    #[tokio::test]
+    async fn quoted_words_cannot_create_or_correct_memory() {
+        let _fixture = TEST_STORE.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let m = Memory::open_with_learning(dir.path(), true).unwrap();
+        for user in [
+            "My sister wrote \"actually I am vegetarian now\" in her message",
+            "The page says “I am vegetarian now” at the top",
+        ] {
+            let plan = m
+                .plan(m.learning_ticket().unwrap(), Some(source(user)))
+                .await
+                .unwrap()
+                .unwrap();
+            let evidence = "I am vegetarian now";
+            assert!(
+                m.apply_confirmed_learning(&plan, one("diet", evidence, evidence))
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(m.review("").await.unwrap().is_empty());
+        let user = "I said \"hello\" and I am vegetarian now";
+        let plan = m
+            .plan(m.learning_ticket().unwrap(), Some(source(user)))
+            .await
+            .unwrap()
+            .unwrap();
+        m.apply_confirmed_learning(
+            &plan,
+            one("diet", "I am vegetarian now", "I am vegetarian now"),
+        )
+        .await
+        .unwrap();
     }
 }
