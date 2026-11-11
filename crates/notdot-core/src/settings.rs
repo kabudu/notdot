@@ -33,8 +33,8 @@ pub struct Settings {
     pub followup_seconds: u32,
     pub wake_enabled: bool,
     pub wake_name_only: bool,
-    /// Say the wake phrase while notdot speaks to interrupt it. Needs wake
-    /// listening and webview echo cancellation.
+    /// Detect speech during replies using webview echo cancellation.
+    /// Independent of wake listening; uses the selected recognition backend.
     pub interrupt_enabled: bool,
     pub microphone_muted: bool,
 }

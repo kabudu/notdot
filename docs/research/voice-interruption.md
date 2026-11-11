@@ -1,18 +1,20 @@
+# Voice interruption: design and validation
+
 ## Current candidate: unprefixed speech interruption
 
-The v0.8.0 candidate now uses Silero speech detection on the webview's echo-cancelled audio, not wake-word detection. It retains a half-second pre-roll, pauses on speech onset and keeps the same microphone stream until 600 ms of silence (maximum 12 seconds). The selected streaming recognition backend receives the completed bounded utterance in a single session; this path currently starts recognition after endpointing, rather than uploading ongoing overlap audio. Only the original reply owner is admitted, and cancellation revokes admission. No raw audio is stored on disk. Two lifecycle regressions, native onset/buffer/owner tests and simulated production-WASM interruption checks cover software behaviour. They do not establish real-person overlapping speech reliability. External-person overlap and Windows/Linux webview capability checks remain pending.
+The v0.8.0 candidate now uses Silero speech detection on the webview's echo-cancelled audio, not wake-word detection. It retains a half-second pre-roll, pauses on speech onset and keeps the same microphone stream until 600 ms of silence (maximum 12 seconds). The selected streaming recognition backend receives the completed bounded utterance in a single session; this path currently starts recognition after endpointing, rather than uploading ongoing overlap audio. Only the original reply owner is admitted, and cancellation revokes admission. No raw audio is stored on disk. Four lifecycle regression scenarios, native onset/buffer/owner tests and simulated production-WASM interruption checks cover software behaviour. They do not establish real-person overlapping speech reliability. External-person overlap and Windows/Linux webview capability checks remain pending.
 
 The findings below describe the earlier wake-only investigation and its limitations, not the current trigger design.
 
-# Voice interruption: design note and findings
+## Historical wake-only investigation
 
-Status: not shipped in 0.8.0. This note records what was tried and what a supported version needs.
+The sections below record the earlier native capture investigation, before the current echo-cancelled speech-onset candidate. Their scope decisions and limitations are historical, not the v0.8.0 acceptance criteria.
 
 ## Goal and scope
 
 The roadmap goal is to stop a spoken reply by speaking, without notdot reacting to its own speaker output. Two scopes were considered:
 
-- **Unprefixed interruption.** Say "Stop" or "Actually, ..." while notdot speaks. This needs reliable separation of a person's voice from notdot's own playback, and is the long-term goal.
+- **Unprefixed interruption.** Say "Stop" or "Actually, ..." while notdot speaks. This needs reliable separation of a person's voice from notdot's own playback, and is now required for v0.8.0.
 - **Wake-phrase-first interruption.** Say the wake phrase while notdot speaks, then "stop", a correction or a new request. This keeps the local wake detector as the only listener until the phrase is heard, so no audio leaves the computer before then.
 
 ## What the current capture path can do

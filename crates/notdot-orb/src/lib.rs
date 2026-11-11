@@ -2505,8 +2505,7 @@ pub fn start() -> Result<(), JsValue> {
         settings.wake_enabled = input("wake-enabled").checked();
         settings.wake_name_only = select("wake-phrase").value() == "name";
         settings.microphone_muted = input("microphone-muted").checked();
-        settings.interrupt_enabled =
-            input("interrupt-enabled").checked() && input("wake-enabled").checked();
+        settings.interrupt_enabled = input("interrupt-enabled").checked();
         settings.onboarding_complete = target.borrow().snapshot.settings.onboarding_complete;
         let key = input("key").value();
         let stt_key = input("stt-key").value();

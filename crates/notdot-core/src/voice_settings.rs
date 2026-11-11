@@ -49,6 +49,8 @@ pub struct Patch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wake_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub interrupt_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub wake_name_only: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub microphone_muted: Option<bool>,
@@ -171,6 +173,7 @@ impl Patch {
             followup_enabled,
             followup_seconds,
             wake_enabled,
+            interrupt_enabled,
             wake_name_only,
             microphone_muted,
             startup,
@@ -283,6 +286,7 @@ impl Patch {
             ("task reports", self.task_notifications),
             ("follow-up listening", self.followup_enabled),
             ("wake listening", self.wake_enabled),
+            ("voice interruption", self.interrupt_enabled),
             ("microphone mute", self.microphone_muted),
             ("opening the desktop app", self.open_desktop),
             ("automatic update checks", self.automatic_updates),
@@ -367,6 +371,7 @@ pub fn definition() -> Value {
         "task_notifications",
         "followup_enabled",
         "wake_enabled",
+        "interrupt_enabled",
         "wake_name_only",
         "microphone_muted",
         "open_desktop",
@@ -657,7 +662,7 @@ pub fn safe_preferences(settings: &Settings) -> Value {
         "stt_provider":settings.stt_provider,"memory_enabled":settings.memory_enabled,
         "session_control":settings.session_control,"task_notifications":settings.task_notifications,
         "followup_enabled":settings.followup_enabled,"followup_seconds":settings.followup_seconds,
-        "wake_enabled":settings.wake_enabled,"wake_name_only":settings.wake_name_only,
+        "wake_enabled":settings.wake_enabled,"interrupt_enabled":settings.interrupt_enabled,"wake_name_only":settings.wake_name_only,
         "microphone_muted":settings.microphone_muted,"startup":settings.startup,
         "open_desktop":settings.open_desktop,"automatic_updates":settings.automatic_updates,
         "behaviour":settings.initiative.behaviour,"quiet_start":settings.initiative.quiet_start,
@@ -765,7 +770,7 @@ mod tests {
     }
     #[test]
     fn every_supported_preference_has_a_schema_and_readable_readback() {
-        let values = json!({"name":"Ava","hue":240,"model":"catalog-model","effort":"high","voice_provider":"catalog-provider","voice_name":"catalog-voice","speech_language":"en","stt_provider":"deepgram","memory_enabled":true,"session_control":"confirm","task_notifications":true,"followup_enabled":true,"followup_seconds":10,"wake_enabled":true,"wake_name_only":true,"microphone_muted":true,"startup":"login","open_desktop":true,"automatic_updates":false,"behaviour":"suggestions","quiet_start":1300,"quiet_end":500,"daily_limit":4,"gap_minutes":30});
+        let values = json!({"name":"Ava","hue":240,"model":"catalog-model","effort":"high","voice_provider":"catalog-provider","voice_name":"catalog-voice","speech_language":"en","stt_provider":"deepgram","memory_enabled":true,"session_control":"confirm","task_notifications":true,"followup_enabled":true,"followup_seconds":10,"wake_enabled":true,"interrupt_enabled":true,"wake_name_only":true,"microphone_muted":true,"startup":"login","open_desktop":true,"automatic_updates":false,"behaviour":"suggestions","quiet_start":1300,"quiet_end":500,"daily_limit":4,"gap_minutes":30});
         let schema = definition();
         let properties = schema["inputSchema"]["properties"]["changes"]["properties"]
             .as_object()

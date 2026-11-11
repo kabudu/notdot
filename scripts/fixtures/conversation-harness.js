@@ -179,9 +179,18 @@
       }
       if(location.hash==='#interrupt-only'){
         const orb=document.getElementById('orb');
-        const reply=async()=>{const plays=count('play'),begins=count('interrupt-begin');settings.wake_enabled=false;pressEscape();state.phase='idle';await sleep(700);await initial();settings.wake_enabled=true;await until(()=>count('play')>plays);await until(()=>count('interrupt-begin')>begins);};
+        const reply=async()=>{const plays=count('play'),begins=count('interrupt-begin');settings.wake_enabled=false;pressEscape();state.phase='idle';await sleep(700);await initial();await until(()=>count('play')>plays);await until(()=>count('interrupt-begin')>begins);};
         const held=async()=>{const pauses=count('paused');injectDetection=true;await until(()=>count('interrupt-capture')>0&&count('paused')>pauses&&log[log.length-1]);await until(()=>count('synthetic-detection')>0);};
-        await clean();Object.assign(settings,{followup_enabled:false,interrupt_enabled:true});audioDuration=6000;
+        await clean();
+        document.getElementById('orb').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));
+        await until(()=>!document.getElementById('model').disabled);
+        document.getElementById('wake-enabled').checked=false;
+        document.getElementById('interrupt-enabled').checked=true;
+        document.getElementById('interrupt-enabled').dispatchEvent(new Event('change'));
+        const saves=count('saved');document.getElementById('save-settings').click();
+        await until(()=>count('saved')>saves);
+        ok('interruption saves independently of wake listening',settings.interrupt_enabled&&!settings.wake_enabled);
+        Object.assign(settings,{followup_enabled:false,interrupt_enabled:true});audioDuration=6000;
         await reply();
         ok('listening starts only during a reply, with an echo-cancelled track',log.find(e=>e.event==='mic-open').ec===true&&log.filter(e=>e.event==='interrupt-support').pop().ok===true);
         await until(()=>count('interrupt-audio')>3);ok('echo-cancelled audio goes only to the local detector',count('message')===1);
