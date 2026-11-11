@@ -30,7 +30,7 @@ https://github.com/user-attachments/assets/27db5b3f-e31a-40ee-a8dd-37ecc9c2b6b5
 - **Pick up where you left off.** Continue the same chat after restarting notdot. You can view its history in Codex.
 - **Start with guided setup.** Check Codex, sign in and test your voice connection without hunting through settings.
 - **Keep notes and lists by voice.** Say “Make a shopping list”, “Add oat milk to that list” or “Read my packing list”. Notes stay on this computer, kept as you said them.
-- **Choose what it remembers.** Turn learning on or off, review and edit saved memories, forget individual notes or reset them all. Say what changed, hear the old and new wording, then confirm the replacement.
+- **Choose what it remembers.** Turn learning on or off, review and edit saved memories, forget individual memories or reset them all. Say what changed, hear the old and new wording, then confirm the replacement.
 - **Back up privately.** Save your memories and notes in a password-encrypted file and restore them later, with a preview before anything changes.
 - **Share without sharing everything.** Add trusted voices with separate conversations and memories, then choose which Codex chats each person may read or message. Remove someone at any time, or let them remove themselves by voice with a confirmation on screen. Voice matching is a convenience, not authentication.
 - **Make it yours.** Choose its name, orb colour, voice and how much it can interrupt you. Ask for settings changes by voice, hear them read back, then approve.
@@ -61,11 +61,11 @@ Use notdot to send messages in its chat. Keep the Codex app for viewing that cha
 
 ## Privacy and memory
 
-Wake detection runs on your computer. Background listening is not sent to a speech service. After activation, your chosen services transcribe your request and generate the spoken reply. Codex receives your request and any relevant memories. If you ask about another local Codex chat, selected messages from that chat are also supplied to the model.
+Wake detection runs on your computer. Background listening is not sent to a speech service. After activation, your chosen services transcribe your request and generate the spoken reply. Codex receives your request and any relevant memories. Notes and lists are the exception: notdot handles them on your computer and does not send them to Codex, although your dictation still goes to the recognition service and anything read back goes to the voice service. If you ask about another local Codex chat, selected messages from that chat are also supplied to the model.
 
 Voice matching runs on your computer. Saved voiceprints are encrypted there, and setup recordings are discarded once a voiceprint is made. Removing a person deletes their voiceprint and private memories.
 
-Notes and lists stay on your computer and are not sent to Codex. Saved memories stay on your computer. Turning learning off stops saving and using those notes, while keeping existing notes and chat history. Resetting memory does not delete notes, saved Codex chats or backups. Encrypted backups never include keys, sign-ins, saved voices or chat access.
+Saved memories stay on your computer. Turning learning off stops saving and using memories, while keeping existing memories, notes and chat history. Resetting memory does not delete notes, saved Codex chats or backups. Encrypted backups never include keys, sign-ins, saved voices or chat access.
 
 Voice-service keys are stored in your operating system’s credential store. Read [Security](SECURITY.md) for details and how to report a vulnerability.
 

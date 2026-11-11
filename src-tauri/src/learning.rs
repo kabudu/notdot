@@ -285,7 +285,7 @@ impl Learning {
         let ticket = self
             .memory
             .learning_ticket()
-            .ok_or("Turn on memory before tidying notes")?;
+            .ok_or("Turn on memory before tidying memories")?;
         self.enqueue(Job {
             ticket,
             voice: false,

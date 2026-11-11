@@ -134,13 +134,13 @@ Say what changed, for example “Actually, my favourite tea is rooibos now.” I
 
 If notdot can't tell which saved detail you mean, it says what it found and asks you to name the old detail. Nothing changes until you confirm. Words you quote from someone else, a message or a web page are not treated as your own correction. A confirmation belongs to the person who was asked: if someone else speaks, or you press Escape, it is cancelled.
 
-**Review memories** lets you read, confirm, correct and forget notes. **Tidy memories** reviews notes and makes shorter summaries. The review shows where a note came from and how sure the AI was; that confidence is an estimate, not a guarantee.
+**Review memories** lets you read, confirm, correct and forget memories. **Tidy memories** reviews memories and makes shorter summaries. The review shows where a memory came from and how sure the AI was; that confidence is an estimate, not a guarantee.
 
 Declining a proposed memory keeps it out of the memory ledger; it does not erase the original transcript from chat history. Unconfirmed proposals expire and are not kept across restarts.
 
-With memory off, notdot stops saving and using these separate memories. Existing notes stay on your computer. The current chat still has its own history, including anything already said or supplied to the model. Turning memory off does not erase that history.
+With memory off, notdot stops saving and using memories. Existing memories stay on your computer, and voice notes and lists keep working. The current chat still has its own history, including anything already said or supplied to the model. Turning memory off does not erase that history.
 
-**Reset memory** deletes all local memories, their older stored versions, reminders and suggestions, then starts a fresh companion chat. It keeps your settings and saved key. Old chats in Codex / ChatGPT, backups and other copies remain. The confirmation explains what will be removed; the reset cannot be undone.
+**Reset memory** deletes all local memories, their older stored versions, reminders and suggestions, then starts a fresh companion chat. It keeps your notes and lists, settings and saved key. Old chats in Codex / ChatGPT, backups and other copies remain. The confirmation explains what will be removed; the reset cannot be undone.
 
 A summary is checked separately from new facts. If it cannot be verified, notdot skips it and can still keep valid facts. The memory status tells you when a summary was skipped.
 
@@ -209,6 +209,6 @@ When update checks are on, notdot checks every six hours. It asks before install
 
 **Reconnect companion** restarts the conversation service. It interrupts any reply in progress. **Remove voice key** removes the saved service key.
 
-Voice recordings go to the selected voice service. Words from your request and relevant saved notes go to the model through the Codex tool. Local memories are not separately encrypted by notdot; your computer’s account and backups matter. See [Security](../SECURITY.md) for the full boundaries.
+Voice recordings go to the selected recognition service, and spoken replies are made by the selected voice service. Words from your request and relevant saved memories go to the model through the Codex tool. Notes and list requests are the exception: they are handled on this computer and do not go to the model, although your dictation still goes to the recognition service and read-backs to the voice service. Local memories are not separately encrypted by notdot; your computer’s account and backups matter. See [Security](../SECURITY.md) for the full boundaries.
 
-If backup wake recognition fails on a phrase, the primary detector keeps listening and the backup can retry on the next phrase. Settings shows a short warning while that backup failure remains unresolved. Initial model-loading or microphone errors still need attention; notdot does not silently grant microphone permission.
+If fallback wake recognition fails on a phrase, the primary detector keeps listening and the fallback can retry on the next phrase. Settings shows a short warning while that fallback failure remains unresolved. Initial model-loading or microphone errors still need attention; notdot does not silently grant microphone permission.

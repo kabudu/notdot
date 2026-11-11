@@ -107,7 +107,7 @@ impl Memory {
         turn: Option<&str>,
     ) -> Result<String, String> {
         if text.trim().is_empty() || text.len() > 4000 {
-            return Err("Memory note must contain 1–4,000 bytes".into());
+            return Err("A memory must contain 1–4,000 bytes".into());
         }
         let stats = self
             .store
@@ -218,7 +218,7 @@ impl Memory {
     }
     pub async fn forget(&self, id: &str) -> Result<(), String> {
         if id.len() > 128 {
-            return Err("Invalid memory note ID".into());
+            return Err("Invalid memory ID".into());
         }
         let _gate = self.mutations.lock().await;
         self.policy
@@ -236,7 +236,7 @@ impl Memory {
         let source = records
             .iter()
             .find(|r| r.id == id)
-            .ok_or("Memory note was not found")?;
+            .ok_or("That memory was not found")?;
         let mut ids = std::collections::BTreeSet::from([id.to_string()]);
         for r in &records {
             if r.content.trim().eq_ignore_ascii_case(source.content.trim())

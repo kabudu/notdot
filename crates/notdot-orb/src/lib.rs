@@ -2572,7 +2572,7 @@ pub fn start() -> Result<(), JsValue> {
                     message(if action == "save" {
                         "Memory corrected. Your version takes precedence."
                     } else {
-                        "Note and derived summaries forgotten."
+                        "Memory and derived summaries forgotten."
                     });
                     if let Err(e) = review_memories().await {
                         message(e);
@@ -2586,7 +2586,7 @@ pub fn start() -> Result<(), JsValue> {
         spawn_local(async {
             match call("maintain_memory", json!({})).await {
                 Ok(_) => {
-                    message("Notes tidied. Checking for useful summaries…");
+                    message("Memories tidied. Checking for useful summaries…");
                     if let Err(e) = review_memories().await {
                         message(e);
                     }
@@ -3797,7 +3797,7 @@ async fn review_memories() -> Result<(), String> {
                     .as_str()
                     .unwrap_or("Saved memory"),
                 if lineage > 0 {
-                    format!(" · based on {lineage} saved notes")
+                    format!(" · based on {lineage} saved memories")
                 } else {
                     String::new()
                 }
@@ -3862,7 +3862,7 @@ async fn review_memories() -> Result<(), String> {
             }
             let button = document().create_element("button").map_err(js_error)?;
             button.set_attribute("type", "button").map_err(js_error)?;
-            button.set_text_content(Some("Forget this note"));
+            button.set_text_content(Some("Forget this memory"));
             let id = note["id"].as_str().ok_or("Memory ID missing")?;
             button
                 .set_attribute("data-memory-id", id)

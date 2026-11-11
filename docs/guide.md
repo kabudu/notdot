@@ -225,7 +225,7 @@ Current automated, security, accessibility and performance evidence is recorded 
 | Recall | Finding saved memories to use in a reply. |
 | Provisional | A possible memory that still needs confirmation. |
 | Corroboration | Another chat supports the same detail. |
-| Distillation / digest | Making a shorter summary of saved notes. |
+| Distillation / digest | Making a shorter summary of saved memories. |
 | Provenance / lineage | Where a note came from and which notes support it. |
 | Inference | An AI request. |
 | Single writer | Only notdot sends messages to its companion chat. |

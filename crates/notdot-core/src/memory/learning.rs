@@ -739,7 +739,7 @@ impl Memory {
     /// Explicit user edits invalidate in-flight inference and preserve the original evidence.
     pub async fn edit(&self, id: &str, content: &str) -> Result<(), String> {
         if content.trim().is_empty() || content.len() > 4000 {
-            return Err("Use 1–4,000 bytes for a memory note".into());
+            return Err("Use 1–4,000 bytes for a memory".into());
         }
         let _gate = self.mutations.lock().await;
         let all = self
@@ -755,7 +755,7 @@ impl Memory {
         let prior = records
             .iter()
             .find(|r| r.id == id && (active(r) || provisional(r)))
-            .ok_or("This note is no longer editable")?;
+            .ok_or("This memory can no longer be edited")?;
         self.policy
             .send_modify(|p| p.epoch = p.epoch.wrapping_add(1));
         let mut replacement = learned_record(content.trim(), MemoryRecordKind::Fact);
