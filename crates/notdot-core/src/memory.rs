@@ -16,6 +16,29 @@ use std::{
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
+pub const MAX_RECORDS: usize = 2000;
+/// Metadata that describes a memory itself. Chat and turn identifiers stay on
+/// this computer.
+pub const BACKUP_METADATA: &[&str] = &[
+    "origin",
+    "semantic_key",
+    "evidence",
+    "learning_state",
+    "confidence",
+];
+/// One memory in an encrypted backup.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupRecord {
+    pub id: String,
+    pub summary: bool,
+    pub content: String,
+    pub metadata: BTreeMap<String, String>,
+    pub created_unix_ms: u64,
+    pub updated_unix_ms: u64,
+    /// IDs of other records in the same backup this one replaces or summarises.
+    pub sources: Vec<String>,
+}
 pub struct Memory {
     policy: tokio::sync::watch::Sender<LearningPolicy>,
     store: SledMemoryStore,
@@ -264,6 +287,187 @@ impl Memory {
                     record_id,
                     hard_delete: true,
                     audit_reason: "User requested forgetting note and derived summaries".into(),
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        self.revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+    /// Advances on every change to the ledger, including edits and forgetting.
+    pub fn revision(&self) -> u64 {
+        self.revision.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    /// Current, reviewable facts and summaries for an encrypted backup.
+    /// Provisional, archived and superseded records are not included.
+    pub async fn backup_records(&self) -> Result<Vec<BackupRecord>, String> {
+        let _gate = self.mutations.lock().await;
+        let package = self
+            .store
+            .export(ExportRequest {
+                tenant_id: Some("local".into()),
+                namespace: Some("notdot".into()),
+                include_archived: false,
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        let records: Vec<_> = package
+            .records
+            .into_iter()
+            .map(|r| r.record)
+            .filter(|r| {
+                matches!(
+                    r.quality_state,
+                    MemoryQualityState::Active | MemoryQualityState::Verified
+                ) && matches!(r.kind, MemoryRecordKind::Fact | MemoryRecordKind::Summary)
+            })
+            .take(MAX_RECORDS)
+            .collect();
+        let ids: std::collections::BTreeSet<_> = records.iter().map(|r| r.id.clone()).collect();
+        Ok(records
+            .into_iter()
+            .map(|r| BackupRecord {
+                summary: r.kind == MemoryRecordKind::Summary,
+                content: r.content,
+                metadata: r
+                    .metadata
+                    .into_iter()
+                    .filter(|(k, _)| BACKUP_METADATA.contains(&k.as_str()))
+                    .collect(),
+                created_unix_ms: r.created_at_unix_ms,
+                updated_unix_ms: r.updated_at_unix_ms,
+                // Only links between included records; history stays local.
+                sources: r
+                    .lineage
+                    .into_iter()
+                    .filter(|l| ids.contains(&l.record_id))
+                    .map(|l| l.record_id)
+                    .collect(),
+                id: r.id,
+            })
+            .collect())
+    }
+    /// IDs of current records whose content matches, for restore de-duplication.
+    pub async fn current_contents(&self) -> Result<BTreeMap<String, String>, String> {
+        Ok(self
+            .backup_records()
+            .await?
+            .into_iter()
+            .map(|r| (r.content.trim().to_lowercase(), r.id))
+            .collect())
+    }
+    /// Insert validated restored records with caller-chosen IDs. Writes are
+    /// idempotent per ID; the caller journals the IDs first so a failure or
+    /// crash can remove exactly these records with [`Memory::remove_records`].
+    pub async fn import_records(
+        &self,
+        records: &[BackupRecord],
+        expected_revision: u64,
+    ) -> Result<(), String> {
+        let _gate = self.mutations.lock().await;
+        if self.revision() != expected_revision {
+            return Err("Memories changed after the preview".into());
+        }
+        self.policy
+            .send_modify(|p| p.epoch = p.epoch.wrapping_add(1));
+        let stats = self
+            .store
+            .stats(StoreStatsRequest {
+                tenant_id: Some("local".into()),
+                namespace: Some("notdot".into()),
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        if stats.total_records as usize + records.len() > MAX_RECORDS {
+            return Err(
+                "Restoring would pass the 2,000 memory limit. Nothing was restored.".into(),
+            );
+        }
+        for r in records {
+            let mut metadata: BTreeMap<String, String> = r
+                .metadata
+                .iter()
+                .filter(|(k, _)| BACKUP_METADATA.contains(&k.as_str()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            metadata.insert("restored".into(), "encrypted backup".into());
+            let record = MemoryRecord {
+                id: r.id.clone(),
+                scope: MemoryScope {
+                    source: "restored-user-memory".into(),
+                    ..scope()
+                },
+                kind: if r.summary {
+                    MemoryRecordKind::Summary
+                } else {
+                    MemoryRecordKind::Fact
+                },
+                content: r.content.clone(),
+                summary: None,
+                source_id: None,
+                metadata,
+                quality_state: MemoryQualityState::Active,
+                created_at_unix_ms: r.created_unix_ms,
+                updated_at_unix_ms: r.updated_unix_ms,
+                expires_at_unix_ms: None,
+                importance_score: 0.8,
+                artifact: None,
+                episode: None,
+                historical_state: MemoryHistoricalState::default(),
+                lineage: r
+                    .sources
+                    .iter()
+                    .map(|id| mnemara::LineageLink {
+                        record_id: id.clone(),
+                        relation: if r.summary {
+                            mnemara::LineageRelationKind::ConsolidatedFrom
+                        } else {
+                            mnemara::LineageRelationKind::Supersedes
+                        },
+                        confidence: 1.0,
+                    })
+                    .collect(),
+                conflict: None,
+            };
+            self.store
+                .upsert(UpsertRequest {
+                    record,
+                    idempotency_key: Some(format!("restore-{}", r.id)),
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        self.revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+    /// Remove records written by an incomplete restore. Missing IDs are fine.
+    pub async fn remove_records(&self, ids: &[String]) -> Result<(), String> {
+        let _gate = self.mutations.lock().await;
+        self.policy
+            .send_modify(|p| p.epoch = p.epoch.wrapping_add(1));
+        let present: std::collections::BTreeSet<_> = self
+            .store
+            .export(ExportRequest {
+                tenant_id: Some("local".into()),
+                namespace: Some("notdot".into()),
+                include_archived: true,
+            })
+            .await
+            .map_err(|e| e.to_string())?
+            .records
+            .into_iter()
+            .map(|r| r.record.id)
+            .collect();
+        for id in ids.iter().filter(|id| present.contains(*id)) {
+            self.store
+                .delete(DeleteRequest {
+                    tenant_id: "local".into(),
+                    namespace: "notdot".into(),
+                    record_id: id.clone(),
+                    hard_delete: true,
+                    audit_reason: "Rolled back an incomplete restore".into(),
                 })
                 .await
                 .map_err(|e| e.to_string())?;

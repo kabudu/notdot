@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod backup;
 mod credentials;
 mod diagnostics;
 mod file_dialog;
@@ -87,6 +88,7 @@ struct AppState {
     wake: wake::Wake,
     streaming: transcription::Streaming,
     credentials: Arc<credentials::Credentials>,
+    backups: backup::Backups,
 }
 impl AppState {
     fn context(&self) -> Arc<profile_context::ProfileContext> {
@@ -1880,6 +1882,10 @@ fn main() {
             notes::notes_list,
             notes::notes_delete,
             notes::notes_export,
+            backup::backup_export,
+            backup::backup_inspect,
+            backup::backup_restore,
+            backup::backup_cancel,
             save_settings,
             model_catalog,
             clear_voice_key,
@@ -1960,6 +1966,9 @@ fn main() {
             }
             reset::complete_pending(&dir).map_err(std::io::Error::other)?;
             let path = dir.join("settings.json");
+            // An unfinished owner restore puts the previous settings back
+            // before they are read; its memories and notes follow below.
+            backup::recover_settings(&dir.join("owner"), &path).map_err(std::io::Error::other)?;
             let settings = Settings::load(&path).map_err(std::io::Error::other)?;
             let waiting_for_desktop = std::env::args().any(|a| a == "--startup")
                 && settings.startup == notdot_core::settings::Startup::WithCodex;
@@ -2006,6 +2015,31 @@ fn main() {
                     notdot_core::profiles::Admission::Admit(identity) => Some(identity),
                     _ => None,
                 };
+            for profile in roster.profiles() {
+                // Only open a person's stores when they have a restore to undo.
+                if !roster
+                    .namespace(&dir, &profile.id)
+                    .is_some_and(|n| n.state_dir.join(backup::JOURNAL).exists())
+                {
+                    continue;
+                }
+                let Ok(context) = profiles.get_or_open(
+                    &roster,
+                    &profile.id,
+                    settings.memory_enabled,
+                    settings.selection(),
+                ) else {
+                    continue;
+                };
+                let owner = profile.id == *roster.owner();
+                let recovered = tauri::async_runtime::block_on(backup::recover_profile(
+                    &context,
+                    owner.then_some(path.as_path()),
+                ));
+                if let Err(error) = recovered {
+                    eprintln!("notdot: could not finish undoing an interrupted restore: {error}");
+                }
+            }
             let active_context = profiles.owner();
             *active_context.thread_id.blocking_lock() = settings.thread_id.clone();
             let quota_monitor = Arc::new(quota::Monitor::new(dir.join("voice-usage.json")));
@@ -2065,6 +2099,7 @@ fn main() {
                 quota: quota_monitor,
                 wake,
                 streaming: transcription::Streaming::default(),
+                backups: backup::Backups::default(),
             });
             app.manage(state.clone());
             onboarding::spawn(state.clone());
@@ -2363,6 +2398,7 @@ pub(crate) mod test_support {
             quota: Arc::new(quota::Monitor::new(dir.join("voice-usage.json"))),
             wake,
             streaming: transcription::Streaming::default(),
+            backups: backup::Backups::default(),
         })
     }
     /// Admit a capture as `outcome` and make that person active, exactly as

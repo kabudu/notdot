@@ -26,7 +26,7 @@
       "source_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
     }
   ],
-  "cargo_lock_sha256": "fe5c69c51eee69449fc24d6dc1bde7d875548b4ee6178594b06e982b785ef5a4",
+  "cargo_lock_sha256": "0208a381333daeb189ebf3ef97573014078b28351ceeb806ff58d846e2a5c551",
   "first_party_license": "Apache-2.0",
   "native_source_components": [
     {
@@ -7362,6 +7362,30 @@
       "version": "0.13.5"
     },
     {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#rfd@0.15.4",
+      "license_expression": "MIT",
+      "name": "rfd",
+      "original_notices": [
+        "65fc947f4bac882a2cd104ef73c246b1b037059df9f2b3a58b7f77f0b9e56071"
+      ],
+      "repository": "https://github.com/PolyMeilex/rfd",
+      "source": {
+        "archive_sha256": "ef2bee61e6cffa4635c72d7d81a84294e28f0930db0ddcb0f66d10244674ebed",
+        "archive_url": "https://static.crates.io/crates/rfd/rfd-0.15.4.crate",
+        "kind": "cargo-registry",
+        "published_vcs": {
+          "git": {
+            "sha1": "bac4bd3364f2befaabafa9f58ac77fd8925b2abf"
+          },
+          "path_in_vcs": ""
+        }
+      },
+      "standard_terms": {
+        "MIT": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+      },
+      "version": "0.15.4"
+    },
+    {
       "id": "registry+https://github.com/rust-lang/crates.io-index#ring@0.17.14",
       "license_expression": "Apache-2.0 AND ISC",
       "name": "ring",
@@ -11276,6 +11300,32 @@
       "version": "0.5.1"
     },
     {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#windows-sys@0.59.0",
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "windows-sys",
+      "original_notices": [
+        "c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b",
+        "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+      ],
+      "repository": "https://github.com/microsoft/windows-rs",
+      "source": {
+        "archive_sha256": "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b",
+        "archive_url": "https://static.crates.io/crates/windows-sys/windows-sys-0.59.0.crate",
+        "kind": "cargo-registry",
+        "published_vcs": {
+          "git": {
+            "sha1": "308e08ec259027ebbef11b8ef838923626bf821e"
+          },
+          "path_in_vcs": "crates/libs/sys"
+        }
+      },
+      "standard_terms": {
+        "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+        "MIT": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+      },
+      "version": "0.59.0"
+    },
+    {
       "id": "registry+https://github.com/rust-lang/crates.io-index#windows-sys@0.60.2",
       "license_expression": "MIT OR Apache-2.0",
       "name": "windows-sys",
@@ -11326,6 +11376,32 @@
         "MIT": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
       },
       "version": "0.61.2"
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#windows-targets@0.52.6",
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "windows-targets",
+      "original_notices": [
+        "c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b",
+        "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+      ],
+      "repository": "https://github.com/microsoft/windows-rs",
+      "source": {
+        "archive_sha256": "9b724f72796e036ab90c1021d4780d4d3d648aca59e491e6b98e725b84e99973",
+        "archive_url": "https://static.crates.io/crates/windows-targets/windows-targets-0.52.6.crate",
+        "kind": "cargo-registry",
+        "published_vcs": {
+          "git": {
+            "sha1": "db06b51c2ebb743efb544d40e3064efa49f28d38"
+          },
+          "path_in_vcs": "crates/libs/targets"
+        }
+      },
+      "standard_terms": {
+        "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+        "MIT": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+      },
+      "version": "0.52.6"
     },
     {
       "id": "registry+https://github.com/rust-lang/crates.io-index#windows-targets@0.53.5",
@@ -11430,6 +11506,32 @@
         "MIT": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
       },
       "version": "0.62.2"
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#windows_x86_64_msvc@0.52.6",
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "windows_x86_64_msvc",
+      "original_notices": [
+        "c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b",
+        "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+      ],
+      "repository": "https://github.com/microsoft/windows-rs",
+      "source": {
+        "archive_sha256": "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec",
+        "archive_url": "https://static.crates.io/crates/windows_x86_64_msvc/windows_x86_64_msvc-0.52.6.crate",
+        "kind": "cargo-registry",
+        "published_vcs": {
+          "git": {
+            "sha1": "db06b51c2ebb743efb544d40e3064efa49f28d38"
+          },
+          "path_in_vcs": "crates/targets/x86_64_msvc"
+        }
+      },
+      "standard_terms": {
+        "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+        "MIT": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+      },
+      "version": "0.52.6"
     },
     {
       "id": "registry+https://github.com/rust-lang/crates.io-index#windows_x86_64_msvc@0.53.1",
@@ -12470,6 +12572,7 @@
         "registry+https://github.com/rust-lang/crates.io-index#regex@1.13.1",
         "registry+https://github.com/rust-lang/crates.io-index#reqwest@0.12.28",
         "registry+https://github.com/rust-lang/crates.io-index#reqwest@0.13.5",
+        "registry+https://github.com/rust-lang/crates.io-index#rfd@0.15.4",
         "registry+https://github.com/rust-lang/crates.io-index#ring@0.17.14",
         "registry+https://github.com/rust-lang/crates.io-index#rubato@0.16.2",
         "registry+https://github.com/rust-lang/crates.io-index#rustc-hash@2.1.3",
@@ -12829,6 +12932,7 @@
         "registry+https://github.com/rust-lang/crates.io-index#regex@1.13.1",
         "registry+https://github.com/rust-lang/crates.io-index#reqwest@0.12.28",
         "registry+https://github.com/rust-lang/crates.io-index#reqwest@0.13.5",
+        "registry+https://github.com/rust-lang/crates.io-index#rfd@0.15.4",
         "registry+https://github.com/rust-lang/crates.io-index#ring@0.17.14",
         "registry+https://github.com/rust-lang/crates.io-index#rubato@0.16.2",
         "registry+https://github.com/rust-lang/crates.io-index#rustc-hash@2.1.3",
@@ -12953,12 +13057,15 @@
         "registry+https://github.com/rust-lang/crates.io-index#windows-registry@0.6.1",
         "registry+https://github.com/rust-lang/crates.io-index#windows-result@0.4.1",
         "registry+https://github.com/rust-lang/crates.io-index#windows-strings@0.5.1",
+        "registry+https://github.com/rust-lang/crates.io-index#windows-sys@0.59.0",
         "registry+https://github.com/rust-lang/crates.io-index#windows-sys@0.60.2",
         "registry+https://github.com/rust-lang/crates.io-index#windows-sys@0.61.2",
+        "registry+https://github.com/rust-lang/crates.io-index#windows-targets@0.52.6",
         "registry+https://github.com/rust-lang/crates.io-index#windows-targets@0.53.5",
         "registry+https://github.com/rust-lang/crates.io-index#windows-threading@0.2.1",
         "registry+https://github.com/rust-lang/crates.io-index#windows-version@0.1.7",
         "registry+https://github.com/rust-lang/crates.io-index#windows@0.62.2",
+        "registry+https://github.com/rust-lang/crates.io-index#windows_x86_64_msvc@0.52.6",
         "registry+https://github.com/rust-lang/crates.io-index#windows_x86_64_msvc@0.53.1",
         "registry+https://github.com/rust-lang/crates.io-index#winnow@1.0.4",
         "registry+https://github.com/rust-lang/crates.io-index#writeable@0.6.4",
@@ -13232,6 +13339,7 @@
         "registry+https://github.com/rust-lang/crates.io-index#regex@1.13.1",
         "registry+https://github.com/rust-lang/crates.io-index#reqwest@0.12.28",
         "registry+https://github.com/rust-lang/crates.io-index#reqwest@0.13.5",
+        "registry+https://github.com/rust-lang/crates.io-index#rfd@0.15.4",
         "registry+https://github.com/rust-lang/crates.io-index#ring@0.17.14",
         "registry+https://github.com/rust-lang/crates.io-index#rubato@0.16.2",
         "registry+https://github.com/rust-lang/crates.io-index#rustc-hash@2.1.3",
@@ -19654,6 +19762,29 @@
       ],
       "sha256": "65f94e99ddaf4f5d1782a6dae23f35d4293a9a01444a13135a6887017d353cee"
     },
+    "65fc947f4bac882a2cd104ef73c246b1b037059df9f2b3a58b7f77f0b9e56071": {
+      "bytes": 1079,
+      "file": "texts/65fc947f4bac882a2cd104ef73c246b1b037059df9f2b3a58b7f77f0b9e56071.txt",
+      "origins": [
+        {
+          "kind": "original-package-file",
+          "package": "registry+https://github.com/rust-lang/crates.io-index#rfd@0.15.4",
+          "package_source": {
+            "archive_sha256": "ef2bee61e6cffa4635c72d7d81a84294e28f0930db0ddcb0f66d10244674ebed",
+            "archive_url": "https://static.crates.io/crates/rfd/rfd-0.15.4.crate",
+            "kind": "cargo-registry",
+            "published_vcs": {
+              "git": {
+                "sha1": "bac4bd3364f2befaabafa9f58ac77fd8925b2abf"
+              },
+              "path_in_vcs": ""
+            }
+          },
+          "path": "LICENSE"
+        }
+      ],
+      "sha256": "65fc947f4bac882a2cd104ef73c246b1b037059df9f2b3a58b7f77f0b9e56071"
+    },
     "65fdb6c76cd61612070c066eec9ecdb30ee74fb27859d0d9af58b9f499fd0c3e": {
       "bytes": 1056,
       "file": "texts/65fdb6c76cd61612070c066eec9ecdb30ee74fb27859d0d9af58b9f499fd0c3e.txt",
@@ -25874,6 +26005,54 @@
             }
           },
           "path": "license-apache-2.0"
+        },
+        {
+          "kind": "original-package-file",
+          "package": "registry+https://github.com/rust-lang/crates.io-index#windows-sys@0.59.0",
+          "package_source": {
+            "archive_sha256": "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b",
+            "archive_url": "https://static.crates.io/crates/windows-sys/windows-sys-0.59.0.crate",
+            "kind": "cargo-registry",
+            "published_vcs": {
+              "git": {
+                "sha1": "308e08ec259027ebbef11b8ef838923626bf821e"
+              },
+              "path_in_vcs": "crates/libs/sys"
+            }
+          },
+          "path": "license-apache-2.0"
+        },
+        {
+          "kind": "original-package-file",
+          "package": "registry+https://github.com/rust-lang/crates.io-index#windows-targets@0.52.6",
+          "package_source": {
+            "archive_sha256": "9b724f72796e036ab90c1021d4780d4d3d648aca59e491e6b98e725b84e99973",
+            "archive_url": "https://static.crates.io/crates/windows-targets/windows-targets-0.52.6.crate",
+            "kind": "cargo-registry",
+            "published_vcs": {
+              "git": {
+                "sha1": "db06b51c2ebb743efb544d40e3064efa49f28d38"
+              },
+              "path_in_vcs": "crates/libs/targets"
+            }
+          },
+          "path": "license-apache-2.0"
+        },
+        {
+          "kind": "original-package-file",
+          "package": "registry+https://github.com/rust-lang/crates.io-index#windows_x86_64_msvc@0.52.6",
+          "package_source": {
+            "archive_sha256": "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec",
+            "archive_url": "https://static.crates.io/crates/windows_x86_64_msvc/windows_x86_64_msvc-0.52.6.crate",
+            "kind": "cargo-registry",
+            "published_vcs": {
+              "git": {
+                "sha1": "db06b51c2ebb743efb544d40e3064efa49f28d38"
+              },
+              "path_in_vcs": "crates/targets/x86_64_msvc"
+            }
+          },
+          "path": "license-apache-2.0"
         }
       ],
       "sha256": "c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b"
@@ -26148,6 +26327,54 @@
             "published_vcs": {
               "git": {
                 "sha1": "d468916ac27a36fb8a12bafc1bf5c0ec2fe92238"
+              },
+              "path_in_vcs": "crates/targets/x86_64_msvc"
+            }
+          },
+          "path": "license-mit"
+        },
+        {
+          "kind": "original-package-file",
+          "package": "registry+https://github.com/rust-lang/crates.io-index#windows-sys@0.59.0",
+          "package_source": {
+            "archive_sha256": "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b",
+            "archive_url": "https://static.crates.io/crates/windows-sys/windows-sys-0.59.0.crate",
+            "kind": "cargo-registry",
+            "published_vcs": {
+              "git": {
+                "sha1": "308e08ec259027ebbef11b8ef838923626bf821e"
+              },
+              "path_in_vcs": "crates/libs/sys"
+            }
+          },
+          "path": "license-mit"
+        },
+        {
+          "kind": "original-package-file",
+          "package": "registry+https://github.com/rust-lang/crates.io-index#windows-targets@0.52.6",
+          "package_source": {
+            "archive_sha256": "9b724f72796e036ab90c1021d4780d4d3d648aca59e491e6b98e725b84e99973",
+            "archive_url": "https://static.crates.io/crates/windows-targets/windows-targets-0.52.6.crate",
+            "kind": "cargo-registry",
+            "published_vcs": {
+              "git": {
+                "sha1": "db06b51c2ebb743efb544d40e3064efa49f28d38"
+              },
+              "path_in_vcs": "crates/libs/targets"
+            }
+          },
+          "path": "license-mit"
+        },
+        {
+          "kind": "original-package-file",
+          "package": "registry+https://github.com/rust-lang/crates.io-index#windows_x86_64_msvc@0.52.6",
+          "package_source": {
+            "archive_sha256": "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec",
+            "archive_url": "https://static.crates.io/crates/windows_x86_64_msvc/windows_x86_64_msvc-0.52.6.crate",
+            "kind": "cargo-registry",
+            "published_vcs": {
+              "git": {
+                "sha1": "db06b51c2ebb743efb544d40e3064efa49f28d38"
               },
               "path_in_vcs": "crates/targets/x86_64_msvc"
             }

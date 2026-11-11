@@ -2724,6 +2724,7 @@ dependencies = [
  "notdot-wake-runtime",
  "reqwest 0.12.28",
  "rfd",
+ "ring",
  "rubato",
  "security-framework 3.7.0",
  "sentencepiece-rs",

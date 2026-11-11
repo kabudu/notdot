@@ -17,7 +17,6 @@ pub async fn choose_save(
         .await
         .map(|handle| handle.path().to_owned())
 }
-#[allow(dead_code)] // Used by encrypted restore in the next change.
 pub async fn choose_open(
     window: &tauri::WebviewWindow,
     title: &str,

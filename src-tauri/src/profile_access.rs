@@ -115,6 +115,8 @@ pub async fn bind_capture(
         old.learning.cancel();
         old.initiative.cancel();
         old.notes.cancel().await;
+        // A restore preview belongs to the person who was active.
+        state.backups.cancel();
         old.session_consent
             .lock()
             .expect("session consent")

@@ -143,24 +143,25 @@ impl Notes {
     pub async fn snapshot(&self) -> Result<Notebook, String> {
         self.state.lock().await.book.clone()
     }
-    /// Replace the notebook as part of a journalled restore. The caller holds
-    /// the person's turn lock and has validated the notebook.
-    #[allow(dead_code)] // Used by encrypted restore in the next change.
-    pub async fn replace(&self, next: Notebook) -> Result<(), String> {
+    /// Replace the notebook as part of a journalled restore, only if it is
+    /// still at `expected_revision`. The caller holds the person's turn lock.
+    pub async fn replace(&self, next: Notebook, expected_revision: u64) -> Result<(), String> {
         let mut inner = self.state.lock().await;
-        if let Err(error) = &inner.book {
-            return Err(error.clone());
+        match &inner.book {
+            Err(error) => return Err(error.clone()),
+            Ok(book) if book.revision != expected_revision => {
+                return Err("Notes changed after the preview".into());
+            }
+            Ok(_) => {}
         }
         let result = save_async(&self.path, &next).await;
         inner.session.cancel();
         settle(&mut inner.book, next, result)
     }
-    #[allow(dead_code)] // Used by encrypted restore in the next change.
     pub fn path(&self) -> &Path {
         &self.path
     }
     /// Reload after a crash-recovery rollback rewrote the file.
-    #[allow(dead_code)] // Used by encrypted restore in the next change.
     pub async fn reload(&self) {
         let mut inner = self.state.lock().await;
         inner.book = load(&self.path);

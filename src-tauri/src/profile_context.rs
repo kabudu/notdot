@@ -22,6 +22,8 @@ pub struct ProfileContext {
     pub initiative: Initiative,
     /// User-authored notes and lists; never part of memory or chat context.
     pub notes: crate::notes::Notes,
+    /// This person's private state folder (restore journal, notes).
+    pub state_dir: PathBuf,
     pub bridge: Mutex<Option<Arc<Bridge>>>,
     pub session_runtime: Mutex<Option<Arc<SessionRuntime>>>,
     pub session_outcomes: Mutex<VecDeque<String>>,
@@ -66,6 +68,7 @@ impl ProfileContext {
             learning,
             initiative,
             notes,
+            state_dir: paths.state.to_owned(),
             bridge: Mutex::new(None),
             session_runtime: Mutex::new(None),
             session_outcomes: Mutex::new(VecDeque::new()),
