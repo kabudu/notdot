@@ -38,6 +38,18 @@ fn linux_webkit() -> bool {
         .and_then(|window| window.navigator().user_agent().ok())
         .is_some_and(|agent| agent.contains("Linux"))
 }
+// Keep speech on the ordinary media output in WebKit webviews. Routing a
+// media element through Web Audio broke sentence playback on macOS and Linux.
+// The speaking animation has an unmetered fallback; microphone metering and
+// local activation cues remain available.
+fn direct_speech_output(agent: &str) -> bool {
+    agent.contains("Macintosh") || agent.contains("Linux")
+}
+fn needs_direct_speech_output() -> bool {
+    web_sys::window()
+        .and_then(|window| window.navigator().user_agent().ok())
+        .is_some_and(|agent| direct_speech_output(&agent))
+}
 struct Microphone {
     source: MediaStreamAudioSourceNode,
     analyser: AnalyserNode,
@@ -152,10 +164,9 @@ impl Meter {
         Ok(())
     }
     pub fn playback(&mut self, audio: &HtmlAudioElement) -> Result<bool, JsValue> {
-        // Linux WebKit's MediaElementAudioSourceNode truncated sentence tails
-        // in native output tests. Preserve ordinary HTML media output there;
-        // the orb still uses its smooth, unmetered speaking animation.
-        if linux_webkit() {
+        // WebKit media-source routing can repeat starts or truncate speech.
+        // Keep the decoder's direct output and the unmetered speaking animation.
+        if needs_direct_speech_output() {
             return Ok(false);
         }
         let Some(context) = &self.context else {

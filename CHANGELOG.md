@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **Smoother replies on Mac.** Speech uses direct playback to avoid repeated starts caused by the audio-metering connection.
+
 - **Natural interruption.** Say “Stop”, “Actually…” or a new request during replies, without repeating the wake phrase, with optional echo-cancelled listening.
 
 - **Voice notes and lists.** Dictate, read back, add to, tick off, rename, find, export and delete notes and lists by voice. “Add oat milk to that list” only uses the list you just used; anything unclear is asked about. Notes stay on this computer, separate for each person.
