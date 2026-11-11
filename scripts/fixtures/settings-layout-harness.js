@@ -79,6 +79,33 @@
  check('About is a named modal',$('about').open&&$('about').getAttribute('aria-labelledby')==='about-title');
  $('close-about').click();await sleep(50);
  check('About returns to Settings',$('panel').open&&document.activeElement===$('show-about'));
+ // Private notes and backups never outlive Settings or the active person.
+ const reopen=async()=>{$('orb').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));await sleep(200);$('settings-category-memory').click();await sleep(50);};
+ const notesText=()=>$('voice-notes').textContent+$('notes').textContent;
+ $('settings-category-memory').click();await sleep(50);
+ $('review-voice-notes').click();await sleep(250);
+ check('owner notes render',notesText().includes('Gate code'));
+ $('backup-password').value='synthetic password';$('backup-open').click();await sleep(250);
+ check('restore preview waits for confirmation',!$('backup-confirm').hidden&&$('backup-preview').textContent.includes('3 memories')&&!!$('backup-apply').getAttribute('data-restore-id'));
+ check('restore preview focuses the safe choice',document.activeElement===$('backup-keep'));
+ $('backup-password').value='typed but unused';
+ $('close').click();await sleep(150);
+ check('closing clears notes, passwords and the pending restore',!notesText()&&!$('backup-password').value&&!$('backup-password-repeat').value&&$('backup-confirm').hidden&&!$('backup-preview').textContent&&!$('backup-apply').hasAttribute('data-restore-id'));
+ await reopen();
+ check('reopened Settings shows no cached notes',!notesText());
+ // A slow owner result must not render after another person becomes active.
+ window.notesDelay=700;$('review-voice-notes').click();await sleep(50);
+ window.settingsFixture.state.profile_id='member';await sleep(1100);
+ check('person change clears private Settings content',!notesText().includes('Gate code'));
+ check('late owner notes are discarded after a person change',!notesText().includes('Gate code')&&!notesText().includes('shopping list'));
+ $('review-voice-notes').click();await sleep(250);
+ check('new person sees only their own notes',notesText().includes('Member chores')&&!notesText().includes('Gate code'));
+ window.inspectDelay=600;$('backup-password').value='synthetic password';$('backup-open').click();await sleep(50);
+ $('close').click();await sleep(800);
+ check('late restore preview is discarded after Settings closes',$('backup-confirm').hidden&&!$('backup-preview').textContent);
+ await reopen();
+ window.settingsFixture.state.profile_id='owner';await sleep(700);
+ check('switching back starts blank',!notesText());
  window.settingsFixture.state.error='The voice service could not be reached. '+('DiagnosticIdentifierWithoutSpaces'.repeat(40));
  await sleep(650);
  check('long error keeps footer visible',rect(document.querySelector('.settings-footer')).bottom<=innerHeight+1);

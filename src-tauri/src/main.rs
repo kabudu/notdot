@@ -1470,14 +1470,15 @@ async fn cancel_memory(
 }
 #[tauri::command]
 async fn memories(state: State<'_, Arc<AppState>>, query: Option<String>) -> Result<Value, String> {
-    let context = state.context();
-    serde_json::to_value(
-        context
-            .memory
-            .review(query.as_deref().unwrap_or(""))
-            .await?,
-    )
-    .map_err(|e| e.to_string())
+    let who = backup::Admitted::capture(&state)?;
+    let records = who
+        .context()
+        .memory
+        .review(query.as_deref().unwrap_or(""))
+        .await?;
+    // Never return one person's memories after another became active.
+    who.check(&state)?;
+    serde_json::to_value(records).map_err(|e| e.to_string())
 }
 #[tauri::command]
 async fn edit_memory(

@@ -1274,6 +1274,7 @@ fn open_panel(view: &Shared) {
 }
 fn close_panel(view: &Shared) {
     speakers::cancel();
+    notes_panel::reset();
     view.borrow_mut().preview_hue = None;
     apply_theme(view.borrow().snapshot.settings.hue);
     dialog("panel").close();
@@ -2774,6 +2775,8 @@ pub fn start() -> Result<(), JsValue> {
                 Ok(mut snapshot) => {
                     let previous_profile = target.borrow().snapshot.profile_id.clone();
                     if !previous_profile.is_empty() && previous_profile != snapshot.profile_id {
+                        // Another person's notes, memories or backup must not stay on screen.
+                        notes_panel::reset();
                         let capturing = {
                             let v = target.borrow();
                             v.capture_token.as_deref() == snapshot.wake["capture_token"].as_str()
@@ -3768,7 +3771,11 @@ async fn review_followups() -> Result<(), String> {
 }
 async fn review_memories() -> Result<(), String> {
     settings_navigation::reveal("memory-section");
+    let started = notes_panel::generation();
     let value = call("memories", json!({})).await?;
+    if notes_panel::generation() != started {
+        return Ok(());
+    }
     let records: Value = serde_wasm_bindgen::from_value(value).map_err(|e| e.to_string())?;
     let container = element("notes");
     container.set_text_content(None);

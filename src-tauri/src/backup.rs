@@ -632,6 +632,9 @@ impl Admitted {
             epoch,
         })
     }
+    pub fn context(&self) -> &Arc<crate::profile_context::ProfileContext> {
+        &self.context
+    }
     /// Still the active person, with the same permissions epoch.
     pub fn check(&self, state: &AppState) -> Result<(), String> {
         let roster = state.speakers.roster()?;

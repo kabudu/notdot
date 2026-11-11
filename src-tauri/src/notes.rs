@@ -215,9 +215,14 @@ pub async fn voice_command(
         notes::parse(text).map(|_| UNRECOGNISED.to_owned())
     }
 }
-/// Plain text for export from the active person's notebook only.
-pub async fn export_body(state: &AppState, id: Option<&str>) -> Result<(String, usize), String> {
-    let book = state.context().notes.snapshot().await?;
+/// Plain text for export from one admitted person's notebook only.
+pub async fn export_body(
+    state: &AppState,
+    who: &crate::backup::Admitted,
+    id: Option<&str>,
+) -> Result<(String, usize), String> {
+    let book = who.context().notes.snapshot().await?;
+    who.check(state)?;
     let chosen: Vec<_> = match id {
         Some(id) => book.notes.iter().filter(|n| n.id == id).collect(),
         None => book.notes.iter().collect(),
@@ -228,18 +233,27 @@ pub async fn export_body(state: &AppState, id: Option<&str>) -> Result<(String, 
     Ok((notes::export_text(&chosen), chosen.len()))
 }
 
+/// The admitted person's notebook, refused if the person changed meanwhile.
+pub async fn list_for(state: &AppState) -> Result<Notebook, String> {
+    let who = crate::backup::Admitted::capture(state)?;
+    let book = who.context().notes.snapshot().await?;
+    who.check(state)?;
+    Ok(book)
+}
+
 #[tauri::command]
 pub async fn notes_list(state: State<'_, Arc<AppState>>) -> Result<Notebook, String> {
-    state.context().notes.snapshot().await
+    list_for(&state).await
 }
 #[tauri::command]
 pub async fn notes_delete(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
     if uuid::Uuid::parse_str(&id).is_err() {
         return Err("Invalid note".into());
     }
-    let context = state.context();
-    let _turn = context.turn_lock.lock().await;
-    context.notes.delete(&id).await
+    let who = crate::backup::Admitted::capture(&state)?;
+    let _turn = who.context().turn_lock.lock().await;
+    who.check(&state)?;
+    who.context().notes.delete(&id).await
 }
 #[tauri::command]
 pub async fn notes_export(
@@ -247,8 +261,9 @@ pub async fn notes_export(
     state: State<'_, Arc<AppState>>,
     id: Option<String>,
 ) -> Result<String, String> {
-    let context = state.context();
-    let (text, count) = export_body(&state, id.as_deref()).await?;
+    // One person for the whole export, however long the panel stays open.
+    let who = crate::backup::Admitted::capture(&state)?;
+    let (text, count) = export_body(&state, &who, id.as_deref()).await?;
     let Some(path) = crate::file_dialog::choose_save(
         &window,
         "Export notes",
@@ -259,10 +274,7 @@ pub async fn notes_export(
     else {
         return Ok("Export cancelled. Nothing was saved.".into());
     };
-    // The profile may have changed while the panel was open.
-    if state.context().id != context.id {
-        return Err("The active person changed. Nothing was saved.".into());
-    }
+    who.check(&state)?;
     tokio::task::spawn_blocking(move || crate::file_dialog::write_atomic(&path, text.as_bytes()))
         .await
         .map_err(|e| e.to_string())??;
@@ -459,8 +471,24 @@ mod tests {
         // Native delete and export are scoped to the active person, whatever
         // ID the webview sends.
         assert!(notes_delete(app.state(), owner_note.clone()).await.is_err());
-        assert!(export_body(&state, Some(&owner_note)).await.is_err());
-        assert!(export_body(&state, None).await.is_err());
+        assert!(
+            export_body(
+                &state,
+                &crate::backup::Admitted::capture(&state).unwrap(),
+                Some(&owner_note)
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            export_body(
+                &state,
+                &crate::backup::Admitted::capture(&state).unwrap(),
+                None
+            )
+            .await
+            .is_err()
+        );
         voice_command(
             &state,
             &member_lock,
@@ -469,7 +497,13 @@ mod tests {
         )
         .await
         .unwrap();
-        let (text, count) = export_body(&state, None).await.unwrap();
+        let (text, count) = export_body(
+            &state,
+            &crate::backup::Admitted::capture(&state).unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!((count, text.contains("owner secret")), (1, false));
         // A stale lock from another person cannot use this context.
         assert_eq!(
@@ -575,5 +609,47 @@ mod tests {
                 .notes
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn list_and_export_refuse_a_person_change_across_awaits() {
+        use notdot_core::profiles::{Actor, SpeakerOutcome};
+        let dir = tempfile::tempdir().unwrap();
+        let state = crate::test_support::state(dir.path());
+        state
+            .context()
+            .notes
+            .command("create a note called Bank saying owner secret")
+            .await
+            .unwrap();
+        let mut roster = state.speakers.roster().unwrap();
+        let owner = roster.owner().clone();
+        let member = roster.add_member(&Actor::LocalDevice, "Member").unwrap();
+        for id in [owner.clone(), member.clone()] {
+            roster
+                .set_voice_enrolled(&Actor::LocalDevice, &id, true)
+                .unwrap();
+        }
+        state.speakers.save_roster(roster).unwrap();
+        let recognised = |profile| SpeakerOutcome::Recognised {
+            profile,
+            score: 0.99,
+        };
+        crate::test_support::admit(&state, recognised(owner))
+            .await
+            .unwrap();
+        // Captured for the owner, then the member speaks before it finishes.
+        let who = crate::backup::Admitted::capture(&state).unwrap();
+        crate::test_support::admit(&state, recognised(member))
+            .await
+            .unwrap();
+        assert!(
+            export_body(&state, &who, None)
+                .await
+                .unwrap_err()
+                .contains("active person changed")
+        );
+        // A fresh list now shows only the member's (empty) notebook.
+        assert!(list_for(&state).await.unwrap().notes.is_empty());
     }
 }

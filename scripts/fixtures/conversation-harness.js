@@ -8,6 +8,11 @@
   const state = {settings,profile_id:'owner',phase:'idle',reply:'',speech:{turn:'',text:'',done:false,failed:false},request_id:null,settings_pending:null,error:null,key_configured:true,key_checking:false,key_authorized:true,stt_ready:true,window_visible:true,version:'test',desktop_launch_supported:false,updates:{phase:'idle',version:null,message:'',received:0,total:null,prompt:false},quota:{},wake:{phase:'paused'},learning:{},initiative:{}};
   const speakerCallbacks = [];
   const people={mode:"open",active_profile:"owner",people:[{id:"owner",role:"owner",name:"Me",needs_name:true,voice_enrolled:false,shared_chats:[]}],removed_chats:{archived:0,pending:0},self_removal:null};
+  const notebook={version:1,revision:3,notes:[
+    {id:'11111111-1111-4111-8111-111111111111',title:'shopping list',kind:'list',body:'',items:[{id:'a',text:'oat milk',done:false},{id:'b',text:'2 litres of orange juice',done:true},{id:'c',text:'A deliberately long synthetic list item that keeps going to check wrapping in narrow layouts without spaces: supercalifragilisticexpialidocious',done:false}],created:0,updated:0},
+    {id:'22222222-2222-4222-8222-222222222222',title:'Gate code',kind:'note',body:'The code is 4 7 1 9, ask Priya.\nBring the blue key.',items:[],created:0,updated:0}]};
+  const notebooks={owner:notebook,member:{version:1,revision:1,notes:[{id:'33333333-3333-4333-8333-333333333333',title:'Member chores',kind:'list',body:'',items:[{id:'d',text:'dishes',done:false}],created:0,updated:0}]}};
+  window.notebooks=notebooks;
   let enrolIndex=0,enrolProfile=null,enrolToken=null;
   const phrase=()=>({step:enrolIndex===4?"ready":"prompt",index:enrolIndex+1,of:4,phrase:"Synthetic enrollment phrase."});
   const log = [], callbacks = [], timers = new Set(), cancelled = new Set(), settingsProposals = new Map();
@@ -48,6 +53,13 @@
     if(cmd==='speaker_available_chats')return {chats:[{id:'chat-a',title:'Garden plans'}],next_cursor:null};
     if(cmd==='speaker_share_chat'){const p=people.people.find(p=>p.id===args.profile);p.shared_chats=p.shared_chats.filter(g=>g.chat_id!==args.chat);p.shared_chats.push({chat_id:args.chat,access:args.access});record('speaker-share',{access:args.access});return null;}
     if(cmd==='speaker_unshare_chat'){const p=people.people.find(p=>p.id===args.profile);p.shared_chats=p.shared_chats.filter(g=>g.chat_id!==args.chat);return null;}
+    if(cmd==='notes_list'){const book=copy(notebooks[state.profile_id]||{version:1,revision:0,notes:[]});if(window.notesDelay){const d=window.notesDelay;window.notesDelay=0;await sleep(d);}return book;}
+    if(cmd==='notes_delete'){const notebook=notebooks[state.profile_id];notebook.notes=notebook.notes.filter(n=>n.id!==args.id);record('note-deleted',{id:args.id});return null;}
+    if(cmd==='notes_export'){record('notes-export',{id:args.id});return args.id?'Exported 1 note.':'Exported '+(notebooks[state.profile_id]||{notes:[]}).notes.length+' notes.';}
+    if(cmd==='backup_export'){if((args.password||'').length<12)throw Error('Use a backup password of at least 12 characters.');record('backup-export');return 'Saved an encrypted backup of 3 memories and 2 notes. Keep the password safe: notdot can’t recover it.';}
+    if(cmd==='backup_inspect'){record('backup-inspect');if(window.inspectDelay){const d=window.inspectDelay;window.inspectDelay=0;await sleep(d);}if(args.password!=='synthetic password')throw Error('The password is wrong, or the backup was changed after it was made. Nothing was restored.');return {id:'restore-1',created_unix_ms:1800000000000,memories:3,skipped_memories:1,notes:2,renamed_notes:1,preferences:true};}
+    if(cmd==='backup_restore'){record('backup-restore',{id:args.id});return 'Restored 3 memories and 2 notes. Colour and announcement limits were restored.';}
+    if(cmd==='backup_cancel'){record('backup-cancel');return null;}
     if(cmd==='snapshot') return copy(state);
     if(cmd==='capture_status') return copy(state.wake);
     if(cmd==='voice_providers') return [{id:'elevenlabs',name:'ElevenLabs',streaming_transcription:true}];

@@ -6,8 +6,49 @@ use serde_json::{Value, json};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
 
+thread_local! {
+    /// Advances whenever private Settings content must be discarded: closing
+    /// Settings or a change of person. Async results from an older
+    /// generation are dropped before they can touch the page.
+    static GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+pub fn generation() -> u64 {
+    GENERATION.with(std::cell::Cell::get)
+}
+fn current(started: u64) -> bool {
+    generation() == started
+}
+/// Remove every private note, memory, password and waiting restore from the
+/// page. Called when Settings closes and when the active person changes.
+pub fn reset() {
+    GENERATION.with(|g| g.set(g.get().wrapping_add(1)));
+    for id in [
+        "voice-notes",
+        "notes",
+        "voice-notes-status",
+        "backup-preview",
+        "backup-status",
+    ] {
+        element(id).set_text_content(None);
+    }
+    for id in ["backup-password", "backup-password-repeat"] {
+        input(id).set_value("");
+    }
+    let _ = element("backup-confirm").set_attribute("hidden", "");
+    let _ = element("backup-apply").remove_attribute("data-restore-id");
+    busy(false);
+    spawn_local(async {
+        let _ = call("backup_cancel", json!({})).await;
+    });
+}
+
 fn status(id: &str, text: &str) {
     element(id).set_text_content(Some(text));
+}
+fn status_if(started: u64, id: &str, text: &str) {
+    if current(started) {
+        status(id, text);
+    }
 }
 fn child(
     parent: &web_sys::Element,
@@ -41,7 +82,11 @@ fn focus(node: &web_sys::Element) {
 
 pub async fn review() -> Result<(), String> {
     crate::settings_navigation::reveal("voice-notes-section");
+    let started = generation();
     let value = call("notes_list", json!({})).await?;
+    if !current(started) {
+        return Ok(());
+    }
     let book: Value = serde_wasm_bindgen::from_value(value).map_err(|e| e.to_string())?;
     let container = element("voice-notes");
     container.set_text_content(None);
@@ -124,12 +169,13 @@ fn render(container: &web_sys::Element, note: &Value) -> Result<(), String> {
         let id = id.clone();
         on(export.as_ref(), "click", move |_| {
             let id = id.clone();
+            let started = generation();
             spawn_local(async move {
                 let text = match call("notes_export", json!({"id":id})).await {
                     Ok(value) => value.as_string().unwrap_or_default(),
                     Err(e) => e,
                 };
-                status("voice-notes-status", &text);
+                status_if(started, "voice-notes-status", &text);
             });
         });
     }
@@ -152,16 +198,18 @@ fn render(container: &web_sys::Element, note: &Value) -> Result<(), String> {
     on(remove.as_ref(), "click", move |_| {
         let id = id.clone();
         let title = title.clone();
+        let started = generation();
         spawn_local(async move {
             match call("notes_delete", json!({"id":id})).await {
-                Ok(_) => {
+                Ok(_) if current(started) => {
                     status("voice-notes-status", &format!("Deleted {title}."));
                     if let Err(e) = review().await {
-                        status("voice-notes-status", &e);
+                        status_if(started, "voice-notes-status", &e);
                     }
                     focus(&element("review-voice-notes"));
                 }
-                Err(e) => status("voice-notes-status", &e),
+                Ok(_) => {}
+                Err(e) => status_if(started, "voice-notes-status", &e),
             }
         });
     });
@@ -220,19 +268,21 @@ fn describe(preview: &Value) -> String {
 
 pub fn install() {
     on(element("review-voice-notes").as_ref(), "click", |_| {
-        spawn_local(async {
+        let started = generation();
+        spawn_local(async move {
             if let Err(e) = review().await {
-                status("voice-notes-status", &e);
+                status_if(started, "voice-notes-status", &e);
             }
         });
     });
     on(element("export-voice-notes").as_ref(), "click", |_| {
-        spawn_local(async {
+        let started = generation();
+        spawn_local(async move {
             let text = match call("notes_export", json!({"id":null})).await {
                 Ok(value) => value.as_string().unwrap_or_default(),
                 Err(e) => e,
             };
-            status("voice-notes-status", &text);
+            status_if(started, "voice-notes-status", &text);
         });
     });
     on(element("backup-save").as_ref(), "click", |_| {
@@ -256,13 +306,16 @@ pub fn install() {
         }
         busy(true);
         status("backup-status", "Choose where to save the backup…");
+        let started = generation();
         spawn_local(async move {
             let text = match call("backup_export", json!({"password":password})).await {
                 Ok(value) => value.as_string().unwrap_or_default(),
                 Err(e) => e,
             };
-            busy(false);
-            status("backup-status", &text);
+            if current(started) {
+                busy(false);
+                status("backup-status", &text);
+            }
         });
     });
     on(element("backup-open").as_ref(), "click", |_| {
@@ -276,8 +329,15 @@ pub fn install() {
         busy(true);
         let _ = element("backup-confirm").set_attribute("hidden", "");
         status("backup-status", "Choose a backup to check…");
+        let started = generation();
         spawn_local(async move {
             let result = call("backup_inspect", json!({"password":password})).await;
+            if !current(started) {
+                // Settings closed or the person changed: drop the preview
+                // natively too, and show nothing.
+                let _ = call("backup_cancel", json!({})).await;
+                return;
+            }
             busy(false);
             match result {
                 Ok(value) => {
@@ -313,11 +373,15 @@ pub fn install() {
         let _ = element("backup-apply").remove_attribute("data-restore-id");
         busy(true);
         status("backup-status", "Restoring…");
+        let started = generation();
         spawn_local(async move {
             let text = match call("backup_restore", json!({"id":id})).await {
                 Ok(value) => value.as_string().unwrap_or_default(),
                 Err(e) => e,
             };
+            if !current(started) {
+                return;
+            }
             busy(false);
             let _ = element("backup-confirm").set_attribute("hidden", "");
             status("backup-status", &text);
