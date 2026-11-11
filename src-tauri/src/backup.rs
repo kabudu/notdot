@@ -19,7 +19,7 @@
 //! `ring`, already used by rustls and the voiceprint store; nothing here is a
 //! custom primitive. The password is never stored.
 //!
-//! A backup contains current memories and notes, plus colour and announcement
+//! A backup contains current memories and notes, plus colour and reminder
 //! limits for the owner. It never contains provider keys, Codex credentials,
 //! voiceprints, chat grants, approvals, microphone, wake, startup or
 //! proactivity switches, or anyone else's data.
@@ -440,6 +440,27 @@ struct Journal {
 fn journal_path(state_dir: &Path) -> PathBuf {
     state_dir.join(JOURNAL)
 }
+/// Whether a restore journal (or anything at its path) is waiting.
+pub fn journal_pending(state_dir: &Path) -> bool {
+    std::fs::symlink_metadata(journal_path(state_dir)).is_ok()
+}
+/// While a journal exists, ordinary note and memory changes are refused:
+/// undoing the restore puts back the earlier notebook and removes the
+/// restored memories, so a later change could otherwise be lost silently.
+pub fn hold(context: &crate::profile_context::ProfileContext, held: bool) {
+    context.notes.hold_for_restore(held);
+    context.memory.hold_for_restore(held);
+}
+/// Put back only the preferences a restore changes, so other settings
+/// changed since then are kept.
+fn restore_preferences(
+    previous: &notdot_core::settings::Settings,
+    path: &Path,
+) -> Result<(), String> {
+    let mut current = notdot_core::settings::Settings::load(path)?;
+    Preferences::from_settings(previous).apply(&mut current);
+    current.save(path)
+}
 fn read_journal(state_dir: &Path) -> Result<Option<Journal>, String> {
     let path = journal_path(state_dir);
     match std::fs::symlink_metadata(&path) {
@@ -478,7 +499,7 @@ pub fn recover_settings(state_dir: &Path, settings_path: &Path) -> Result<(), St
         ..
     }) = read_journal(state_dir)?
     {
-        settings.save(settings_path)?;
+        restore_preferences(&settings, settings_path)?;
     }
     Ok(())
 }
@@ -488,9 +509,19 @@ pub async fn recover_profile(
     context: &crate::profile_context::ProfileContext,
     settings_path: Option<&Path>,
 ) -> Result<bool, String> {
-    let Some(journal) = read_journal(&context.state_dir)? else {
-        return Ok(false);
+    let journal = match read_journal(&context.state_dir) {
+        Ok(Some(journal)) => journal,
+        Ok(None) => {
+            hold(context, false);
+            return Ok(false);
+        }
+        Err(error) => {
+            hold(context, true);
+            return Err(error);
+        }
     };
+    // Stays held until every step below has succeeded.
+    hold(context, true);
     context.memory.remove_records(&journal.inserted).await?;
     let notes_path = context.notes.path().to_owned();
     match &journal.previous_notes {
@@ -504,9 +535,10 @@ pub async fn recover_profile(
     }
     context.notes.reload().await;
     if let (Some(settings), Some(path)) = (&journal.previous_settings, settings_path) {
-        settings.save(path)?;
+        restore_preferences(settings, path)?;
     }
     remove_journal(&context.state_dir)?;
+    hold(context, false);
     Ok(true)
 }
 
@@ -549,8 +581,12 @@ pub async fn apply(
         previous_settings: settings.as_ref().map(|s| (**s).clone()),
     };
     let bytes = serde_json::to_vec(&journal).map_err(|e| e.to_string())?;
-    crate::file_dialog::write_atomic(&journal_path(&context.state_dir), &bytes)
-        .map_err(|e| format!("Could not start the restore: {e}"))?;
+    if let Err(e) = crate::file_dialog::write_atomic(&journal_path(&context.state_dir), &bytes) {
+        // An unconfirmed journal may still be on disk and would be undone.
+        hold(context, journal_pending(&context.state_dir));
+        return Err(format!("Could not start the restore: {e}"));
+    }
+    hold(context, true);
     context.learning.cancel();
     let result = async {
         if fail_at == Some(Step::Memories) {
@@ -585,7 +621,12 @@ pub async fn apply(
             if let (Some(settings), Some(prefs)) = (settings, &plan.preferences) {
                 prefs.apply(settings);
             }
-            remove_journal(&context.state_dir)?;
+            // If the journal can't be removed, the next start undoes this
+            // restore; changes stay paused so nothing newer is lost then.
+            remove_journal(&context.state_dir).map_err(|_| {
+                "Restored, but notdot couldn't finish recording it. Restart notdot: it will undo this restore, then you can restore again. Note and memory changes are paused until then.".to_string()
+            })?;
+            hold(context, false);
             Ok(())
         }
         Err(error) => {
@@ -837,7 +878,7 @@ pub async fn restore_staged(state: &AppState, id: &str) -> Result<String, String
             "notes"
         },
         if plan.preferences.is_some() {
-            " Colour and announcement limits were restored."
+            " Orb colour, quiet hours, reminder limits and follow-up length were restored."
         } else {
             ""
         }
@@ -1413,6 +1454,146 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn while_a_restore_waits_to_be_undone_note_and_memory_changes_are_refused() {
+        use notdot_core::memory::RESTORE_PENDING;
+        let dir = tempfile::tempdir().unwrap();
+        let original;
+        let settings_path;
+        {
+            let state = crate::test_support::state(dir.path());
+            seed(
+                &state,
+                "I live in Leeds",
+                "create a list called Groceries with milk",
+            )
+            .await;
+            original = contents(&state).await;
+            settings_path = state.path.clone();
+            // A restore that stopped after its journal and some writes, and
+            // whose undo has not finished (a crash, or a failed undo).
+            let context = state.context();
+            let a = uuid::Uuid::new_v4().to_string();
+            let mut p = payload(vec![record(&a, "Restored fact", &[], false)]);
+            p.notes.version = 1;
+            p.notes.notes.push(notes::Note {
+                id: uuid::Uuid::new_v4().to_string(),
+                title: "Trip".into(),
+                kind: notes::Kind::List,
+                body: String::new(),
+                items: vec![],
+                created: 0,
+                updated: 0,
+            });
+            let existing = context.memory.current_contents().await.unwrap();
+            let current = context.notes.snapshot().await.unwrap();
+            let plan = plan(p, &existing, &current, true).unwrap();
+            let previous = notdot_core::settings::Settings {
+                hue: 3,
+                ..Default::default()
+            };
+            let journal = Journal {
+                version: 1,
+                inserted: plan.memories.iter().map(|r| r.id.clone()).collect(),
+                previous_notes: Some(current),
+                previous_settings: Some(previous),
+            };
+            crate::file_dialog::write_atomic(
+                &context.state_dir.join(JOURNAL),
+                &serde_json::to_vec(&journal).unwrap(),
+            )
+            .unwrap();
+            let revision = context.memory.revision();
+            context
+                .memory
+                .import_records(&plan.memories, revision)
+                .await
+                .unwrap();
+            crate::notes::save_file(context.notes.path(), &plan.notebook).unwrap();
+            // The restore set the colour; another setting changed later.
+            notdot_core::settings::Settings {
+                hue: 7,
+                microphone_muted: true,
+                ..Default::default()
+            }
+            .save(&settings_path)
+            .unwrap();
+        }
+        // The next start opens this person with the journal still waiting.
+        let state = crate::test_support::state(dir.path());
+        let context = state.context();
+        let waiting = contents(&state).await;
+        assert_ne!(waiting, original);
+        // Spoken note changes, deletion and every memory write are refused,
+        // so the undo below cannot discard anything the person did since.
+        for request in [
+            "add eggs to the groceries list",
+            "create a list called Later",
+            "tick off milk on the groceries list",
+        ] {
+            assert_eq!(
+                context.notes.command(request).await.as_deref(),
+                Some(RESTORE_PENDING),
+                "{request}"
+            );
+        }
+        let groceries = context.notes.snapshot().await.unwrap().notes[0].id.clone();
+        assert_eq!(
+            context.notes.delete(&groceries).await.unwrap_err(),
+            RESTORE_PENDING
+        );
+        // Reading still works.
+        assert!(
+            context
+                .notes
+                .command("read my groceries list")
+                .await
+                .unwrap()
+                .contains("milk")
+        );
+        let memory = &context.memory;
+        assert_eq!(
+            memory.remember("I like owls", "t").await.unwrap_err(),
+            RESTORE_PENDING
+        );
+        let id = memory.review("").await.unwrap()[0].id.clone();
+        assert_eq!(memory.forget(&id).await.unwrap_err(), RESTORE_PENDING);
+        assert_eq!(
+            memory.edit(&id, "I live in York").await.unwrap_err(),
+            RESTORE_PENDING
+        );
+        assert_eq!(memory.maintain().await.unwrap_err(), RESTORE_PENDING);
+        memory.set_learning_enabled(true).await;
+        let ticket = memory.learning_ticket().unwrap();
+        assert_eq!(
+            memory
+                .remember_explicit_submission(ticket, "t", "Remember that I like owls")
+                .await
+                .unwrap_err(),
+            RESTORE_PENDING
+        );
+        assert_eq!(contents(&state).await, waiting);
+        // Finishing the undo removes only the restore's writes, keeps the
+        // later setting and lets changes through again.
+        recover_settings(&context.state_dir, &settings_path).unwrap();
+        assert!(
+            recover_profile(&context, Some(&settings_path))
+                .await
+                .unwrap()
+        );
+        assert_eq!(contents(&state).await, original);
+        let saved = notdot_core::settings::Settings::load(&settings_path).unwrap();
+        assert_eq!((saved.hue, saved.microphone_muted), (3, true));
+        assert!(
+            context
+                .notes
+                .command("add eggs to the groceries list")
+                .await
+                .unwrap()
+                .starts_with("Added eggs")
+        );
+        memory.remember("I like owls", "t").await.unwrap();
+    }
     #[tokio::test]
     async fn backups_belong_to_one_person_and_staged_restores_cannot_cross_people() {
         use notdot_core::profiles::{Actor, SpeakerOutcome};

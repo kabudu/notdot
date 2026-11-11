@@ -17,6 +17,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 pub const MAX_RECORDS: usize = 2000;
+/// Shown for any change refused while an interrupted restore still waits to
+/// be undone. Undoing puts back earlier notes, so later changes would be lost.
+pub const RESTORE_PENDING: &str = "An earlier restore hasn't finished undoing, so nothing was changed. Restart notdot to finish it, then try again.";
 /// Metadata that describes a memory itself. Chat and turn identifiers stay on
 /// this computer.
 pub const BACKUP_METADATA: &[&str] = &[
@@ -46,6 +49,8 @@ pub struct Memory {
     revision: std::sync::atomic::AtomicU64,
     maintained: std::sync::atomic::AtomicU64,
     semantic_reviewed: std::sync::atomic::AtomicU64,
+    /// Set while a restore journal is waiting to be undone.
+    restore_hold: std::sync::atomic::AtomicBool,
 }
 fn scope() -> MemoryScope {
     MemoryScope {
@@ -94,10 +99,30 @@ impl Memory {
             revision: std::sync::atomic::AtomicU64::new(1),
             maintained: std::sync::atomic::AtomicU64::new(0),
             semantic_reviewed: std::sync::atomic::AtomicU64::new(0),
+            restore_hold: std::sync::atomic::AtomicBool::new(false),
         })
     }
+    /// Refuse every user or learning change until an unfinished restore is
+    /// undone. Only the restore's own import and rollback still write.
+    pub fn hold_for_restore(&self, held: bool) {
+        self.restore_hold
+            .store(held, std::sync::atomic::Ordering::SeqCst);
+    }
+    pub fn restore_held(&self) -> bool {
+        self.restore_hold.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    /// The mutation gate for ordinary changes, refused during a restore hold.
+    /// Checked after locking, so a change waiting for the lock sees a hold
+    /// set while it waited.
+    pub(crate) async fn write_gate(&self) -> Result<tokio::sync::MutexGuard<'_, ()>, String> {
+        let gate = self.mutations.lock().await;
+        if self.restore_held() {
+            return Err(RESTORE_PENDING.into());
+        }
+        Ok(gate)
+    }
     pub async fn remember(&self, text: &str, thread: &str) -> Result<String, String> {
-        let _gate = self.mutations.lock().await;
+        let _gate = self.write_gate().await?;
         self.remember_unlocked(text, thread, None).await
     }
     async fn remember_unlocked(
@@ -220,7 +245,7 @@ impl Memory {
         if id.len() > 128 {
             return Err("Invalid memory ID".into());
         }
-        let _gate = self.mutations.lock().await;
+        let _gate = self.write_gate().await?;
         self.policy
             .send_modify(|p| p.epoch = p.epoch.wrapping_add(1));
         let package = self
@@ -477,7 +502,7 @@ impl Memory {
         Ok(())
     }
     pub async fn maintain(&self) -> Result<String, String> {
-        let _gate = self.mutations.lock().await;
+        let _gate = self.write_gate().await?;
         self.maintain_unlocked().await
     }
     async fn maintain_unlocked(&self) -> Result<String, String> {

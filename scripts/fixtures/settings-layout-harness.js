@@ -60,7 +60,7 @@
  search.value+='ackup';search.dispatchEvent(new Event('input',{bubbles:true}));await sleep(50);
  check('backup search stays focused and reveals backup',document.activeElement===search&&!$('backup-section').hidden);
  search.value='quiet';search.dispatchEvent(new Event('input',{bubbles:true}));await sleep(50);
- check('matching search feedback',$('settings-search-status').textContent.includes('2'));
+ {const shown=[...document.querySelectorAll('#settings-content .settings-section')].filter(s=>!s.hidden);check('matching search feedback',$('settings-search-status').textContent===shown.length+' sections match.'&&shown.length>=2&&!$('reminders-section').hidden);}
  $('settings-search-clear').click();await sleep(50);check('clear restores categories',!$('settings-categories').hidden&&!search.value);
  $('settings-category-voice').click();if(!$('voice-section').open)$('voice-section').querySelector('summary').click();$('load-voices').click();await sleep(100);$('voice-toggle').click();await sleep(80);
  check('voice picker expands',$('voice-toggle').getAttribute('aria-expanded')==='true'&&!$('voice-popup').hidden);
@@ -89,12 +89,30 @@
  $('settings-category-memory').click();await sleep(50);
  $('review-voice-notes').click();await sleep(250);
  check('owner notes render',notesText().includes('Gate code'));
+ // Password problems name the field, mark it invalid and describe why.
+ const typed=(id,v)=>{$(id).value=v;$(id).dispatchEvent(new Event('input',{bubbles:true}));};
+ const describedBy=id=>($(id).getAttribute('aria-describedby')||'').split(' ');
+ // Category names stay whole words on one line, inside the bar.
+ const lines=b=>{const r=document.createRange();r.selectNodeContents(b);return new Set([...r.getClientRects()].map(x=>Math.round(x.top))).size;};
+ check('category names never break inside a word',[...$('settings-categories').querySelectorAll('button')].every(b=>lines(b)===1&&b.scrollWidth<=b.clientWidth+1)&&$('settings-categories').scrollWidth<=$('settings-categories').clientWidth+1);
+ const rgb=c=>c.match(/[\d.]+/g).slice(0,3).map(Number),lum=v=>{const f=x=>{x/=255;return x<=.03928?x/12.92:((x+.055)/1.055)**2.4};const [r,g,b]=v.map(f);return .2126*r+.7152*g+.0722*b;},ratio=(a,b)=>{const [x,y]=[lum(a),lum(b)].sort((m,n)=>n-m);return (x+.05)/(y+.05);};
+ const normalBorder=getComputedStyle($('backup-password')).borderTopColor;
+ typed('backup-password','too short');$('backup-save').click();await sleep(50);
+ {const s=getComputedStyle($('backup-password'));check('invalid password field has a visible border with 3:1 contrast',s.borderTopColor!==normalBorder&&ratio(rgb(s.borderTopColor),rgb(s.backgroundColor))>=3);}
+ check('short backup password is marked invalid and keeps its text',$('backup-password').getAttribute('aria-invalid')==='true'&&describedBy('backup-password').includes('backup-status')&&describedBy('backup-password').includes('backup-password-hint')&&document.activeElement===$('backup-password')&&$('backup-password').value==='too short'&&$('backup-status').textContent.includes('12 characters'));
+ typed('backup-password','correct horse battery');
+ check('typing clears the invalid state',!$('backup-password').hasAttribute('aria-invalid')&&!describedBy('backup-password').includes('backup-status'));
+ typed('backup-password-repeat','correct horse batterx');$('backup-save').click();await sleep(50);
+ check('mismatched repeat is marked invalid and focused',$('backup-password-repeat').getAttribute('aria-invalid')==='true'&&describedBy('backup-password-repeat').includes('backup-status')&&!$('backup-password').hasAttribute('aria-invalid')&&document.activeElement===$('backup-password-repeat')&&$('backup-password').value==='correct horse battery'&&!$('backup-password-repeat').value);
+ typed('backup-password','wrong password!!');$('backup-open').click();await sleep(250);
+ check('wrong restore password is marked invalid on the password field',$('backup-password').getAttribute('aria-invalid')==='true'&&document.activeElement===$('backup-password')&&!$('backup-password').value&&$('backup-status').textContent.startsWith('The password is wrong'));
  $('backup-password').value='synthetic password';$('backup-open').click();await sleep(250);
+ check('a valid restore password clears the invalid state',!$('backup-password').hasAttribute('aria-invalid'));
  check('restore preview waits for confirmation',!$('backup-confirm').hidden&&$('backup-preview').textContent.includes('3 memories')&&!!$('backup-apply').getAttribute('data-restore-id'));
  check('restore preview focuses the safe choice',document.activeElement===$('backup-keep'));
  $('backup-password').value='typed but unused';
  $('close').click();await sleep(150);
- check('closing clears notes, passwords and the pending restore',!notesText()&&!$('backup-password').value&&!$('backup-password-repeat').value&&$('backup-confirm').hidden&&!$('backup-preview').textContent&&!$('backup-apply').hasAttribute('data-restore-id'));
+ check('closing clears notes, passwords and the pending restore',!notesText()&&!$('backup-password').value&&!$('backup-password-repeat').value&&$('backup-confirm').hidden&&!$('backup-preview').textContent&&!$('backup-apply').hasAttribute('data-restore-id')&&!$('backup-password').hasAttribute('aria-invalid')&&!$('backup-password-repeat').hasAttribute('aria-invalid'));
  await reopen();
  check('reopened Settings shows no cached notes',!notesText());
  // A slow owner result must not render after another person becomes active.

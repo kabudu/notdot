@@ -175,7 +175,10 @@ async fn refusal(state: &AppState) -> Option<&'static str> {
         Some("Interrupting by voice is off")
     } else if s.settings.microphone_muted {
         Some("The microphone is muted")
-    } else if !s.window_visible || !s.settings.onboarding_complete || !s.key_configured {
+    } else if !s.window_visible
+        || !s.settings.onboarding_complete
+        || !s.voice_key_ready(&state.credentials)
+    {
         Some("notdot is not ready to listen")
     } else if state.speakers.enrol_capture_active() {
         Some("A voice is being taught")

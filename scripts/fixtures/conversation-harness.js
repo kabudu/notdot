@@ -70,7 +70,7 @@
     if(cmd==='notes_export'){record('notes-export',{id:args.id});return args.id?'Exported 1 note.':'Exported '+(notebooks[state.profile_id]||{notes:[]}).notes.length+' notes.';}
     if(cmd==='backup_export'){if((args.password||'').length<12)throw Error('Use a backup password of at least 12 characters.');record('backup-export');return 'Saved an encrypted backup of 3 memories and 2 notes. Keep the password safe: notdot can’t recover it.';}
     if(cmd==='backup_inspect'){record('backup-inspect');if(window.inspectDelay){const d=window.inspectDelay;window.inspectDelay=0;await sleep(d);}if(args.password!=='synthetic password')throw Error('The password is wrong, or the backup was changed after it was made. Nothing was restored.');return {id:'restore-1',created_unix_ms:1800000000000,memories:3,skipped_memories:1,notes:2,renamed_notes:1,preferences:true};}
-    if(cmd==='backup_restore'){record('backup-restore',{id:args.id});return 'Restored 3 memories and 2 notes. Colour and announcement limits were restored.';}
+    if(cmd==='backup_restore'){record('backup-restore',{id:args.id});return 'Restored 3 memories and 2 notes. Orb colour, quiet hours, reminder limits and follow-up length were restored.';}
     if(cmd==='backup_cancel'){record('backup-cancel');return null;}
     if(cmd==='snapshot') return copy(state);
     if(cmd==='capture_status') return copy(state.wake);

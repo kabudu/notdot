@@ -405,7 +405,11 @@ pub fn target(text: &str) -> Option<Target> {
 /// Creation forms: "create a list called Groceries", "make a shopping list",
 /// "start a packing list with socks", "take a note", "take a note saying ...".
 /// A missing name is asked for; nothing else is guessed.
-fn creation(rest: &str) -> Option<Command> {
+///
+/// `dictation` is true for "take" and "jot down". Without a name, "make a
+/// list of the best films" or "create a note about Rome" asks the companion
+/// to write something, so those forms are left to the conversation.
+fn creation(rest: &str, dictation: bool) -> Option<Command> {
     let rest = strip_any(
         rest,
         &["me a new ", "me a ", "a new ", "a ", "an ", "my ", "new "],
@@ -426,25 +430,37 @@ fn creation(rest: &str) -> Option<Command> {
         }
     };
     let content = |text: &str| Some(text.trim().to_owned()).filter(|c| !c.is_empty());
+    // An explicit name, split from any content that follows it.
+    let named = |kind: Kind, named: &str| -> Command {
+        let (title, body) = match split_ci(named, content_separators(kind)) {
+            Some((title, body)) => (title, content(body)),
+            None => (named, None),
+        };
+        Command::Create {
+            kind,
+            title: Some(title.trim().to_owned()),
+            content: body,
+        }
+    };
     // "a list called Groceries ...", "a note titled Plans saying ..."
     if let Some((word, tail)) = rest.split_once(' ')
         && let Some(kind) = kind_word(word)
     {
-        if let Some(named) = strip_any(tail, &["called ", "named ", "titled ", "for "]) {
-            let (title, body) = match split_ci(named, content_separators(kind)) {
-                Some((title, body)) => (title, content(body)),
-                None => (named, None),
-            };
-            return Some(Command::Create {
-                kind,
-                title: Some(title.trim().to_owned()),
-                content: body,
-            });
+        if let Some(name) = strip_any(tail, &["called ", "named ", "titled ", "for "]) {
+            return Some(named(kind, name));
         }
         // "take a note saying ...", "a list with eggs": ask for the name.
         let lower = tail.to_ascii_lowercase();
+        let generative = |sep: &&&str| {
+            !dictation
+                && matches!(
+                    (kind, **sep),
+                    (Kind::List, " of ") | (Kind::Note, " about ")
+                )
+        };
         return content_separators(kind)
             .iter()
+            .filter(|sep| !generative(sep))
             .find_map(|sep| strip_ci(&format!(" {lower}"), sep).map(|_| sep.len() - 1))
             .map(|skip| Command::Create {
                 kind,
@@ -469,6 +485,14 @@ fn creation(rest: &str) -> Option<Command> {
         };
         let end = at + word.len();
         let tail = &rest[end..];
+        if rest[..end].split_whitespace().count() > 6 {
+            return None;
+        }
+        // "a shopping list called Weekend with ...": the explicit name wins
+        // over the spoken words before "list".
+        if let Some(name) = naming(tail) {
+            return Some(named(kind, name));
+        }
         let body = if tail.is_empty() {
             None
         } else {
@@ -493,6 +517,10 @@ fn creation(rest: &str) -> Option<Command> {
     None
 }
 
+/// The name after "called", "named" or "titled" that follows the kind word.
+fn naming(tail: &str) -> Option<&str> {
+    strip_any(tail, &[" called ", " named ", " titled "]).filter(|name| !name.trim().is_empty())
+}
 /// Recognise a notes request. Returns `None` for ordinary conversation.
 pub fn parse(text: &str) -> Option<Command> {
     let text = prepare(text);
@@ -543,7 +571,8 @@ pub fn parse(text: &str) -> Option<Command> {
             "jot down ",
         ],
     ) {
-        return creation(rest);
+        let dictation = strip_any(text, &["take ", "jot down "]).is_some();
+        return creation(rest, dictation);
     }
     if let Some(rest) = strip_any(text, &["add ", "append ", "put "]) {
         let (item, place) = rsplit_ci(rest, &[" to ", " onto ", " on "])?;
@@ -907,6 +936,35 @@ fn strip_title_answer(text: &str) -> &str {
     .unwrap_or(text)
 }
 
+/// An answer to "What should I call it?" that rejects or questions the
+/// request instead of naming it. `words` is [`confirmation_words`] output.
+fn not_a_name(text: &str, words: &str) -> bool {
+    let raw = text.trim().to_ascii_lowercase();
+    raw.ends_with('?')
+        || ["no,", "no.", "no!", "not "]
+            .iter()
+            .any(|p| raw.starts_with(p))
+        || [
+            "nope ",
+            "no i ",
+            "no that ",
+            "no just ",
+            "i meant ",
+            "i mean ",
+            "i didn t ",
+            "i did not ",
+            "i don t want",
+            "i do not want",
+            "actually ",
+            "that s not ",
+            "that is not ",
+            "wait ",
+            "don t save",
+            "do not save",
+        ]
+        .iter()
+        .any(|p| words.starts_with(p) || format!("{words} ") == *p)
+}
 /// Answer a creation question, or `None` to handle the text as a new request.
 fn answer_draft(
     book: &Notebook,
@@ -932,6 +990,12 @@ fn answer_draft(
     }
     // A different notes request replaces the question.
     if parse(&spoken).is_some() {
+        return None;
+    }
+    // A name is never a correction or a question: "No, I meant tell me some
+    // films" or "What are the best films?" drop the question and go to the
+    // conversation, so nothing is saved under that wording.
+    if matches!(draft, Draft::Title { .. }) && not_a_name(text, &words) {
         return None;
     }
     match draft {
@@ -1634,6 +1698,13 @@ mod tests {
             "Take the dog out",
             "Change the model to Terra",
             "I make a list every morning",
+            // Generative requests the companion answers; nothing to save.
+            "Make a list of the best films of 2020",
+            "Can you make a list of ten names for my dog?",
+            "Make me a list of pros and cons of remote work",
+            "Start a list of my favourite books",
+            "Create a note about the Roman empire",
+            "Make a new note about the history of tea",
         ] {
             assert_eq!(handle(&book, &mut s, text, 10), Outcome::NotMine, "{text}");
         }
@@ -2029,6 +2100,136 @@ mod tests {
         assert!(r.starts_with("Which list do you mean?"), "{r}");
         let r = apply(&mut empty, &mut fresh, "delete my note", 0);
         assert!(r.starts_with("Which note do you mean?"), "{r}");
+    }
+
+    #[test]
+    fn dictation_and_named_creation_still_work_after_generative_forms_are_left_alone() {
+        let mut book = Notebook::default();
+        let mut s = Session::default();
+        // Dictation verbs keep "of"/"about" as the words to save.
+        assert_eq!(
+            apply(&mut book, &mut s, "take a note about the boiler service", 0),
+            "What should I call the note?"
+        );
+        assert_eq!(
+            apply(&mut book, &mut s, "Boiler", 1),
+            "Saved a note called Boiler: the boiler service"
+        );
+        assert_eq!(
+            apply(&mut book, &mut s, "jot down a list of eggs and milk", 10),
+            "What should I call the list?"
+        );
+        assert!(apply(&mut book, &mut s, "Breakfast", 11).starts_with("Should I save"));
+        // A name, or an explicit item separator, is a clear notes request.
+        assert_eq!(
+            apply(&mut book, &mut s, "make a list called Films", 20),
+            "Created a list called Films."
+        );
+        assert_eq!(
+            apply(&mut book, &mut s, "make a list with socks", 30),
+            "What should I call the list?"
+        );
+        assert!(
+            apply(&mut book, &mut s, "Packing", 31).starts_with("Created a list called Packing")
+        );
+    }
+
+    #[test]
+    fn an_explicit_name_after_a_compound_kind_is_used() {
+        let mut book = Notebook::default();
+        let mut s = Session::default();
+        // Exact transcript read back from the native Linux voice test.
+        assert_eq!(
+            apply(
+                &mut book,
+                &mut s,
+                "Make a shopping list called Linux voice test with apples, bread and oat milk.",
+                0,
+            ),
+            "Created a list called Linux voice test with 3 items: apples, bread and oat milk."
+        );
+        let list = &book.notes[0];
+        assert_eq!(list.kind, Kind::List);
+        assert_eq!(
+            list.items
+                .iter()
+                .map(|i| i.text.as_str())
+                .collect::<Vec<_>>(),
+            ["apples", "bread", "oat milk"]
+        );
+        for (text, reply) in [
+            (
+                "Make a packing list called Rome trip with socks, sun cream and a hat",
+                "Created a list called Rome trip with 3 items: socks, sun cream and a hat.",
+            ),
+            (
+                "start a shopping list named Weekend",
+                "Created a list called Weekend.",
+            ),
+            (
+                "create a project note titled Ideas saying owls at dusk",
+                "Saved a note called Ideas: owls at dusk",
+            ),
+        ] {
+            assert_eq!(apply(&mut book, &mut s, text, 10), reply, "{text}");
+        }
+        // Still bounded: a long phrase before "list" is not a notes request.
+        assert_eq!(
+            handle(
+                &book,
+                &mut s,
+                "make the very long and detailed weekly family shopping list called Big",
+                20
+            ),
+            Outcome::NotMine
+        );
+    }
+
+    #[test]
+    fn a_correction_or_question_never_becomes_a_note_name() {
+        for answer in [
+            "No, I meant just tell me some films",
+            "What are the best films of 2020?",
+            "Actually just tell me",
+            "I meant give me ideas",
+            "no that's not what I wanted",
+            "Nope",
+            "Don't save anything",
+        ] {
+            let book = Notebook::default();
+            let mut s = Session::default();
+            assert_eq!(
+                handle(&book, &mut s, "make a list", 0),
+                Outcome::Reply("What should I call the list?".into())
+            );
+            // Not saved, and left to the conversation.
+            assert_eq!(
+                handle(&book, &mut s, answer, 1),
+                Outcome::NotMine,
+                "{answer}"
+            );
+            // The question is gone: a later name is ordinary conversation.
+            assert_eq!(
+                handle(&book, &mut s, "Films", 2),
+                Outcome::NotMine,
+                "{answer}"
+            );
+        }
+        // A note's words may still be a question or start with "No".
+        let mut book = Notebook::default();
+        let mut s = Session::default();
+        apply(&mut book, &mut s, "take a note", 0);
+        apply(&mut book, &mut s, "Call it Bills", 1);
+        assert_eq!(
+            apply(&mut book, &mut s, "Did we pay the gas bill?", 2),
+            "Saved a note called Bills: Did we pay the gas bill"
+        );
+        apply(&mut book, &mut s, "take a note", 10);
+        apply(&mut book, &mut s, "Parking", 11);
+        assert_eq!(
+            apply(&mut book, &mut s, "No parking on Tuesdays", 12),
+            "Saved a note called Parking: No parking on Tuesdays"
+        );
     }
 
     #[test]

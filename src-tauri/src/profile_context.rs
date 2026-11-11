@@ -62,6 +62,11 @@ impl ProfileContext {
             runtime.to_owned(),
         );
         learning.configure(selection);
+        // A restore journal left by a crash or failed undo: refuse changes
+        // until `backup::recover_profile` finishes undoing it.
+        let pending = crate::backup::journal_pending(paths.state);
+        notes.hold_for_restore(pending);
+        memory.hold_for_restore(pending);
         Ok(Self {
             id,
             memory,

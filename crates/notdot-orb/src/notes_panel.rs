@@ -34,6 +34,7 @@ pub fn reset() {
     for id in ["backup-password", "backup-password-repeat"] {
         input(id).set_value("");
     }
+    clear_password_problem();
     let _ = element("backup-confirm").set_attribute("hidden", "");
     let _ = element("backup-apply").remove_attribute("data-restore-id");
     busy(false);
@@ -216,6 +217,37 @@ fn render(container: &web_sys::Element, note: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Each password field and the hint it is normally described by.
+const PASSWORD_FIELDS: [(&str, &str); 2] = [
+    ("backup-password", "backup-password-hint"),
+    ("backup-password-repeat", ""),
+];
+/// Mark one password field as wrong, describe it by the message and move
+/// focus there, so assistive technology announces the field, that it is
+/// invalid and why. Cleared when either field changes.
+fn password_problem(field: &str, message: &str) {
+    clear_password_problem();
+    status("backup-status", message);
+    let node = element(field);
+    let _ = node.set_attribute("aria-invalid", "true");
+    let hint = PASSWORD_FIELDS
+        .iter()
+        .find(|(id, _)| *id == field)
+        .map_or("", |(_, hint)| *hint);
+    let _ = node.set_attribute("aria-describedby", format!("{hint} backup-status").trim());
+    focus(&node);
+}
+fn clear_password_problem() {
+    for (id, hint) in PASSWORD_FIELDS {
+        let node = element(id);
+        let _ = node.remove_attribute("aria-invalid");
+        let _ = if hint.is_empty() {
+            node.remove_attribute("aria-describedby")
+        } else {
+            node.set_attribute("aria-describedby", hint)
+        };
+    }
+}
 fn take_password(id: &str) -> String {
     let field = input(id);
     let value = field.value();
@@ -248,13 +280,21 @@ fn describe(preview: &Value) -> String {
         ));
     }
     if n("renamed_notes") > 0 {
+        let renamed = n("renamed_notes");
         text.push_str(&format!(
-            " {} with names already in use will be added with “(restored)”.",
-            plural(n("renamed_notes"), "note", "notes")
+            " {} {} already in use will be added with “(restored)”.",
+            plural(renamed, "note", "notes"),
+            if renamed == 1 {
+                "whose name is"
+            } else {
+                "whose names are"
+            }
         ));
     }
     if preview["preferences"] == true {
-        text.push_str(" Your colour and reminder limits will be set from the backup.");
+        text.push_str(
+            " Your orb colour, quiet hours, reminder limits and follow-up length will be replaced with the backup’s.",
+        );
     }
     let made = js_sys::Date::new(&JsValue::from_f64(
         preview["created_unix_ms"].as_f64().unwrap_or(0.),
@@ -285,25 +325,29 @@ pub fn install() {
             status_if(started, "voice-notes-status", &text);
         });
     });
+    for (id, _) in PASSWORD_FIELDS {
+        on(element(id).as_ref(), "input", |_| clear_password_problem());
+    }
     on(element("backup-save").as_ref(), "click", |_| {
+        // Checked in place first, so a typing slip doesn't clear both fields.
+        if input("backup-password").value().chars().count() < 12 {
+            password_problem(
+                "backup-password",
+                "Use a backup password of at least 12 characters. Nothing was saved.",
+            );
+            return;
+        }
+        if input("backup-password").value() != input("backup-password-repeat").value() {
+            input("backup-password-repeat").set_value("");
+            password_problem(
+                "backup-password-repeat",
+                "The two passwords don’t match. Type the password again here. Nothing was saved.",
+            );
+            return;
+        }
+        clear_password_problem();
         let password = take_password("backup-password");
-        let repeat = take_password("backup-password-repeat");
-        if password.chars().count() < 12 {
-            status(
-                "backup-status",
-                "Use a backup password of at least 12 characters.",
-            );
-            focus(&element("backup-password"));
-            return;
-        }
-        if password != repeat {
-            status(
-                "backup-status",
-                "The two passwords don’t match. Nothing was saved.",
-            );
-            focus(&element("backup-password"));
-            return;
-        }
+        let _ = take_password("backup-password-repeat");
         busy(true);
         status("backup-status", "Choose where to save the backup…");
         let started = generation();
@@ -322,10 +366,10 @@ pub fn install() {
         let password = take_password("backup-password");
         let _ = take_password("backup-password-repeat");
         if password.is_empty() {
-            status("backup-status", "Enter the backup’s password first.");
-            focus(&element("backup-password"));
+            password_problem("backup-password", "Enter the backup’s password first.");
             return;
         }
+        clear_password_problem();
         busy(true);
         let _ = element("backup-confirm").set_attribute("hidden", "");
         status("backup-status", "Choose a backup to check…");
@@ -352,6 +396,11 @@ pub fn install() {
                     let _ = element("backup-confirm").remove_attribute("hidden");
                     status("backup-status", "");
                     focus(&element("backup-keep"));
+                }
+                // The native check gives this exact wording for a wrong
+                // password (or a changed file); point at the field.
+                Err(e) if e.starts_with("The password is wrong") => {
+                    password_problem("backup-password", &e);
                 }
                 Err(e) => status("backup-status", &e),
             }

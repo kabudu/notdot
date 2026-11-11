@@ -21,6 +21,9 @@ fn now() -> u64 {
 pub struct Notes {
     path: PathBuf,
     state: Mutex<Inner>,
+    /// Set while a restore journal waits to be undone: undoing puts back the
+    /// earlier notebook, so any later change would be silently lost.
+    restore_hold: std::sync::atomic::AtomicBool,
 }
 struct Inner {
     /// An unreadable file is reported and left untouched, never overwritten.
@@ -106,7 +109,17 @@ impl Notes {
                 book,
                 session: Session::default(),
             }),
+            restore_hold: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+    /// Refuse every change until an unfinished restore is undone. Reading,
+    /// listing and exporting still work.
+    pub fn hold_for_restore(&self, held: bool) {
+        self.restore_hold
+            .store(held, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn held(&self) -> bool {
+        self.restore_hold.load(std::sync::atomic::Ordering::SeqCst)
     }
     pub async fn cancel(&self) {
         self.state.lock().await.session.cancel();
@@ -128,6 +141,10 @@ impl Notes {
         match notes::handle(current, session, text, now()) {
             Outcome::NotMine => None,
             Outcome::Reply(reply) => Some(reply),
+            Outcome::Changed(..) if self.held() => {
+                session.cancel();
+                Some(notdot_core::memory::RESTORE_PENDING.to_owned())
+            }
             Outcome::Changed(next, reply) => {
                 let result = save_async(&self.path, &next).await;
                 Some(match settle(book, next, result) {
@@ -167,8 +184,11 @@ impl Notes {
         inner.book = load(&self.path);
         inner.session.cancel();
     }
-    async fn delete(&self, id: &str) -> Result<(), String> {
+    pub(crate) async fn delete(&self, id: &str) -> Result<(), String> {
         let mut inner = self.state.lock().await;
+        if self.held() {
+            return Err(notdot_core::memory::RESTORE_PENDING.into());
+        }
         let book = inner.book.as_ref().map_err(Clone::clone)?;
         let mut next = book.clone();
         let before = next.notes.len();
@@ -390,6 +410,51 @@ mod tests {
         assert!(voice_allowed(&lock, false));
         // With voices set up, an unrecognised speaker is refused.
         assert!(!voice_allowed(&lock, true));
+    }
+
+    /// Simulated voice-note acceptance: the exact transcript read back from
+    /// the native Linux voice test, through real admission and the spoken notes
+    /// path, saved to this person's notes file. Recognition is not exercised.
+    #[tokio::test]
+    async fn linux_voice_transcript_creates_the_named_list_on_disk() {
+        use notdot_core::profiles::SpeakerOutcome;
+        let dir = tempfile::tempdir().unwrap();
+        let state = crate::test_support::state(dir.path());
+        let owner = crate::test_support::admit(&state, SpeakerOutcome::Disabled)
+            .await
+            .unwrap();
+        let context = state.context();
+        assert!(!context.notes.path().exists());
+        let reply = voice_command(
+            &state,
+            &owner,
+            &context,
+            "Make a shopping list called Linux voice test with apples, bread and oat milk.",
+        )
+        .await;
+        assert_eq!(
+            reply.as_deref(),
+            Some(
+                "Created a list called Linux voice test with 3 items: apples, bread and oat milk."
+            )
+        );
+        let saved: Notebook =
+            serde_json::from_slice(&std::fs::read(context.notes.path()).unwrap()).unwrap();
+        assert_eq!(saved.notes.len(), 1);
+        assert_eq!(saved.notes[0].title, "Linux voice test");
+        assert_eq!(
+            saved.notes[0]
+                .items
+                .iter()
+                .map(|i| i.text.as_str())
+                .collect::<Vec<_>>(),
+            ["apples", "bread", "oat milk"]
+        );
+        // Reading it back by voice uses the same notebook.
+        let read = voice_command(&state, &owner, &context, "Read my Linux voice test list")
+            .await
+            .unwrap();
+        assert!(read.contains("oat milk"), "{read}");
     }
 
     #[tokio::test]

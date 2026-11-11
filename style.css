@@ -54,7 +54,7 @@ input:not([type=range]):not([type=checkbox]),select,.voice-control{height:40px;b
 #panel{max-width:426px}
 
 /* Focused categories keep the full settings surface within a small desktop panel. */
-#panel{overflow:hidden}#settings{display:flex;flex-direction:column;max-height:calc(100dvh - 68px);min-height:0}#panel .panel-drag{position:static;flex-shrink:0}#panel .settings-footer{position:static;flex-shrink:0;margin-top:14px;margin-bottom:-22px}#settings-content{min-height:0;overflow:auto;overscroll-behavior:contain;scroll-padding:8px 0 16px;padding:0 2px 2px;outline:none}#settings-content:focus-visible{outline:2px solid hsl(var(--hue),70%,72%);outline-offset:-2px;border-radius:8px}#settings-content .settings-section:first-child{margin-top:0}#settings-content .settings-section,#settings-content .settings-body input,#settings-content .settings-body button{scroll-margin-top:8px;scroll-margin-bottom:16px}.settings-discovery{display:flex;align-items:center;gap:8px;flex-shrink:0}.settings-discovery input{min-width:0;flex:1;margin:0}.settings-discovery button{height:36px;width:36px;padding:0;border-radius:9px;font-size:22px;flex-shrink:0}.settings-categories{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;margin:12px 0 14px;flex-shrink:0}.settings-categories button{font-size:11px;line-height:1.3;min-height:38px;border:1px solid transparent;border-radius:8px;padding:7px 3px;background:transparent;color:#b1c4d7}.settings-categories button:hover{background:hsla(var(--hue),30%,25%,.4);color:#e9f2fa}.settings-categories button[aria-selected=true]{background:hsl(var(--hue),35%,22%);border-color:hsl(var(--hue),40%,44%);color:#e9f2fa}.settings-categories button:focus-visible{outline-offset:-2px}#settings-search-status{margin:0 0 10px;flex-shrink:0}#settings-search-status:empty{display:none}#settings-guidance{margin:0 0 12px;flex-shrink:0}#settings-search{font-size:13px}#settings-search::-webkit-search-cancel-button{display:none}@media(max-width:380px){.settings-categories{grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;margin-block:10px}.settings-categories button{min-height:34px}#panel{padding:18px}#settings{max-height:calc(100dvh - 60px)}#panel .panel-drag{margin:-18px -18px 12px;padding:14px 18px 10px}#panel .settings-footer{margin-inline:-18px;padding-inline:18px;margin-bottom:-18px}}
+#panel{overflow:hidden}#settings{display:flex;flex-direction:column;max-height:calc(100dvh - 68px);min-height:0}#panel .panel-drag{position:static;flex-shrink:0}#panel .settings-footer{position:static;flex-shrink:0;margin-top:14px;margin-bottom:-22px}#settings-content{min-height:0;overflow:auto;overscroll-behavior:contain;scroll-padding:8px 0 16px;padding:0 2px 2px;outline:none}#settings-content:focus-visible{outline:2px solid hsl(var(--hue),70%,72%);outline-offset:-2px;border-radius:8px}#settings-content .settings-section:first-child{margin-top:0}#settings-content .settings-section,#settings-content .settings-body input,#settings-content .settings-body button{scroll-margin-top:8px;scroll-margin-bottom:16px}.settings-discovery{display:flex;align-items:center;gap:8px;flex-shrink:0}.settings-discovery input{min-width:0;flex:1;margin:0}.settings-discovery button{height:36px;width:36px;padding:0;border-radius:9px;font-size:22px;flex-shrink:0}.settings-categories{display:grid;grid-template-columns:repeat(5,minmax(min-content,1fr));gap:4px;margin:12px 0 14px;flex-shrink:0}.settings-categories button{font-size:11px;line-height:1.3;min-height:38px;border:1px solid transparent;border-radius:8px;padding:7px 3px;background:transparent;color:#b1c4d7}.settings-categories button:hover{background:hsla(var(--hue),30%,25%,.4);color:#e9f2fa}.settings-categories button[aria-selected=true]{background:hsl(var(--hue),35%,22%);border-color:hsl(var(--hue),40%,44%);color:#e9f2fa}.settings-categories button:focus-visible{outline-offset:-2px}#settings-search-status{margin:0 0 10px;flex-shrink:0}#settings-search-status:empty{display:none}#settings-guidance{margin:0 0 12px;flex-shrink:0}#settings-search{font-size:13px}#settings-search::-webkit-search-cancel-button{display:none}@media(max-width:380px){.settings-categories{grid-template-columns:repeat(3,minmax(min-content,1fr));gap:4px;margin-block:10px}.settings-categories button{min-height:34px}#panel{padding:18px}#settings{max-height:calc(100dvh - 60px)}#panel .panel-drag{margin:-18px -18px 12px;padding:14px 18px 10px}#panel .settings-footer{margin-inline:-18px;padding-inline:18px;margin-bottom:-18px}}
 
 /* People stays within the focused Voice settings category. */
 .speaker-people { display:grid; gap:16px; margin:18px 0; }
@@ -122,6 +122,9 @@ dialog::backdrop { background: #0002; }
   color: var(--secondary-text);
   border-radius: 9px;
   min-height: 40px;
+  /* Category names never break inside a word. Columns stay equal when
+     there is room and widen to fit the longest name when there isn't. */
+  overflow-wrap: normal;
 }
 .settings-categories button[aria-selected=true] {
   color: var(--surface-text);
@@ -216,7 +219,6 @@ select:focus-visible {
   #speaker-leave,
   #notes article,
   #voice-notes article,
-#voice-notes article,
   .usage-card,
   .tool-actions button,
   .session-modes label { background: var(--control-solid); }
@@ -230,7 +232,6 @@ select:focus-visible {
   #speaker-leave,
   #notes article,
   #voice-notes article,
-#voice-notes article,
   .usage-card {
     background: Canvas;
     color: CanvasText;
@@ -275,7 +276,7 @@ select:focus-visible {
   #panel .settings-footer { margin-top: 8px; padding-top: 10px; padding-bottom: 10px; }
   #panel .settings-footer button { min-height: 36px; }
   #settings-search { height: 36px; }
-  .settings-categories { grid-template-columns: repeat(5, minmax(0, 1fr)); margin-block: 8px; padding-bottom: 8px; }
+  .settings-categories { grid-template-columns: repeat(5, minmax(min-content, 1fr)); margin-block: 8px; padding-bottom: 8px; }
   .settings-categories button { min-height: 32px; font-size: 10px; padding-inline: 1px; }
 }
 
@@ -312,3 +313,11 @@ dialog { overflow-wrap: anywhere; }
 #voice-notes ul{margin:0;padding-left:20px}
 #voice-notes li.done{text-decoration:line-through;opacity:.75}
 #voice-notes button{margin:8px 12px 8px 0}
+
+/* A backup password with a problem: a visible danger border as well as
+   aria-invalid and the linked message. Without colours, a thicker dashed
+   border marks it instead. */
+#backup-section input[aria-invalid=true]{border-color:#ffb9b0;box-shadow:0 0 0 1px #ffb9b0}
+@media (forced-colors: active) {
+  #backup-section input[aria-invalid=true] { border: 2px dashed CanvasText; box-shadow: none; }
+}

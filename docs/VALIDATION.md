@@ -6,6 +6,14 @@ Environment: macOS arm64; Rust/Cargo 1.97.0; Tauri 2.12.5; Trunk 0.22.1; install
 
 ## Verified
 
+### 2026-11-11: review fixes and Linux voice notes
+
+Independent Claude Code review found and fixed natural-list requests being intercepted as saved notes, misleading backup wording, and a failed-restore journal allowing later changes that recovery could discard. While recovery is pending, note and memory writes now fail closed; reading remains available. Native integration tests cover restart recovery, preserved unrelated settings, rejected writes and resumed writes after recovery. Saved-key readiness now follows successful native cache reads, including a silent voice-key read after unlocking a different service. Regression tests cover denied reads, deletion, provider changes and late startup results.
+
+On Ubuntu 24.04 ARM64 with WebKitGTK 2.52.6, generated speech through a virtual microphone and the real Deepgram recognition path exposed an unrecognised “shopping list called” command. The rebuilt native app accepted that exact phrase, persisted the named list with apples, bread and oat milk, and appended bananas from a second spoken command. A spoken read-back produced provider reply audio in the guest speaker monitor. These are unattended synthetic-voice checks, not real-person acoustic acceptance. A “tick off” fixture was recognised as “take off” and made no notebook change; no automatic reinterpretation was added.
+
+Review-fix validation: 314 Rust tests passed across the core, orb and desktop packages, with 16 explicitly ignored tests and no failures; formatting and strict native/WASM Clippy passed. The final visual review passed 154 checks at each of four window sizes, including password-error announcements, visible error borders, category-label wrapping and profile isolation with simulated services. Website and local documentation-link checks passed. Windows native voice-note checks and final-head CI are recorded separately when complete.
+
 ### 2026-11-11: macOS spoken reply isolation
 
 Real-person tests confirmed that “Stop” and a replacement request without a wake phrase stopped the old reply. Reply starts repeated and a longer paragraph broke up. A numbered-prefix queue defect was fixed separately, but unnumbered replies still reproduced the playback problem.

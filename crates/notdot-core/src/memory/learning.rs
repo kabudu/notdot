@@ -291,7 +291,7 @@ impl Memory {
         }
     }
     pub async fn maintain_when_enabled(&self, ticket: u64) -> Result<String, String> {
-        let _gate = self.mutations.lock().await;
+        let _gate = self.write_gate().await?;
         if self.learning_ticket() != Some(ticket) {
             return Err("Memory maintenance cancelled because learning is off or changed".into());
         }
@@ -316,7 +316,7 @@ impl Memory {
         thread: &str,
         user: &str,
     ) -> Result<(), String> {
-        let _gate = self.mutations.lock().await;
+        let _gate = self.write_gate().await?;
         if self.learning_ticket() != Some(ticket) || opted_out(user) {
             return Ok(());
         }
@@ -339,7 +339,7 @@ impl Memory {
         Ok(())
     }
     pub async fn remember_explicit(&self, ticket: u64, source: &Interaction) -> Result<(), String> {
-        let _gate = self.mutations.lock().await;
+        let _gate = self.write_gate().await?;
         if self.learning_ticket() != Some(ticket) || opted_out(&source.user) {
             return Ok(());
         }
@@ -490,7 +490,7 @@ impl Memory {
         user_confirmed: bool,
         valid: &(dyn Fn() -> bool + Send + Sync),
     ) -> Result<usize, String> {
-        let _gate = self.mutations.lock().await;
+        let _gate = self.write_gate().await?;
         check_authority(valid)?;
         if self.learning_ticket() != Some(plan.ticket) {
             return Ok(0);
@@ -741,7 +741,7 @@ impl Memory {
         if content.trim().is_empty() || content.len() > 4000 {
             return Err("Use 1–4,000 bytes for a memory".into());
         }
-        let _gate = self.mutations.lock().await;
+        let _gate = self.write_gate().await?;
         let all = self
             .store
             .export(ExportRequest {
@@ -1235,6 +1235,34 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_pending_restore_refuses_learned_and_confirmed_memories() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory = Memory::open_with_learning(dir.path(), true).unwrap();
+        let text = "I prefer peppermint tea.";
+        let plan = memory
+            .plan(memory.learning_ticket().unwrap(), Some(source(text)))
+            .await
+            .unwrap()
+            .unwrap();
+        memory.hold_for_restore(true);
+        assert_eq!(
+            memory
+                .apply_confirmed_learning(&plan, one("drink", text, text))
+                .await
+                .unwrap_err(),
+            crate::memory::RESTORE_PENDING
+        );
+        assert!(memory.review("").await.unwrap().is_empty());
+        memory.hold_for_restore(false);
+        assert_eq!(
+            memory
+                .apply_confirmed_learning(&plan, one("drink", text, text))
+                .await
+                .unwrap(),
+            1
+        );
+    }
     #[tokio::test]
     async fn confirmed_learning_rechecks_authority_after_waiting_for_mutation_gate() {
         use std::sync::{

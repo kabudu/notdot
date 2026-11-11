@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **Saved keys after unlocking.** A voice key that loads once the system keyring is unlocked now makes voice ready, without asking again.
+
 - **Smoother replies on Mac.** Speech uses direct playback to avoid repeated starts caused by the audio-metering connection.
 
 - **Natural interruption.** Say “Stop”, “Actually…” or a new request during replies, without repeating the wake phrase, with optional echo-cancelled listening.

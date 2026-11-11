@@ -71,6 +71,70 @@ struct Snapshot {
     session_pending: Option<String>,
     settings_pending: Option<String>,
 }
+impl Snapshot {
+    /// Whether the selected voice service's key can be used now. A key in
+    /// the native session cache was read or saved successfully in this run,
+    /// including a silent read made after a locked OS keyring was unlocked
+    /// for another service, so it is ready whatever an earlier startup check
+    /// found. Otherwise only a completed check that found the key counts.
+    fn voice_key_ready(&self, credentials: &credentials::Credentials) -> bool {
+        credentials.cached(&self.settings.voice_provider)
+            || (self.key_configured && !self.key_checking)
+    }
+    /// Record a silent check's result. A late result is ignored when the
+    /// provider changed or a save, authorisation or read already settled it.
+    fn settle_voice_key_check(
+        &mut self,
+        provider: &str,
+        available: bool,
+        credentials: &credentials::Credentials,
+    ) {
+        if self.key_checking && self.settings.voice_provider == provider {
+            self.key_configured = available;
+            self.key_checking = false;
+        }
+        self.reconcile_voice_key(credentials);
+    }
+    /// Bring the stored readiness flags in line with the session cache, so
+    /// every check and the Settings view agree. Never reads the OS store.
+    fn reconcile_voice_key(&mut self, credentials: &credentials::Credentials) {
+        if credentials.cached(&self.settings.voice_provider) {
+            self.key_configured = true;
+            self.key_checking = false;
+        }
+    }
+}
+/// Record a successful read of a saved key (for example while loading
+/// voices) in the authoritative native state.
+async fn voice_key_loaded(state: &AppState) {
+    state
+        .snapshot
+        .lock()
+        .await
+        .reconcile_voice_key(&state.credentials);
+}
+/// Check the selected voice service's saved key silently, without any OS
+/// prompt, and record the result unless the provider changed meanwhile or
+/// a save, authorisation or successful read already settled it.
+async fn check_voice_key(state: Arc<AppState>) {
+    let provider = state.snapshot.lock().await.settings.voice_provider.clone();
+    let available = state.credentials.read(&provider, false).await.is_ok();
+    let recognition = state
+        .snapshot
+        .lock()
+        .await
+        .settings
+        .transcription_id()
+        .to_owned();
+    if recognition != provider {
+        let _ = state.credentials.read(&recognition, false).await;
+    }
+    state
+        .snapshot
+        .lock()
+        .await
+        .settle_voice_key_check(&provider, available, &state.credentials);
+}
 struct AppState {
     setup: onboarding::Setup,
     profiles: profile_context::ProfileContexts,
@@ -254,7 +318,11 @@ async fn snapshot(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Snapshot, String> {
     let context = state.context();
-    let mut snapshot = state.snapshot.lock().await.clone();
+    let mut snapshot = {
+        let mut stored = state.snapshot.lock().await;
+        stored.reconcile_voice_key(&state.credentials);
+        stored.clone()
+    };
     snapshot.window_visible =
         window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
     snapshot.updates = app.state::<Arc<updates::Updates>>().status();
@@ -344,9 +412,8 @@ async fn wake_activity(state: State<'_, Arc<AppState>>, ready: bool) -> Result<(
         && s.active_turn.is_none()
         && s.phase == "idle"
         && (state.speakers.enrol_capture_active()
-            || (s.key_configured
+            || (s.voice_key_ready(&state.credentials)
                 && state.credentials.cached(s.settings.transcription_id())
-                && !s.key_checking
                 && !s.settings.voice_id.is_empty()
                 && (s.settings.onboarding_complete || state.setup.trial.load(Ordering::Relaxed))));
     state.wake.ready(allowed);
@@ -550,7 +617,7 @@ async fn start_capture(
     if let Some(session) = interrupt {
         if !s.settings.interrupt_enabled
             || s.settings.microphone_muted
-            || !s.key_configured
+            || !s.voice_key_ready(&state.credentials)
             || !state.credentials.cached(s.settings.transcription_id())
         {
             state.interrupt.end();
@@ -577,7 +644,8 @@ async fn start_capture(
     }
     if s.phase != "idle"
         || s.active_turn.is_some()
-        || ((!s.key_configured || !state.credentials.cached(s.settings.transcription_id()))
+        || ((!s.voice_key_ready(&state.credentials)
+            || !state.credentials.cached(s.settings.transcription_id()))
             && !state.speakers.is_enrol_capture(&token))
         || s.settings.microphone_muted
     {
@@ -775,6 +843,14 @@ async fn save_settings(
     }
     let disabled_memory = !settings.memory_enabled;
     snap.settings = settings;
+    // A different voice service needs its own key: never carry readiness
+    // over from the previous provider. Check the new one silently.
+    let check_key = provider_changed && !key_changed;
+    if check_key {
+        snap.key_configured = false;
+        snap.key_checking = true;
+        snap.reconcile_voice_key(&state.credentials);
+    }
     state.wake.configure(&snap.settings);
     if snap.settings.interrupt_enabled {
         state.interrupt.end();
@@ -785,6 +861,9 @@ async fn save_settings(
     let mut problems = Vec::new();
     if disabled_memory && let Err(error) = context.initiative.remove_inferred(None).await {
         problems.push(format!("could not clean up memory check-ins: {error}"));
+    }
+    if check_key {
+        tauri::async_runtime::spawn(check_voice_key(state.inner().clone()));
     }
     if (key_changed || provider_changed)
         && let Err(error) = state.quota.invalidate().await
@@ -1622,6 +1701,7 @@ async fn backend(
     };
     let language = state.snapshot.lock().await.settings.speech_language.clone();
     let key = state.credentials.read(&id, false).await?;
+    voice_key_loaded(state).await;
     notdot_voice::provider_with_language(
         &id,
         key,
@@ -2219,33 +2299,7 @@ fn main() {
             initiative::spawn(state.clone());
             initiative::spawn_task_reports(state.clone());
             // Restore silently off the UI thread. Explicit authorization belongs in Settings.
-            let key_state = state.clone();
-            tauri::async_runtime::spawn(async move {
-                let provider = key_state
-                    .snapshot
-                    .lock()
-                    .await
-                    .settings
-                    .voice_provider
-                    .clone();
-                let selected = provider.clone();
-                let available = key_state.credentials.read(&provider, false).await.is_ok();
-                let recognition = key_state
-                    .snapshot
-                    .lock()
-                    .await
-                    .settings
-                    .transcription_id()
-                    .to_owned();
-                if recognition != selected {
-                    let _ = key_state.credentials.read(&recognition, false).await;
-                }
-                let mut snapshot = key_state.snapshot.lock().await;
-                if snapshot.key_checking && snapshot.settings.voice_provider == selected {
-                    snapshot.key_configured = available;
-                    snapshot.key_checking = false;
-                }
-            });
+            tauri::async_runtime::spawn(check_voice_key(state.clone()));
             updates::spawn(app.handle().clone(), state.clone(), updater);
             let maintenance = state.clone();
             tauri::async_runtime::spawn(async move {
@@ -2523,5 +2577,132 @@ pub(crate) mod test_support {
             notdot_core::profiles::Admission::Refuse(why) => return Err(why.spoken().into()),
         };
         profile_access::bind_capture(state.clone(), &token, 16_000, &[], Some(lock)).await
+    }
+}
+
+#[cfg(test)]
+mod voice_key_tests {
+    use super::*;
+
+    async fn flags(state: &AppState) -> (bool, bool, bool) {
+        let s = state.snapshot.lock().await;
+        (
+            s.key_configured,
+            s.key_checking,
+            s.voice_key_ready(&state.credentials),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_silent_read_after_a_locked_keyring_makes_the_saved_voice_key_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_support::state(dir.path());
+        let provider = state.snapshot.lock().await.settings.voice_provider.clone();
+        state.snapshot.lock().await.key_checking = true;
+        // Startup's silent read fails while the OS keyring is locked.
+        assert!(
+            state
+                .credentials
+                .read_for_test(&provider, || Err("keyring locked".into()))
+                .is_err()
+        );
+        state
+            .snapshot
+            .lock()
+            .await
+            .settle_voice_key_check(&provider, false, &state.credentials);
+        assert_eq!(flags(&state).await, (false, false, false));
+        // Unlocking for another service lets Load voices read the saved key
+        // silently. Every gate sees it at once, before any reconciliation.
+        state
+            .credentials
+            .read_for_test(&provider, || Ok("synthetic-key".into()))
+            .unwrap();
+        assert!(state.credentials.cached(&provider));
+        assert!(flags(&state).await.2);
+        // Loading voices goes through backend(); its successful read is
+        // recorded in the authoritative state that Settings and capture use.
+        assert!(backend(&state, Some(provider.clone())).await.is_ok());
+        assert_eq!(flags(&state).await, (true, false, true));
+    }
+
+    #[tokio::test]
+    async fn a_late_failed_startup_check_cannot_undo_a_successful_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_support::state(dir.path());
+        let provider = state.snapshot.lock().await.settings.voice_provider.clone();
+        state.snapshot.lock().await.key_checking = true;
+        state
+            .credentials
+            .read_for_test(&provider, || Ok("synthetic-key".into()))
+            .unwrap();
+        voice_key_loaded(&state).await;
+        state
+            .snapshot
+            .lock()
+            .await
+            .settle_voice_key_check(&provider, false, &state.credentials);
+        assert_eq!(flags(&state).await, (true, false, true));
+    }
+
+    #[tokio::test]
+    async fn denied_reads_deletion_and_provider_changes_are_not_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_support::state(dir.path());
+        let provider = state.snapshot.lock().await.settings.voice_provider.clone();
+        // Denied: nothing is cached and readiness stays off.
+        assert!(
+            state
+                .credentials
+                .read_for_test(&provider, || Err("access denied".into()))
+                .is_err()
+        );
+        voice_key_loaded(&state).await;
+        assert_eq!(flags(&state).await, (false, false, false));
+        // Ready, then deleted as clear_voice_key does.
+        state
+            .credentials
+            .read_for_test(&provider, || Ok("synthetic-key".into()))
+            .unwrap();
+        voice_key_loaded(&state).await;
+        assert!(flags(&state).await.2);
+        state.credentials.remove_for_test(&provider).unwrap();
+        {
+            let mut s = state.snapshot.lock().await;
+            s.key_configured = false;
+            s.key_checking = false;
+        }
+        voice_key_loaded(&state).await;
+        assert_eq!(flags(&state).await, (false, false, false));
+        // A different provider never inherits readiness from the previous one.
+        state
+            .credentials
+            .read_for_test(&provider, || Ok("synthetic-key".into()))
+            .unwrap();
+        voice_key_loaded(&state).await;
+        {
+            let mut s = state.snapshot.lock().await;
+            s.settings.voice_provider = "another-provider".into();
+            // As save_settings does on a provider change.
+            s.key_configured = false;
+            s.key_checking = true;
+            s.reconcile_voice_key(&state.credentials);
+        }
+        assert_eq!(flags(&state).await, (false, true, false));
+        state.snapshot.lock().await.settle_voice_key_check(
+            "another-provider",
+            false,
+            &state.credentials,
+        );
+        assert_eq!(flags(&state).await, (false, false, false));
+        // Switching back finds the first key already read in this session.
+        {
+            let mut s = state.snapshot.lock().await;
+            s.settings.voice_provider = provider.clone();
+            s.key_configured = false;
+            s.key_checking = true;
+            s.reconcile_voice_key(&state.credentials);
+        }
+        assert_eq!(flags(&state).await, (true, false, true));
     }
 }
