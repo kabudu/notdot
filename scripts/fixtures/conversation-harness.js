@@ -36,7 +36,7 @@
   let fakeAec=location.hash!=='#interrupt-unsupported',injectDetection=false,interruptResult=null,interruptPending=null,micTracks=0,sessions=0;
   if(interruptMode&&navigator.mediaDevices){
     navigator.mediaDevices.getSupportedConstraints=()=>({echoCancellation:true});
-    navigator.mediaDevices.getUserMedia=async c=>{const ec=c&&c.audio&&c.audio.echoCancellation;if(window.gumDelay)await sleep(window.gumDelay);micTracks++;record('mic-open',{ec});const track={stopped:false,getSettings:()=>({echoCancellation:fakeAec&&ec===true}),stop(){if(!this.stopped){this.stopped=true;micTracks--;record('mic-stop');}}};return {getAudioTracks:()=>[track],getTracks:()=>[track]};};
+    navigator.mediaDevices.getUserMedia=async c=>{record('mic-request');if(location.hash==='#interrupt-start-failure'&&count('mic-request')>1)throw Error('Microphone denied');const ec=c&&c.audio&&c.audio.echoCancellation;if(window.gumDelay)await sleep(window.gumDelay);micTracks++;record('mic-open',{ec});const track={stopped:false,getSettings:()=>({echoCancellation:fakeAec&&ec===true}),stop(){if(!this.stopped){this.stopped=true;micTracks--;record('mic-stop');}}};return {getAudioTracks:()=>[track],getTracks:()=>[track]};};
   }
   Context.prototype.audioWorklet={addModule:async()=>{record('worklet');}};
   Context.prototype.createMediaStreamSource=function(){return new Node();};
@@ -168,6 +168,14 @@
       }
       if(location.hash==='#profile-capture'){
         await clean();settings.followup_enabled=false;let captures=count('capture'),cancels=count('cancel'),messages=count('message');orbClick();await until(()=>count('capture')===captures+1);const token=state.wake.capture_token;state.profile_id='member';await sleep(700);ok('identification preserves the same active microphone capture',state.wake.capture_token===token && state.wake.phase==='capturing' && count('cancel')===cancels);submit('Please calculate five plus seven.');await until(()=>count('message')===messages+1);ok('identified first member turn submits exactly once',count('message')===messages+1);pressEscape();output.textContent=JSON.stringify({status:'passed',passed,adapters:'synthetic native-capture IPC/model/audio; no microphone or providers'},null,2);return;
+      }
+      if(location.hash==='#interrupt-start-failure'){
+        await clean();Object.assign(settings,{followup_enabled:false,interrupt_enabled:true});audioDuration=6000;
+        await initial();await until(()=>count('mic-request')>=2);await sleep(1800);
+        ok('a failed microphone start does not poll or repeatedly request permission',count('mic-request')===2&&micTracks===0);
+        ok('microphone failure explains the explicit retry control',document.getElementById('error').textContent.includes('Toggle it off and on'));
+        ok('a microphone failure leaves the reply playing',active>0);
+        output.textContent=JSON.stringify({status:'passed',passed,adapters:'production WASM; simulated microphone denial; no microphone'},null,2);return;
       }
       if(location.hash==='#interrupt-unsupported'){
         await clean();Object.assign(settings,{followup_enabled:false,interrupt_enabled:true});audioDuration=3000;

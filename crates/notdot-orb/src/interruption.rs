@@ -157,6 +157,7 @@ pub fn sync(view: &Shared) {
         view.borrow_mut().interrupt_starting = true;
         let target = view.clone();
         spawn_local(async move {
+            let generation = target.borrow().generation;
             let started = async {
                 let turn = target.borrow().snapshot.speech.turn.clone();
                 let session = call("interrupt_begin", json!({"turn":turn})).await?;
@@ -190,8 +191,20 @@ pub fn sync(view: &Shared) {
             }
             .await;
             target.borrow_mut().interrupt_starting = false;
-            if let Err(error) = started {
-                target.borrow_mut().interrupt_failures += 1;
+            if let Err(error) = started
+                && target.borrow().generation == generation
+                && wanted(&target)
+            {
+                {
+                    let mut v = target.borrow_mut();
+                    v.interrupt_failures += 1;
+                    v.interrupt_supported = Some(false);
+                }
+                stop_listening().await;
+                render_settings(&target);
+                message(
+                    "Voice interruption couldn't start. Toggle it off and on in Hands-free settings to retry.",
+                );
                 web_sys::console::warn_1(&JsValue::from_str(&format!(
                     "Interrupt listening: {error}"
                 )));
@@ -428,6 +441,10 @@ pub fn install(view: &Shared) {
         let id = "interrupt-enabled";
         let target = view.clone();
         crate::on(crate::element(id).as_ref(), "change", move |_| {
+            // An explicit user toggle is a retry, never a polling loop.
+            if crate::input("interrupt-enabled").checked() {
+                target.borrow_mut().interrupt_supported = None;
+            }
             render_settings(&target);
             if crate::input("interrupt-enabled").checked()
                 && target.borrow().interrupt_supported.is_none()
