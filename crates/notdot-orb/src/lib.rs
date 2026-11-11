@@ -2394,7 +2394,9 @@ pub fn start() -> Result<(), JsValue> {
         let open = element("intelligence-section").has_attribute("open");
         let _ = element("intelligence-toggle")
             .set_attribute("aria-expanded", if open { "true" } else { "false" });
-        if open {
+        // Settings search opens matching disclosures programmatically. Keep
+        // the caret in that search rather than stealing the remaining input.
+        if open && input("settings-search").value().trim().is_empty() {
             let _ = input("model-search").focus();
         }
     });

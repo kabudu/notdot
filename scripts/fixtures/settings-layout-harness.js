@@ -55,6 +55,10 @@
  }
  const search=$('settings-search');search.value='zzzz-no-setting';search.dispatchEvent(new Event('input',{bubbles:true}));await sleep(50);
  check('empty search feedback',$('settings-search-status').textContent.includes('No'));
+ search.focus();search.value='b';search.dispatchEvent(new Event('input',{bubbles:true}));await sleep(50);
+ check('opening search results keeps typing focus',document.activeElement===search);
+ search.value+='ackup';search.dispatchEvent(new Event('input',{bubbles:true}));await sleep(50);
+ check('backup search stays focused and reveals backup',document.activeElement===search&&!$('backup-section').hidden);
  search.value='quiet';search.dispatchEvent(new Event('input',{bubbles:true}));await sleep(50);
  check('matching search feedback',$('settings-search-status').textContent.includes('2'));
  $('settings-search-clear').click();await sleep(50);check('clear restores categories',!$('settings-categories').hidden&&!search.value);
