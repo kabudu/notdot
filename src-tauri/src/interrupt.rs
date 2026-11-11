@@ -372,9 +372,12 @@ pub enum Outcome {
     Request(String),
 }
 fn words(text: &str) -> Vec<String> {
-    text.split(|c: char| !c.is_alphanumeric() && c != '\'')
+    // Normalise curly apostrophes before splitting: "that’s all" is one phrase.
+    text.replace(['’', '‘'], "'")
+        .split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .map(|w| w.trim_matches('\''))
         .filter(|w| !w.is_empty())
-        .map(|w| w.to_lowercase().replace('’', "'"))
+        .map(str::to_lowercase)
         .collect()
 }
 /// Classify a recognised interruption against the reply that was playing.
@@ -385,7 +388,8 @@ pub fn classify(transcript: &str, reply: &str, wake_name: &str) -> Outcome {
     if heard.first().map(String::as_str) == Some("hey") {
         heard.remove(0);
     }
-    while !heard.is_empty() && heard.len() >= name.len() && heard[..name.len()] == name[..] {
+    // An empty or punctuation-only name has no words to drop.
+    while !name.is_empty() && heard.len() >= name.len() && heard[..name.len()] == name[..] {
         heard.drain(..name.len());
     }
     if heard.is_empty() {
@@ -484,6 +488,18 @@ mod tests {
             classify("Leeds", reply, "Ava"),
             Outcome::Request(_)
         ));
+        // Curly apostrophes from recognition are normal speech.
+        assert_eq!(classify("That’s all.", reply, "Ava"), Outcome::Stop);
+        assert_eq!(
+            classify("Hey Ava, that’s enough", reply, "Ava"),
+            Outcome::Stop
+        );
+        // An empty or punctuation-only name cannot loop or drop words.
+        assert_eq!(classify("stop", reply, ""), Outcome::Stop);
+        assert_eq!(
+            classify("what about tomorrow", reply, "..."),
+            Outcome::Request("what about tomorrow".into())
+        );
     }
 
     async fn ready(state: &std::sync::Arc<AppState>, turn: &str) {

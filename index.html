@@ -11,6 +11,7 @@
   <link data-trunk="" href="assets/logomark.svg" rel="copy-file"/>
   <link data-trunk="" href="assets/orb-input.html" rel="copy-file"/>
   <link data-trunk="" href="assets/orb-input.js" rel="copy-file"/>
+  <link data-trunk="" href="assets/interrupt-worklet.js" rel="copy-file"/>
  </head>
  <body>
   <canvas id="orb-gl" aria-hidden="true"></canvas>
@@ -333,6 +334,19 @@
       </p>
       <label class="switch-row">
        <span class="switch-copy">
+        Interrupt by saying the wake phrase
+        <span class="switch-description" id="interrupt-description">
+         While notdot speaks, say the wake phrase, then your request or “Stop”. Needs wake listening and echo cancellation on this computer.
+        </span>
+       </span>
+       <input aria-describedby="interrupt-description interrupt-status" id="interrupt-enabled" role="switch" type="checkbox"/>
+       <span aria-hidden="true" class="switch-track">
+       </span>
+      </label>
+      <p class="hint" id="interrupt-status" role="status">
+      </p>
+      <label class="switch-row">
+       <span class="switch-copy">
         Mute microphone
         <span class="switch-description">
          Stops wake listening and request capture immediately.
@@ -346,7 +360,7 @@
       <p class="hint" id="wake-status" role="status">
       </p>
       <p class="hint">
-       Wake phrases are experimental and work in English. They can miss you or wake by mistake. Listening pauses while Settings is open or notdot speaks. A pause in your speech ends the request.
+       Wake phrases are experimental and work in English. They can miss you or wake by mistake. Listening pauses while Settings is open. While notdot speaks, it listens only if interrupting is on. A pause in your speech ends the request.
       </p>
      </div>
     </details>

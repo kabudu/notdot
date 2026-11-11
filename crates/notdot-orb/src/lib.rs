@@ -4,6 +4,7 @@ mod conversation;
 #[cfg(all(debug_assertions, target_arch = "wasm32"))]
 mod cue_acceptance;
 mod interaction;
+mod interruption;
 mod notes_panel;
 mod onboarding;
 mod orb_renderer;
@@ -110,6 +111,8 @@ struct Settings {
     followup_seconds: u32,
     wake_enabled: bool,
     wake_name_only: bool,
+    #[serde(default)]
+    interrupt_enabled: bool,
     microphone_muted: bool,
 }
 #[derive(Clone, Default, Deserialize)]
@@ -231,6 +234,18 @@ struct View {
     quota_display: Option<Value>,
     quota_retry_at: f64,
     consent_silence: Option<f64>,
+    /// Playback held after the wake phrase was heard during a reply.
+    interrupt_hold: Option<f64>,
+    /// The capture token of the current hold; results for others are ignored.
+    interrupt_token: Option<String>,
+    interrupt_session: Option<String>,
+    interrupt_starting: bool,
+    /// This webview's echo cancellation, checked once per session.
+    interrupt_supported: Option<bool>,
+    interrupt_checking: bool,
+    interrupt_failures: u32,
+    /// The sentence being spoken, for the wake-name guard.
+    playing_text: String,
 }
 type Shared = Rc<RefCell<View>>;
 fn window() -> web_sys::Window {
@@ -760,9 +775,17 @@ fn wake_ready(view: &Shared, snapshot: &Snapshot) -> bool {
         && v.audio.as_ref().is_none_or(|a| a.paused() || a.ended())
 }
 async fn wake_request(view: Shared, id: u64, generation: u64) -> Result<(), String> {
+    // An interruption result is bound to the hold that started this capture.
+    let hold_token = view.borrow().interrupt_token.clone();
     let heard: Value =
         serde_wasm_bindgen::from_value(call("transcribe_wake", json!({"id":id})).await?)
             .map_err(|e| e.to_string())?;
+    if heard.get("interrupt").is_some() {
+        if let Some(token) = hold_token {
+            interruption::outcome(view, &heard, &token, generation).await;
+        }
+        return Ok(());
+    }
     if let Some(line) = heard["refusal"].as_str() {
         return say_refusal(view, line.to_owned(), generation).await;
     }
@@ -1178,8 +1201,10 @@ fn open_panel(view: &Shared) {
     render_followup_settings();
     input("wake-enabled").set_checked(s.wake_enabled);
     input("microphone-muted").set_checked(s.microphone_muted);
+    input("interrupt-enabled").set_checked(s.interrupt_enabled);
     select("wake-phrase").set_value(if s.wake_name_only { "name" } else { "hey" });
     render_wake_phrase();
+    interruption::render_settings(view);
     spawn_local(async {
         let _ = call("wake_activity", json!({"ready":false})).await;
     });
@@ -1306,6 +1331,14 @@ fn stop_audio(view: &Shared) {
     }
     v.native_manual = false;
     v.conversation.close();
+    let held = v.interrupt_hold.take().is_some();
+    v.interrupt_token = None;
+    v.playing_text.clear();
+    if v.interrupt_session.take().is_some() || v.interrupt_starting || held {
+        spawn_local(async {
+            interruption::stop_listening().await;
+        });
+    }
     if let Some(id) = v.confirmation_listening.take() {
         spawn_local(async move {
             let _ = call(
@@ -1386,7 +1419,7 @@ async fn wait_for_audio(
         if audio.error().is_some() {
             return Err("Voice playback failed".into());
         }
-        if audio.ended() || audio.paused() {
+        if audio.ended() || (audio.paused() && view.borrow().interrupt_hold.is_none()) {
             return Ok(());
         }
         speech_tick().await?;
@@ -1425,6 +1458,7 @@ async fn stream_speech(view: Shared, generation: u64) -> Result<(), String> {
             return Ok(());
         };
         // At most one next clip is synthesized while the current clip plays.
+        let sentence = text.clone();
         let value = call("speak", json!({"text":text})).await?;
         if view.borrow().generation != generation {
             return Ok(());
@@ -1435,6 +1469,7 @@ async fn stream_speech(view: Shared, generation: u64) -> Result<(), String> {
         if view.borrow().generation != generation {
             return Ok(());
         }
+        view.borrow_mut().playing_text = sentence;
         play_encoded(view.clone(), value, generation).await?;
         previous = view.borrow().audio.clone();
     }
@@ -2469,6 +2504,8 @@ pub fn start() -> Result<(), JsValue> {
         settings.wake_enabled = input("wake-enabled").checked();
         settings.wake_name_only = select("wake-phrase").value() == "name";
         settings.microphone_muted = input("microphone-muted").checked();
+        settings.interrupt_enabled =
+            input("interrupt-enabled").checked() && input("wake-enabled").checked();
         settings.onboarding_complete = target.borrow().snapshot.settings.onboarding_complete;
         let key = input("key").value();
         let stt_key = input("stt-key").value();
@@ -2596,6 +2633,7 @@ pub fn start() -> Result<(), JsValue> {
         });
     });
     notes_panel::install();
+    interruption::install(&view);
     on(element("reset-memory").as_ref(), "click", |_| {
         let _ = element("reset-memory-confirm").remove_attribute("hidden");
         if let Some(button) = element("cancel-memory-reset").dyn_ref::<web_sys::HtmlElement>() {
@@ -2862,11 +2900,18 @@ pub fn start() -> Result<(), JsValue> {
                         open_panel(&target);
                     }
                     let ready = wake_ready(&target, &snapshot);
-                    let wake_id = if ready {
+                    let interrupt_capture = {
+                        let v = target.borrow();
+                        v.interrupt_hold.is_some()
+                            && v.capture_token.as_deref() == snapshot.wake["capture_token"].as_str()
+                            && v.local_phase != Some("transcribing")
+                    };
+                    let wake_id = if ready || interrupt_capture {
                         snapshot.wake["request_id"].as_u64()
                     } else {
                         None
                     };
+                    interruption::tick(&target, &snapshot);
                     element("wake-status").set_text_content(Some(wake_hint(&snapshot)));
                     let health = if snapshot.wake["phase"] == "listening"
                         && let Some(warning) = snapshot.wake["fallback_warning"].as_str()
@@ -2891,6 +2936,7 @@ pub fn start() -> Result<(), JsValue> {
                     if target.borrow().conversation.listening() {
                         let _ = orb.set_attribute("aria-label", "Listening for a follow-up. Say your request or That’s all to stop. Escape cancels.");
                     }
+                    interruption::label(&target, &snapshot);
                     let _ = element("orb").set_attribute(
                         "title",
                         if target.borrow().conversation.listening() {
