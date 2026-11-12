@@ -1,6 +1,6 @@
 //! Debug-build-only graphics acceptance surface. Never present in release WASM.
 //! Calls the real shader, fallback and cue renderer at controlled frame phases.
-use crate::{
+use super::{
     orb_renderer::{self, Frame},
     shader_renderer::Shader,
     visual_state::{OrbMotion, TaskKind, TaskMotion},
@@ -70,7 +70,15 @@ impl CueAcceptance {
         self.output.fill_rect(0., 0., side, side);
         match background {
             "shader" | "white" => {
-                if !self.shader.draw(&self.gpu, &frame) {
+                let uniforms = crate::contract::Uniforms::compute(
+                    frame.hue,
+                    frame.energy,
+                    frame.reduced,
+                    frame.motion,
+                    frame.task,
+                    false,
+                );
+                if !self.shader.draw(&self.gpu, &uniforms) {
                     return Err(JsValue::from_str("Shader unavailable"));
                 }
                 self.output

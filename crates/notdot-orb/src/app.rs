@@ -1,18 +1,31 @@
-#![forbid(unsafe_code)]
+//! The desktop orb window: Tauri IPC, settings, capture and drawing.
+//! Its modules sit beside it in `src/` so desktop paths stay unchanged.
+#[path = "audio_meter.rs"]
 mod audio_meter;
+#[path = "conversation.rs"]
 mod conversation;
 #[cfg(all(debug_assertions, target_arch = "wasm32"))]
+#[path = "cue_acceptance.rs"]
 mod cue_acceptance;
+#[path = "interaction.rs"]
 mod interaction;
+#[path = "interruption.rs"]
 mod interruption;
+#[path = "notes_panel.rs"]
 mod notes_panel;
+#[path = "onboarding.rs"]
 mod onboarding;
+#[path = "orb_renderer.rs"]
 mod orb_renderer;
+#[path = "settings_navigation.rs"]
 mod settings_navigation;
+#[path = "shader_renderer.rs"]
 mod shader_renderer;
+#[path = "speakers.rs"]
 mod speakers;
+#[path = "speech_queue.rs"]
 mod speech_queue;
-mod visual_state;
+use crate::{contract, visual_state};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{cell::RefCell, f64::consts::TAU, rc::Rc};
@@ -203,10 +216,8 @@ struct View {
     last_poll_at: f64,
     generation: u64,
     frame_clock: visual_state::FrameClock,
-    orb_motion: visual_state::OrbMotion,
-    task_motion: visual_state::TaskMotion,
-    speech_energy: f64,
-    listening_cue: visual_state::ListeningCue,
+    /// Orb animation state, shared with mobile through `contract`.
+    orb: contract::OrbAnimator,
     keyboard_navigation: bool,
     local_phase: Option<&'static str>,
     voices: Vec<VoiceChoice>,
@@ -3463,19 +3474,6 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                     }
                 }
             }
-            let energy = (level.rms * 4.5).min(1.);
-            let speech_target = if matches!(
-                mode,
-                visual_state::Mode::Speaking
-                    | visual_state::Mode::Listening
-                    | visual_state::Mode::Followup
-            ) {
-                if level.metered { energy } else { 0.25 }
-            } else {
-                0.
-            };
-            v.speech_energy =
-                visual_state::smooth_speech(v.speech_energy, speech_target, frame_seconds);
             let cue = visual_state::task_cue(
                 mode,
                 v.snapshot.initiative["tasks"]["cue"]
@@ -3488,24 +3486,39 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                 .unwrap_or("Task update available.")
                 .to_owned();
             if cue == "finished" && task_text != v.last_task_description {
-                v.task_motion = visual_state::TaskMotion::default();
+                v.orb.restart_task();
             }
-            v.task_motion.advance(&cue, frame_seconds, reduced);
-            v.orb_motion.advance(mode, frame_seconds, reduced);
             let hue = v.preview_hue.unwrap_or(v.snapshot.settings.hue) as f64;
-            let radius = w.min(h) * 0.17;
+            let input = contract::OrbInput {
+                mode,
+                task: visual_state::TaskKind::from_cue(&cue),
+                hue,
+                level: level.metered.then_some(level.rms),
+                reduced,
+                quota: match v.snapshot.quota["level"].as_str() {
+                    Some("warning") => contract::Quota::Warning,
+                    Some("exhausted") => contract::Quota::Exhausted,
+                    _ => contract::Quota::Normal,
+                },
+                task_available: v.snapshot.initiative["available"].as_u64().unwrap_or(0) > 0,
+                microphone_muted: v.snapshot.settings.microphone_muted,
+                wake_ready: v.snapshot.wake["phase"] == "listening",
+                offline: false,
+            };
+            let orb_frame = v.orb.advance(&input, frame_seconds);
+            let radius = w.min(h) * contract::RADIUS_FRACTION;
             let frame = orb_renderer::Frame {
                 center: (w / 2., h / 2.),
                 radius,
                 hue,
-                energy: v.speech_energy,
+                energy: v.orb.speech_energy(),
                 reduced,
-                motion: &v.orb_motion,
-                task: &v.task_motion,
+                motion: v.orb.motion(),
+                task: v.orb.task(),
             };
             let gpu = shader
                 .as_mut()
-                .is_some_and(|shader| shader.draw(&shader_canvas, &frame));
+                .is_some_and(|shader| shader.draw(&shader_canvas, &orb_frame.uniforms));
             let renderer = if gpu { "webgl" } else { "canvas" };
             if canvas.get_attribute("data-renderer").as_deref() != Some(renderer) {
                 let _ = shader_canvas.set_attribute("data-ready", "true");
@@ -3524,27 +3537,23 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
             }
             // Keep acknowledgement within the dark core so a light desktop
             // cannot wash it out. This overlay also works with Canvas fallback.
-            let acknowledgement = v.listening_cue.advance(mode, frame_seconds, reduced);
-            if acknowledgement > 0. {
+            let overlays = orb_frame.overlays;
+            if let Some(glow) = overlays.glow {
                 context.save();
-                if let Ok(glow) = context.create_radial_gradient(
+                if let Ok(gradient) = context.create_radial_gradient(
                     w / 2.,
                     h / 2.,
                     0.,
                     w / 2.,
                     h / 2.,
-                    radius * 0.94,
+                    radius * glow.radius,
                 ) {
-                    let _ =
-                        glow.add_color_stop(0., &format!("hsla({hue},95%,86%,{acknowledgement})"));
-                    let _ = glow.add_color_stop(
-                        0.55,
-                        &format!("hsla({hue},90%,74%,{})", acknowledgement * 0.65),
-                    );
-                    let _ = glow.add_color_stop(1., "rgba(0,0,0,0)");
-                    context.set_fill_style_canvas_gradient(&glow);
+                    for (offset, paint) in glow.stops {
+                        let _ = gradient.add_color_stop(offset as f32, &paint.css());
+                    }
+                    context.set_fill_style_canvas_gradient(&gradient);
                     context.begin_path();
-                    let _ = context.arc(w / 2., h / 2., radius * 0.94, 0., TAU);
+                    let _ = context.arc(w / 2., h / 2., radius * glow.radius, 0., TAU);
                     context.fill();
                 }
                 context.restore();
@@ -3572,46 +3581,55 @@ fn animate(canvas: HtmlCanvasElement, view: Shared) -> Result<(), JsValue> {
                 context.restore();
             }
 
-            if matches!(
-                v.snapshot.quota["level"].as_str(),
-                Some("warning" | "exhausted")
-            ) {
+            if let Some(ring) = overlays.quota {
                 context.save();
-                context.set_stroke_style_str(if v.snapshot.quota["level"] == "exhausted" {
-                    "#f08c7a"
-                } else {
-                    "#edb347"
-                });
-                context.set_line_width(2.5);
+                context.set_stroke_style_str(&ring.paint.css());
+                context.set_line_width(ring.width_px);
                 context.begin_path();
-                let _ = context.arc(w / 2., h / 2., radius * 1.8, 0., TAU);
+                let _ = context.arc(w / 2., h / 2., radius * ring.radius, 0., TAU);
                 context.stroke();
                 context.restore();
             }
-            if v.snapshot.initiative["available"].as_u64().unwrap_or(0) > 0 {
+            if let Some(dot) = overlays.task_available {
                 context.save();
-                context.set_fill_style_str(&format!("hsl({hue},90%,75%)"));
+                context.set_fill_style_str(&dot.paint.css());
                 context.begin_path();
-                let _ = context.arc(w / 2. + radius * 1.55, h / 2. - radius * 1.55, 5., 0., TAU);
+                let _ = context.arc(
+                    w / 2. + radius * dot.dx,
+                    h / 2. + radius * dot.dy,
+                    dot.radius_px,
+                    0.,
+                    TAU,
+                );
                 context.fill();
                 context.restore();
             }
-            if v.snapshot.settings.microphone_muted {
-                context.save();
-                context.set_stroke_style_str("#a7aeb8");
-                context.set_line_width(2.5);
-                context.begin_path();
-                context.move_to(w / 2. - 7., h / 2. + radius * 1.8);
-                context.line_to(w / 2. + 7., h / 2. + radius * 1.8);
-                context.stroke();
-                context.restore();
-            } else if v.snapshot.wake["phase"] == "listening" {
-                context.save();
-                context.set_fill_style_str("#c7f9e1");
-                context.begin_path();
-                let _ = context.arc(w / 2., h / 2. + radius * 1.8, 3., 0., TAU);
-                context.fill();
-                context.restore();
+            match overlays.microphone {
+                Some(contract::Microphone::Muted(bar)) => {
+                    context.save();
+                    context.set_stroke_style_str(&bar.paint.css());
+                    context.set_line_width(bar.width_px);
+                    context.begin_path();
+                    context.move_to(w / 2. - bar.half_width_px, h / 2. + radius * bar.dy);
+                    context.line_to(w / 2. + bar.half_width_px, h / 2. + radius * bar.dy);
+                    context.stroke();
+                    context.restore();
+                }
+                Some(contract::Microphone::WakeReady(dot)) => {
+                    context.save();
+                    context.set_fill_style_str(&dot.paint.css());
+                    context.begin_path();
+                    let _ = context.arc(
+                        w / 2. + radius * dot.dx,
+                        h / 2. + radius * dot.dy,
+                        dot.radius_px,
+                        0.,
+                        TAU,
+                    );
+                    context.fill();
+                    context.restore();
+                }
+                None => {}
             }
             if mode == visual_state::Mode::Speaking {
                 v.peak_speaking_rms = v.peak_speaking_rms.max(level.rms);

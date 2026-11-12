@@ -36,7 +36,7 @@ assert.equal(attributes.get('aria-label'),'notdot voice companion. Speaking. Pre
 visualState({payload:{mode:'idle',help:'Hey Ava',pressed:null}});
 assert.equal(attributes.get('aria-label'),'notdot voice companion. Ready. Hey Ava');
 // Exercise the actual WASM bridge producer, not a separately reimplemented payload.
-const source=readFileSync(new URL('../crates/notdot-orb/src/lib.rs',import.meta.url),'utf8');
+const source=readFileSync(new URL('../crates/notdot-orb/src/app.rs',import.meta.url),'utf8');
 const bridge=source.slice(source.indexOf('export function installOrbControls(){'),source.indexOf('let resizeQueue=')).replace('export function','function');
 const observers=[],forwarded=[];
 const statusNode={textContent:'One task needs attention.'};

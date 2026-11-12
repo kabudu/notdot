@@ -17,6 +17,9 @@ cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-speak
 cargo clippy -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-speakers -p notdot --all-targets --locked -- -D warnings
 cargo clippy -p notdot-orb --target wasm32-unknown-unknown --locked -- -D warnings
 cargo clippy -p notdot-orb --target wasm32-unknown-unknown --features debug-ui --locked -- -D warnings
+cargo test -p notdot-orb --no-default-features --locked
+cargo clippy -p notdot-orb --no-default-features --all-targets --locked -- -D warnings
+if cargo tree -p notdot-orb --no-default-features -e normal --locked | grep -E 'web-sys|wasm-bindgen|js-sys'; then exit 1; fi
 "$NOTDOT_TEST_PYTHON" -c "from pathlib import Path; s=Path('index.html').read_text(); assert 'composer' not in s and '<textarea' not in s"
 mkdir -p .local
 rustc --edition 2024 --test crates/notdot-orb/src/interaction.rs -o .local/gesture-tests
