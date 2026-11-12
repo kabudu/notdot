@@ -113,7 +113,7 @@ impl Learning {
                     batch.ground_notes();
                     let skipped_summary = batch.discard_invalid_digest(&plan);
                     if job.voice && !batch.notes.is_empty() {
-                        if ledger.plan_is_current(&plan) { proposals.stage(plan,batch,job.epoch)?; }
+                        if ledger.plan_is_current(&plan) { let preview = ledger.preview(&plan, &batch).await?; proposals.stage(plan,batch,job.epoch,preview)?; }
                         Ok((0, skipped_summary))
                     } else {
                         ledger.apply_learning(&plan, batch).await.map(|count| (count, skipped_summary))
@@ -285,7 +285,7 @@ impl Learning {
         let ticket = self
             .memory
             .learning_ticket()
-            .ok_or("Turn on memory before tidying notes")?;
+            .ok_or("Turn on memory before tidying memories")?;
         self.enqueue(Job {
             ticket,
             voice: false,

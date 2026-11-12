@@ -25,3 +25,5 @@ pub mod task_awareness;
 pub mod voice_settings;
 
 pub mod profiles;
+
+pub mod notes;

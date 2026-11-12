@@ -8,6 +8,11 @@
   const state = {settings,profile_id:'owner',phase:'idle',reply:'',speech:{turn:'',text:'',done:false,failed:false},request_id:null,settings_pending:null,error:null,key_configured:true,key_checking:false,key_authorized:true,stt_ready:true,window_visible:true,version:'test',desktop_launch_supported:false,updates:{phase:'idle',version:null,message:'',received:0,total:null,prompt:false},quota:{},wake:{phase:'paused'},learning:{},initiative:{}};
   const speakerCallbacks = [];
   const people={mode:"open",active_profile:"owner",people:[{id:"owner",role:"owner",name:"Me",needs_name:true,voice_enrolled:false,shared_chats:[]}],removed_chats:{archived:0,pending:0},self_removal:null};
+  const notebook={version:1,revision:3,notes:[
+    {id:'11111111-1111-4111-8111-111111111111',title:'shopping list',kind:'list',body:'',items:[{id:'a',text:'oat milk',done:false},{id:'b',text:'2 litres of orange juice',done:true},{id:'c',text:'A deliberately long synthetic list item that keeps going to check wrapping in narrow layouts without spaces: supercalifragilisticexpialidocious',done:false}],created:0,updated:0},
+    {id:'22222222-2222-4222-8222-222222222222',title:'Gate code',kind:'note',body:'The code is 4 7 1 9, ask Priya.\nBring the blue key.',items:[],created:0,updated:0}]};
+  const notebooks={owner:notebook,member:{version:1,revision:1,notes:[{id:'33333333-3333-4333-8333-333333333333',title:'Member chores',kind:'list',body:'',items:[{id:'d',text:'dishes',done:false}],created:0,updated:0}]}};
+  window.notebooks=notebooks;
   let enrolIndex=0,enrolProfile=null,enrolToken=null;
   const phrase=()=>({step:enrolIndex===4?"ready":"prompt",index:enrolIndex+1,of:4,phrase:"Synthetic enrollment phrase."});
   const log = [], callbacks = [], timers = new Set(), cancelled = new Set(), settingsProposals = new Map();
@@ -25,6 +30,18 @@
   // Replacements are installed before WASM loads; no physical audio API is used.
   window.Audio=Audio;window.AudioContext=Context;window.webkitAudioContext=Context;
   if(navigator.mediaDevices) navigator.mediaDevices.getUserMedia=()=>Promise.reject(Error('Microphone forbidden in silent harness'));
+  // Interruption scenarios: a fake echo-cancelled track and worklet. Detections
+  // are injected after "capture" and are SYNTHETIC, not acoustic evidence.
+  const interruptMode=location.hash.startsWith('#interrupt');
+  let fakeAec=location.hash!=='#interrupt-unsupported',injectDetection=false,interruptResult=null,interruptPending=null,micTracks=0,sessions=0;
+  if(interruptMode&&navigator.mediaDevices){
+    navigator.mediaDevices.getSupportedConstraints=()=>({echoCancellation:true});
+    navigator.mediaDevices.getUserMedia=async c=>{record('mic-request');if(location.hash==='#interrupt-start-failure'&&count('mic-request')>1)throw Error('Microphone denied');const ec=c&&c.audio&&c.audio.echoCancellation;if(window.gumDelay)await sleep(window.gumDelay);micTracks++;record('mic-open',{ec});const track={stopped:false,getSettings:()=>({echoCancellation:fakeAec&&ec===true}),stop(){if(!this.stopped){this.stopped=true;micTracks--;record('mic-stop');}}};return {getAudioTracks:()=>[track],getTracks:()=>[track]};};
+  }
+  Context.prototype.audioWorklet={addModule:async()=>{record('worklet');}};
+  Context.prototype.createMediaStreamSource=function(){return new Node();};
+  Context.prototype.close=async function(){this.state='closed';record('context-closed');};
+  window.AudioWorkletNode=class extends Node{constructor(){super();this.port={onmessage:null};this.iv=setInterval(()=>{if(this.port.onmessage)this.port.onmessage({data:new Float32Array(1600)});},100);}disconnect(){clearInterval(this.iv);}};
   // Valid silent WAV, decoded through the normal UI path but played only by Audio above.
   const wav=new Uint8Array(46),v=new DataView(wav.buffer),put=(n,s)=>[...s].forEach((c,i)=>wav[n+i]=c.charCodeAt(0));
   put(0,'RIFF');v.setUint32(4,38,true);put(8,'WAVEfmt ');v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);v.setUint32(24,16000,true);v.setUint32(28,32000,true);v.setUint16(32,2,true);v.setUint16(34,16,true);put(36,'data');v.setUint32(40,2,true);
@@ -48,6 +65,13 @@
     if(cmd==='speaker_available_chats')return {chats:[{id:'chat-a',title:'Garden plans'}],next_cursor:null};
     if(cmd==='speaker_share_chat'){const p=people.people.find(p=>p.id===args.profile);p.shared_chats=p.shared_chats.filter(g=>g.chat_id!==args.chat);p.shared_chats.push({chat_id:args.chat,access:args.access});record('speaker-share',{access:args.access});return null;}
     if(cmd==='speaker_unshare_chat'){const p=people.people.find(p=>p.id===args.profile);p.shared_chats=p.shared_chats.filter(g=>g.chat_id!==args.chat);return null;}
+    if(cmd==='notes_list'){const book=copy(notebooks[state.profile_id]||{version:1,revision:0,notes:[]});if(window.notesDelay){const d=window.notesDelay;window.notesDelay=0;await sleep(d);}return book;}
+    if(cmd==='notes_delete'){const notebook=notebooks[state.profile_id];notebook.notes=notebook.notes.filter(n=>n.id!==args.id);record('note-deleted',{id:args.id});return null;}
+    if(cmd==='notes_export'){record('notes-export',{id:args.id});return args.id?'Exported 1 note.':'Exported '+(notebooks[state.profile_id]||{notes:[]}).notes.length+' notes.';}
+    if(cmd==='backup_export'){if((args.password||'').length<12)throw Error('Use a backup password of at least 12 characters.');record('backup-export');return 'Saved an encrypted backup of 3 memories and 2 notes. Keep the password safe: notdot can’t recover it.';}
+    if(cmd==='backup_inspect'){record('backup-inspect');if(window.inspectDelay){const d=window.inspectDelay;window.inspectDelay=0;await sleep(d);}if(args.password!=='synthetic password')throw Error('The password is wrong, or the backup was changed after it was made. Nothing was restored.');return {id:'restore-1',created_unix_ms:1800000000000,memories:3,skipped_memories:1,notes:2,renamed_notes:1,preferences:true};}
+    if(cmd==='backup_restore'){record('backup-restore',{id:args.id});return 'Restored 3 memories and 2 notes. Orb colour, quiet hours, reminder limits and follow-up length were restored.';}
+    if(cmd==='backup_cancel'){record('backup-cancel');return null;}
     if(cmd==='snapshot') return copy(state);
     if(cmd==='capture_status') return copy(state.wake);
     if(cmd==='voice_providers') return [{id:'elevenlabs',name:'ElevenLabs',streaming_transcription:true}];
@@ -55,6 +79,13 @@
     if(cmd==='wake_activity'){record('lease',{ready:args.ready});return null;}
     if(cmd==='model_catalog')return [{model:'gpt-6.1-terra',displayName:'Terra',supportedReasoningEfforts:[{reasoningEffort:'medium',description:'Medium'}]}];
     if(cmd==='voice_catalog')return {voices:[{id:'synthetic',name:'Synthetic',description:'Test adapter'}],next_cursor:null};
+    if(cmd==='interrupt_permission'){record('interrupt-permission');return null;}
+    if(cmd==='interrupt_support'){record('interrupt-support',{ok:args.echoCancellation,detail:args.detail});return null;}
+    if(cmd==='interrupt_begin'){if(args.turn!==state.speech.turn)throw Error('That reply is no longer speaking');sessions++;record('interrupt-begin',{turn:args.turn});return 'session-'+sessions;}
+    if(cmd==='interrupt_audio'){record('interrupt-audio',{guarded:args.guarded});if(injectDetection&&args.session==='session-'+sessions){injectDetection=false;record('synthetic-detection');return true;}return false;}
+    if(cmd==='interrupt_collect'){record('interrupt-capture',{token:args.token});return await new Promise(resolve=>{interruptPending=resolve;});}
+    if(cmd==='interrupt_end'){record('interrupt-end');if(interruptPending){const done=interruptPending;interruptPending=null;done({interrupt:'resume',line:'Capture cancelled.'});}return null;}
+    if(cmd==='start_capture'&&args.interrupt){if(args.interrupt!=='session-'+sessions)throw Error('Interruption is no longer available');capture++;state.wake={phase:'capturing',capture_token:args.token,request_id:null,manual:true,rms:0};record('interrupt-capture',{token:args.token});emit('capturing',args.token);return null;}
     if(cmd==='start_capture'){
       if(active || state.phase!=='idle') throw Error('Capture overlapped playback/model');
       if(args.followup && performance.now()-lastEnd<590) throw Error('Echo guard violated');
@@ -67,6 +98,7 @@
       return null;
     }
     if(cmd==='cancel_capture'){cancelled.add(args.token);record('cancel',{token:args.token});if(state.wake.capture_token===args.token)state.wake={phase:'paused'};return null;}
+    if(cmd==='transcribe_wake'&&interruptResult){const r=interruptResult;interruptResult=null;if(window.transcribeDelay){const d=window.transcribeDelay;window.transcribeDelay=0;await sleep(d);}record('transcribe');state.wake={phase:'paused'};return r;}
     if(cmd==='transcribe_wake'){record('transcribe');state.wake={phase:'paused'};return transcript;}
     if(cmd==='send_message'){
       turn++;const id='turn-'+turn;record('message',{text:args.text});state.phase='thinking';state.speech={turn:id,text:'The first sentence.',done:false,failed:false};
@@ -99,6 +131,7 @@
     if(cmd==='speak'){record('synthesize');return audio;}
     if(cmd==='save_settings'){cancelSettings();Object.assign(settings,args.settings);record('saved');return null;}
     if(cmd==='set_microphone_muted'){settings.microphone_muted=args.muted;return null;}
+    if(cmd==='stop'&&window.stopKeepsBusy){record('stop');state.phase='thinking';return null;}
     if(cmd==='stop'){state.phase='idle';state.speech.failed=true;record('stop');return null;}
     return null;
   }}};
@@ -106,7 +139,7 @@
   const count = name => log.filter(x=>x.event===name).length;
   function pressEscape(){window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));}
   function orbClick(){const orb=document.getElementById('orb');for(const type of ['mousedown','click'])orb.dispatchEvent(new MouseEvent(type,{bubbles:true,button:0,clientX:180,clientY:180}));}
-  function submit(text){transcript=text;state.wake.phase='ready';state.wake.request_id=++capture;emit('ready',state.wake.capture_token);}
+  function submit(text){if(interruptPending){const done=interruptPending;interruptPending=null;const result=interruptResult||{interrupt:'resume',line:'I did not hear speech, so I will carry on.'};interruptResult=null;const delay=window.transcribeDelay||0;window.transcribeDelay=0;later(delay,()=>done(result));return;}transcript=text;state.wake.phase='ready';state.wake.request_id=++capture;emit('ready',state.wake.capture_token);}
   async function initial(){const n=count('capture');orbClick();await until(()=>count('capture')===n+1);submit('Help me plan tomorrow.');}
   async function nextWindow(){const n=count('capture');await until(()=>count('capture')===n+1);await until(()=>document.getElementById('orb').dataset.state==='followup');}
   async function clean(){pressEscape();for(const id of timers)clearTimeout(id);timers.clear();active=0;Object.assign(settings,{followup_enabled:true,followup_seconds:3,wake_enabled:false,microphone_muted:false});state.session_pending=null;cancelSettings();state.settings_pending=null;state.initiative={};state.window_visible=true;state.phase='idle';state.wake={phase:'paused'};state.speech={turn:'',text:'',done:false,failed:false};document.getElementById('panel').close();await sleep(650);}
@@ -136,6 +169,86 @@
       }
       if(location.hash==='#profile-capture'){
         await clean();settings.followup_enabled=false;let captures=count('capture'),cancels=count('cancel'),messages=count('message');orbClick();await until(()=>count('capture')===captures+1);const token=state.wake.capture_token;state.profile_id='member';await sleep(700);ok('identification preserves the same active microphone capture',state.wake.capture_token===token && state.wake.phase==='capturing' && count('cancel')===cancels);submit('Please calculate five plus seven.');await until(()=>count('message')===messages+1);ok('identified first member turn submits exactly once',count('message')===messages+1);pressEscape();output.textContent=JSON.stringify({status:'passed',passed,adapters:'synthetic native-capture IPC/model/audio; no microphone or providers'},null,2);return;
+      }
+      if(location.hash==='#interrupt-start-failure'){
+        await clean();Object.assign(settings,{followup_enabled:false,interrupt_enabled:true});audioDuration=6000;
+        await initial();await until(()=>count('mic-request')>=2);await sleep(1800);
+        ok('a failed microphone start does not poll or repeatedly request permission',count('mic-request')===2&&micTracks===0);
+        ok('microphone failure explains the explicit retry control',document.getElementById('error').textContent.includes('Toggle it off and on'));
+        ok('a microphone failure leaves the reply playing',active>0);
+        output.textContent=JSON.stringify({status:'passed',passed,adapters:'production WASM; simulated microphone denial; no microphone'},null,2);return;
+      }
+      if(location.hash==='#interrupt-unsupported'){
+        await clean();Object.assign(settings,{followup_enabled:false,interrupt_enabled:true});audioDuration=3000;
+        const checks=count('interrupt-support');await initial();settings.wake_enabled=true;
+        await until(()=>count('interrupt-support')>checks);await sleep(1200);
+        ok('without echo cancellation nothing listens during replies',count('interrupt-begin')===0&&log.filter(e=>e.event==='interrupt-support').pop().ok===false);
+        ok('the capability check releases the microphone',micTracks===0);
+        output.textContent=JSON.stringify({status:'passed',passed,adapters:'production WASM; fake media track without echo cancellation; no microphone'},null,2);return;
+      }
+      if(location.hash==='#interrupt-only'){
+        const orb=document.getElementById('orb');
+        const reply=async()=>{const plays=count('play'),begins=count('interrupt-begin');settings.wake_enabled=false;pressEscape();state.phase='idle';await sleep(700);await initial();await until(()=>count('play')>plays);await until(()=>count('interrupt-begin')>begins);};
+        const held=async()=>{const pauses=count('paused');injectDetection=true;await until(()=>count('interrupt-capture')>0&&count('paused')>pauses&&log[log.length-1]);await until(()=>count('synthetic-detection')>0);};
+        await clean();
+        document.getElementById('orb').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));
+        await until(()=>!document.getElementById('model').disabled);
+        document.getElementById('wake-enabled').checked=false;
+        document.getElementById('interrupt-enabled').checked=true;
+        document.getElementById('interrupt-enabled').dispatchEvent(new Event('change'));
+        const saves=count('saved');document.getElementById('save-settings').click();
+        await until(()=>count('saved')>saves);
+        ok('interruption saves independently of wake listening',settings.interrupt_enabled&&!settings.wake_enabled);
+        Object.assign(settings,{followup_enabled:false,interrupt_enabled:true});audioDuration=6000;
+        await reply();
+        ok('listening starts only during a reply, with an echo-cancelled track',log.find(e=>e.event==='mic-open').ec===true&&log.filter(e=>e.event==='interrupt-support').pop().ok===true);
+        await until(()=>count('interrupt-audio')>3);ok('echo-cancelled audio goes only to the local detector',count('message')===1);
+        await until(()=>(orb.getAttribute('aria-label')||'').includes('interrupt with Stop'),3000).catch(e=>{throw Error('orb label was: '+orb.getAttribute('aria-label'))});ok('the orb explains how to interrupt',true);
+        let captures=count('interrupt-capture'),plays=count('play'),messages=count('message');
+        await held();
+        ok('a detection pauses the reply and captures the request',count('interrupt-capture')===captures+1);
+        ok('the same echo-cancelled microphone keeps the complete interruption',micTracks===1);
+        await until(()=>(orb.getAttribute('aria-label')||'').includes('Paused my reply'),3000);ok('the orb says the reply is paused',true);await until(()=>log.filter(e=>e.event==='visual').pop()?.mode==='listening',4000);ok('the orb visibly changes to its listening animation while the reply is held',true);
+        interruptResult={interrupt:'resume',line:'That sounded like my own voice, so I will carry on.'};submit('ignored');
+        await until(()=>count('play')>plays);ok('echo, silence or another voice resumes the same reply',count('message')===messages&&count('stop')===0);
+        ok('the resume reason is shown',document.getElementById('error').textContent.includes('carry on'));
+        await until(()=>count('interrupt-begin')>=2);
+        let stops=count('stop');messages=count('message');captures=count('interrupt-capture');
+        await held();interruptResult={interrupt:'request',text:'What about tomorrow?'};submit('ignored');
+        await until(()=>count('message')>messages);
+        ok('a request cancels the reply through the normal path before it is sent',count('stop')>stops&&log.filter(e=>e.event==='message').pop().text==='What about tomorrow?');
+        await until(()=>count('play')>0&&count('interrupt-begin')>=3,9000);
+        stops=count('stop');messages=count('message');
+        await held();interruptResult={interrupt:'stop'};submit('ignored');
+        await until(()=>count('stop')>stops);await sleep(400);
+        ok('Stop ends the reply without a new request',count('message')===messages&&micTracks===0);
+        await reply();plays=count('play');
+        await held();submit('');
+        await until(()=>count('play')>plays,6000);ok('a capture that ends silently resumes the reply',count('message')===messages+1);
+        await until(()=>count('interrupt-begin')>=5);
+        await held();const cancels=count('cancel'),ends=count('interrupt-end');pressEscape();
+        await until(()=>count('interrupt-end')>ends);await sleep(300);
+        ok('Escape during a held reply cancels it and releases listening',micTracks===0&&count('interrupt-end')>ends);
+        await reply();const ended=count('interrupt-end');settings.microphone_muted=true;
+        await until(()=>count('interrupt-end')>ended&&micTracks===0);ok('muting stops interruption listening',true);
+        settings.microphone_muted=false;
+        const sent=text=>log.some(e=>e.event==='message'&&e.text===text);
+        // A late recognition result after Escape must not act.
+        await reply();await held();window.transcribeDelay=800;interruptResult={interrupt:'request',text:'Late request'};submit('ignored');
+        await sleep(150);pressEscape();await sleep(1500);
+        ok('a delayed result after Escape is ignored',!sent('Late request'));
+        // Escape while the cancelled reply is still finishing revokes the request.
+        await reply();await held();window.stopKeepsBusy=true;state.phase='thinking';const stopsBefore=count('stop');interruptResult={interrupt:'request',text:'Waiting request'};submit('ignored');
+        await until(()=>count('stop')>stopsBefore);await sleep(400);ok('the request waits while the cancelled reply finishes',!sent('Waiting request'));pressEscape();
+        await sleep(400);window.stopKeepsBusy=false;state.phase='idle';await sleep(1500);
+        ok('Escape during the cancellation wait means the request is never sent',!sent('Waiting request'));
+        // Stopping during a slow microphone start, then starting again, keeps
+        // only the newer session's microphone.
+        window.gumDelay=700;const begins=count('interrupt-begin');settings.wake_enabled=false;pressEscape();state.phase='idle';await sleep(700);await initial();settings.wake_enabled=true;
+        await until(()=>count('interrupt-begin')>begins);const endsBefore=count('interrupt-end');settings.microphone_muted=true;await until(()=>count('interrupt-end')>endsBefore);settings.microphone_muted=false;
+        await until(()=>count('interrupt-begin')>begins+1,9000);await sleep(1600);window.gumDelay=0;
+        ok('a late microphone from an older start is released and the newer one kept',micTracks===1&&count('mic-stop')>=1);
+        output.textContent=JSON.stringify({status:'passed',passed,adapters:'production WASM; fake echo-cancelled track; detections injected after capture (synthetic, not acoustic); no microphone or providers'},null,2);return;
       }
       if(location.hash==='#profile-only'){
         await clean();settings.followup_enabled=false;audioDuration=2000;let played=count('play'),paused=count('paused');await initial();await until(()=>count('play')===played+1);state.profile_id='member';state.speech={turn:'',text:'',done:false,failed:false};state.phase='idle';await until(()=>count('paused')>paused);played=count('play');let captures=count('capture');await sleep(1500);ok('profile switch stops old audio and drops queued old sentences',count('play')===played && count('capture')===captures);output.textContent=JSON.stringify({status:'passed',passed,adapters:'synthetic IPC/model/audio; no microphone or providers'},null,2);return;
@@ -215,7 +328,7 @@
       await clean();settings.followup_enabled=false;await sleep(600);n=count('capture');applied=count('settings-applied');let stale=count('settings-stale');queueSettings('settings-stale',{hue:60});await until(()=>count('capture')===n+1);settings.hue=120;submit('yes, please change those settings');await until(()=>count('settings-stale')===stale+1);ok('a concurrent settings edit invalidates the old approval',settings.hue===120 && count('settings-applied')===applied);
       await clean();settings.followup_enabled=false;await sleep(600);n=count('capture');applied=count('settings-applied');let answers=count('settings-answer'),aborted=count('settings-aborted');queueSettings('settings-async-cancel',{hue:300},1200);await until(()=>count('capture')===n+1);submit('yes, please change those settings');await until(()=>count('settings-answer')===answers+1);pressEscape();await until(()=>count('settings-aborted')===aborted+1);captures=count('capture');let playback=count('play');await sleep(800);ok('Escape revokes settings approval while native validation is pending',settings.hue===120 && count('settings-applied')===applied && count('capture')===captures && count('play')===playback);
       await clean();const auto=log.filter(x=>x.event==='capture'&&x.followup);ok('no capture during playback or inter-sentence gaps',auto.length>=5 && auto.every(x=>x.gap>=590));
-      ok('speech output graph is reused across replies and cancellations',count('play')>2 && count('output-graph')===(navigator.userAgent.includes('Linux')?0:1));
+      ok('speech keeps direct WebKit output or reuses the metered output graph',count('play')>2 && count('output-graph')===(/Linux|Macintosh/.test(navigator.userAgent)?0:1));
       ok('cancellation clears the previous speech source',count('audio-source-cleared')>0);
       output.textContent=JSON.stringify({status:'passed',passed,modelMessages:count('message'),automaticCaptures:auto.length,minimumEchoGapMs:Math.min(...auto.map(x=>x.gap)),adapters:'synthetic IPC, model, STT and audio; no real microphone, speaker, credentials or provider calls'},null,2);
     }catch(error){pressEscape();output.textContent=JSON.stringify({status:'failed',error:String(error),passed,lastEvents:log.filter(x=>x.event!=='lease').slice(-24)},null,2);}

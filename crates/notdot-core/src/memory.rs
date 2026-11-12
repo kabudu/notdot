@@ -16,6 +16,32 @@ use std::{
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
+pub const MAX_RECORDS: usize = 2000;
+/// Shown for any change refused while an interrupted restore still waits to
+/// be undone. Undoing puts back earlier notes, so later changes would be lost.
+pub const RESTORE_PENDING: &str = "An earlier restore hasn't finished undoing, so nothing was changed. Restart notdot to finish it, then try again.";
+/// Metadata that describes a memory itself. Chat and turn identifiers stay on
+/// this computer.
+pub const BACKUP_METADATA: &[&str] = &[
+    "origin",
+    "semantic_key",
+    "evidence",
+    "learning_state",
+    "confidence",
+];
+/// One memory in an encrypted backup.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupRecord {
+    pub id: String,
+    pub summary: bool,
+    pub content: String,
+    pub metadata: BTreeMap<String, String>,
+    pub created_unix_ms: u64,
+    pub updated_unix_ms: u64,
+    /// IDs of other records in the same backup this one replaces or summarises.
+    pub sources: Vec<String>,
+}
 pub struct Memory {
     policy: tokio::sync::watch::Sender<LearningPolicy>,
     store: SledMemoryStore,
@@ -23,6 +49,8 @@ pub struct Memory {
     revision: std::sync::atomic::AtomicU64,
     maintained: std::sync::atomic::AtomicU64,
     semantic_reviewed: std::sync::atomic::AtomicU64,
+    /// Set while a restore journal is waiting to be undone.
+    restore_hold: std::sync::atomic::AtomicBool,
 }
 fn scope() -> MemoryScope {
     MemoryScope {
@@ -71,10 +99,30 @@ impl Memory {
             revision: std::sync::atomic::AtomicU64::new(1),
             maintained: std::sync::atomic::AtomicU64::new(0),
             semantic_reviewed: std::sync::atomic::AtomicU64::new(0),
+            restore_hold: std::sync::atomic::AtomicBool::new(false),
         })
     }
+    /// Refuse every user or learning change until an unfinished restore is
+    /// undone. Only the restore's own import and rollback still write.
+    pub fn hold_for_restore(&self, held: bool) {
+        self.restore_hold
+            .store(held, std::sync::atomic::Ordering::SeqCst);
+    }
+    pub fn restore_held(&self) -> bool {
+        self.restore_hold.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    /// The mutation gate for ordinary changes, refused during a restore hold.
+    /// Checked after locking, so a change waiting for the lock sees a hold
+    /// set while it waited.
+    pub(crate) async fn write_gate(&self) -> Result<tokio::sync::MutexGuard<'_, ()>, String> {
+        let gate = self.mutations.lock().await;
+        if self.restore_held() {
+            return Err(RESTORE_PENDING.into());
+        }
+        Ok(gate)
+    }
     pub async fn remember(&self, text: &str, thread: &str) -> Result<String, String> {
-        let _gate = self.mutations.lock().await;
+        let _gate = self.write_gate().await?;
         self.remember_unlocked(text, thread, None).await
     }
     async fn remember_unlocked(
@@ -84,7 +132,7 @@ impl Memory {
         turn: Option<&str>,
     ) -> Result<String, String> {
         if text.trim().is_empty() || text.len() > 4000 {
-            return Err("Memory note must contain 1–4,000 bytes".into());
+            return Err("A memory must contain 1–4,000 bytes".into());
         }
         let stats = self
             .store
@@ -195,9 +243,9 @@ impl Memory {
     }
     pub async fn forget(&self, id: &str) -> Result<(), String> {
         if id.len() > 128 {
-            return Err("Invalid memory note ID".into());
+            return Err("Invalid memory ID".into());
         }
-        let _gate = self.mutations.lock().await;
+        let _gate = self.write_gate().await?;
         self.policy
             .send_modify(|p| p.epoch = p.epoch.wrapping_add(1));
         let package = self
@@ -213,7 +261,7 @@ impl Memory {
         let source = records
             .iter()
             .find(|r| r.id == id)
-            .ok_or("Memory note was not found")?;
+            .ok_or("That memory was not found")?;
         let mut ids = std::collections::BTreeSet::from([id.to_string()]);
         for r in &records {
             if r.content.trim().eq_ignore_ascii_case(source.content.trim())
@@ -272,8 +320,189 @@ impl Memory {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
-    pub async fn maintain(&self) -> Result<String, String> {
+    /// Advances on every change to the ledger, including edits and forgetting.
+    pub fn revision(&self) -> u64 {
+        self.revision.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    /// Current, reviewable facts and summaries for an encrypted backup.
+    /// Provisional, archived and superseded records are not included.
+    pub async fn backup_records(&self) -> Result<Vec<BackupRecord>, String> {
         let _gate = self.mutations.lock().await;
+        let package = self
+            .store
+            .export(ExportRequest {
+                tenant_id: Some("local".into()),
+                namespace: Some("notdot".into()),
+                include_archived: false,
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        let records: Vec<_> = package
+            .records
+            .into_iter()
+            .map(|r| r.record)
+            .filter(|r| {
+                matches!(
+                    r.quality_state,
+                    MemoryQualityState::Active | MemoryQualityState::Verified
+                ) && matches!(r.kind, MemoryRecordKind::Fact | MemoryRecordKind::Summary)
+            })
+            .take(MAX_RECORDS)
+            .collect();
+        let ids: std::collections::BTreeSet<_> = records.iter().map(|r| r.id.clone()).collect();
+        Ok(records
+            .into_iter()
+            .map(|r| BackupRecord {
+                summary: r.kind == MemoryRecordKind::Summary,
+                content: r.content,
+                metadata: r
+                    .metadata
+                    .into_iter()
+                    .filter(|(k, _)| BACKUP_METADATA.contains(&k.as_str()))
+                    .collect(),
+                created_unix_ms: r.created_at_unix_ms,
+                updated_unix_ms: r.updated_at_unix_ms,
+                // Only links between included records; history stays local.
+                sources: r
+                    .lineage
+                    .into_iter()
+                    .filter(|l| ids.contains(&l.record_id))
+                    .map(|l| l.record_id)
+                    .collect(),
+                id: r.id,
+            })
+            .collect())
+    }
+    /// IDs of current records whose content matches, for restore de-duplication.
+    pub async fn current_contents(&self) -> Result<BTreeMap<String, String>, String> {
+        Ok(self
+            .backup_records()
+            .await?
+            .into_iter()
+            .map(|r| (r.content.trim().to_lowercase(), r.id))
+            .collect())
+    }
+    /// Insert validated restored records with caller-chosen IDs. Writes are
+    /// idempotent per ID; the caller journals the IDs first so a failure or
+    /// crash can remove exactly these records with [`Memory::remove_records`].
+    pub async fn import_records(
+        &self,
+        records: &[BackupRecord],
+        expected_revision: u64,
+    ) -> Result<(), String> {
+        let _gate = self.mutations.lock().await;
+        if self.revision() != expected_revision {
+            return Err("Memories changed after the preview".into());
+        }
+        self.policy
+            .send_modify(|p| p.epoch = p.epoch.wrapping_add(1));
+        let stats = self
+            .store
+            .stats(StoreStatsRequest {
+                tenant_id: Some("local".into()),
+                namespace: Some("notdot".into()),
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        if stats.total_records as usize + records.len() > MAX_RECORDS {
+            return Err(
+                "Restoring would pass the 2,000 memory limit. Nothing was restored.".into(),
+            );
+        }
+        for r in records {
+            let mut metadata: BTreeMap<String, String> = r
+                .metadata
+                .iter()
+                .filter(|(k, _)| BACKUP_METADATA.contains(&k.as_str()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            metadata.insert("restored".into(), "encrypted backup".into());
+            let record = MemoryRecord {
+                id: r.id.clone(),
+                scope: MemoryScope {
+                    source: "restored-user-memory".into(),
+                    ..scope()
+                },
+                kind: if r.summary {
+                    MemoryRecordKind::Summary
+                } else {
+                    MemoryRecordKind::Fact
+                },
+                content: r.content.clone(),
+                summary: None,
+                source_id: None,
+                metadata,
+                quality_state: MemoryQualityState::Active,
+                created_at_unix_ms: r.created_unix_ms,
+                updated_at_unix_ms: r.updated_unix_ms,
+                expires_at_unix_ms: None,
+                importance_score: 0.8,
+                artifact: None,
+                episode: None,
+                historical_state: MemoryHistoricalState::default(),
+                lineage: r
+                    .sources
+                    .iter()
+                    .map(|id| mnemara::LineageLink {
+                        record_id: id.clone(),
+                        relation: if r.summary {
+                            mnemara::LineageRelationKind::ConsolidatedFrom
+                        } else {
+                            mnemara::LineageRelationKind::Supersedes
+                        },
+                        confidence: 1.0,
+                    })
+                    .collect(),
+                conflict: None,
+            };
+            self.store
+                .upsert(UpsertRequest {
+                    record,
+                    idempotency_key: Some(format!("restore-{}", r.id)),
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        self.revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+    /// Remove records written by an incomplete restore. Missing IDs are fine.
+    pub async fn remove_records(&self, ids: &[String]) -> Result<(), String> {
+        let _gate = self.mutations.lock().await;
+        self.policy
+            .send_modify(|p| p.epoch = p.epoch.wrapping_add(1));
+        let present: std::collections::BTreeSet<_> = self
+            .store
+            .export(ExportRequest {
+                tenant_id: Some("local".into()),
+                namespace: Some("notdot".into()),
+                include_archived: true,
+            })
+            .await
+            .map_err(|e| e.to_string())?
+            .records
+            .into_iter()
+            .map(|r| r.record.id)
+            .collect();
+        for id in ids.iter().filter(|id| present.contains(*id)) {
+            self.store
+                .delete(DeleteRequest {
+                    tenant_id: "local".into(),
+                    namespace: "notdot".into(),
+                    record_id: id.clone(),
+                    hard_delete: true,
+                    audit_reason: "Rolled back an incomplete restore".into(),
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        self.revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+    pub async fn maintain(&self) -> Result<String, String> {
+        let _gate = self.write_gate().await?;
         self.maintain_unlocked().await
     }
     async fn maintain_unlocked(&self) -> Result<String, String> {

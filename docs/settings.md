@@ -100,9 +100,13 @@ With wake listening off, click the orb once. A short chime tells you the microph
 
 **Keep the conversation going** is off by default. Turn it on in the wake and microphone settings, choose a follow-up window from **3 to 20 seconds** (normally **8**), then **Save**. After the complete spoken reply finishes, a short chime and a glow inside the orb show that notdot is listening for another request. You do not need another click or wake phrase. If you start speaking within the window, you can finish your request normally; a pause sends it.
 
-Say **“That’s all”** while it is listening, or press **Escape**, to end the exchange. It also stops on silence, mute, opening Settings or About, hiding the window, loss of voice-service access or an error. Ending an exchange returns to the usual wake or click mode. To interrupt a reply while it is speaking, use Escape; voice interruption is a separate planned feature.
+Say **“That’s all”** while it is listening, or press **Escape**, to end the exchange. It also stops on silence, mute, opening Settings or About, hiding the window, loss of voice-service access or an error. Ending an exchange returns to the usual wake or click mode.
 
-Follow-up audio is sent to your chosen speech-recognition service and may count towards its usage. The microphone stays closed during notdot’s spoken reply and the short pause afterwards. Follow-up listening currently requires a streaming speech service.
+**Interrupt while notdot speaks** is off by default. Turn it on to change a reply while it is playing. Say “Stop”, “Actually…” or a new request; no wake phrase is needed. The orb glows and pauses the reply when it detects speech. A clear stop ends it, a new request replaces it, and empty, unclear or refused speech lets it carry on. Escape always cancels. If listening cannot start, notdot stops trying; toggle the setting off and on to retry.
+
+The setting stays unavailable if the microphone cannot provide echo cancellation. Speech detected during a reply goes to your selected recognition service, with its usual usage charges; idle audio stays local. A reply or background sound can still be mistaken for speech, so use mute whenever you want listening to stop.
+
+Follow-up audio is sent to your chosen speech-recognition service and may count towards its usage. Follow-up capture waits until notdot’s reply and the short pause afterwards finish; optional voice interruption is separate. Follow-up listening currently requires a streaming speech service.
 
 **Speech recognition** normally uses your voice service. To try **Deepgram Flux · experimental**, select it, keep **Spoken language** set to **English**, enter its key in **Deepgram API key**, then choose **Save**. Leave the key blank to keep a saved one; use **Allow saved Deepgram key access** if macOS needs approval. Your selected ElevenLabs voice still handles replies. It uses one streaming pass, with no premium hints or second decoding pass. Its usage is separate from the voice-usage bar. In QA builds, the Deepgram key has a separate keychain entry from the normal app.
 
@@ -122,21 +126,62 @@ If you use Windows through Windows App on a Mac, enable **Microphone** in the sa
 
 Turn on **Listen for my wake phrase** to try “Hey” followed by your companion’s name. Wait for the orb to respond, then speak. A pause ends the request. Detection happens on your computer; only the request after activation goes to the voice service.
 
-This feature is experimental and works in English. It can miss you or wake by mistake. A wake phrase is not proof of who is speaking. **Mute microphone** stops both wake listening and recording. Listening pauses while Settings is open or notdot speaks.
+This feature is experimental and works in English. It can miss you or wake by mistake. A wake phrase is not proof of who is speaking. **Mute microphone** stops both wake listening and recording. Wake listening pauses while Settings is open or notdot speaks. Optional voice interruption uses separate echo-cancelled listening only during replies.
 
 ## Memory
 
 Turn on **Remember useful details** to learn preferences, goals and important facts. New learned facts retain the user’s original evidence clause, preserving names, negation and qualifications instead of relying on an AI paraphrase. Fragments that drop a surrounding qualification are rejected. Correcting a fact retires other records containing that same outdated mixed quote, so it cannot remain in recall under a second label. Before saving a new fact from speech, notdot reads it back and listens for your answer. Say **“yes, please save that memory”** to save it, or **“no”** if it heard you wrongly. “Yes” alone, silence or Escape saves nothing. You can then repeat the corrected detail. This also applies to “Remember…” requests. Memory checks and spoken confirmations use your selected AI and voice services.
 
-**Review memories** lets you read, confirm, correct and forget notes. **Tidy memories** reviews notes and makes shorter summaries. The review shows where a note came from and how sure the AI was; that confidence is an estimate, not a guarantee.
+### Correct a memory by speaking
+
+Say what changed, for example “Actually, my favourite tea is rooibos now.” If notdot already remembers something on that subject, it reads back both: “I'll replace ‘My favourite tea is jasmine’ with ‘my favourite tea is rooibos’.” Say **“yes, replace that memory”** to change it. “Yes, save that” or “Yes” alone does not replace anything, and other memories stay as they are. The old wording is kept in the memory's history, and summaries that used it are retired, so it won't come back from a later chat.
+
+If notdot can't tell which saved detail you mean, it says what it found and asks you to name the old detail. Nothing changes until you confirm. Words you quote from someone else, a message or a web page are not treated as your own correction. A confirmation belongs to the person who was asked: if someone else speaks, or you press Escape, it is cancelled.
+
+**Review memories** lets you read, confirm, correct and forget memories. **Tidy memories** reviews memories and makes shorter summaries. The review shows where a memory came from and how sure the AI was; that confidence is an estimate, not a guarantee.
 
 Declining a proposed memory keeps it out of the memory ledger; it does not erase the original transcript from chat history. Unconfirmed proposals expire and are not kept across restarts.
 
-With memory off, notdot stops saving and using these separate memories. Existing notes stay on your computer. The current chat still has its own history, including anything already said or supplied to the model. Turning memory off does not erase that history.
+With memory off, notdot stops saving and using memories. Existing memories stay on your computer, and voice notes and lists keep working. The current chat still has its own history, including anything already said or supplied to the model. Turning memory off does not erase that history.
 
-**Reset memory** deletes all local memories, their older stored versions, reminders and suggestions, then starts a fresh companion chat. It keeps your settings and saved key. Old chats in Codex / ChatGPT, backups and other copies remain. The confirmation explains what will be removed; the reset cannot be undone.
+**Reset memory** deletes all local memories, their older stored versions, reminders and suggestions, then starts a fresh companion chat. It keeps your notes and lists, settings and saved key. Old chats in Codex / ChatGPT, backups and other copies remain. The confirmation explains what will be removed; the reset cannot be undone.
 
 A summary is checked separately from new facts. If it cannot be verified, notdot skips it and can still keep valid facts. The memory status tells you when a summary was skipped.
+
+## Notes and lists
+
+Dictate notes and lists by voice. They are kept exactly as you said them, separate from memories, reminders and chat history.
+
+| Say | What happens |
+| --- | --- |
+| “Make a shopping list” | Creates a list called *shopping list*. |
+| “Start a packing list with socks, a charger and a hat” | Creates the list with three items. |
+| “Add oat milk to that list” | Adds to the list you used in the last two minutes. |
+| “Take a note” | Asks for a name, then what the note should say. |
+| “Read my packing list” or “What's on my shopping list?” | Reads it back. |
+| “Tick off oat milk on the shopping list” | Marks the item done. |
+| “Remove bread from that list” | Removes the item. |
+| “Rename the shopping list to weekly shop” | Renames it. |
+| “Find my note about the boiler” | Finds notes that mention it. |
+| “What notes do I have?” | Lists their names. |
+| “Delete the packing list” | Reads back what will go, then waits for **“yes, delete that list”**. |
+| “Change my gate code note to say 5 5 5 1” | Reads back the new text, then waits for **“yes, replace that note”**. |
+
+“That list” and “it” only mean the note or list you used in the last two minutes. If that is unclear, or two names match, notdot asks which one you mean. When you say “eggs and milk” without a pause between items, notdot asks whether that is one item or separate items. If notdot asks for a name or text, answer within a minute or say “Never mind”.
+
+Notes are handled on this computer and are not sent to Codex. Your speech still goes to your chosen recognition service, and what notdot reads back goes to your chosen voice service, as with any request.
+
+Each person you add in **People and voices** has their own notes. Before anyone teaches notdot their voice, whoever uses your unlocked computer can use these notes, as with memories. Once voices are set up, notes need a recognised voice. Voice matching is a convenience, not a password.
+
+**Notes & lists** in Settings shows the current person's notes. You can export one note or all of them as plain text, and delete a note after confirming. Closing Settings or a change of speaker clears them from the screen. Resetting memory does not delete notes.
+
+## Encrypted backup
+
+**Encrypted backup** saves the current person's memories and notes in one file, locked with a password you choose. Use at least 12 characters. notdot never stores the password and can't recover it. The owner's backup also keeps the orb colour, quiet hours, reminder limits and follow-up length.
+
+A backup never includes voice-service keys, Codex sign-ins, saved voices, chat access, confirmations, or your microphone, wake, startup and check-in choices. It never includes anyone else's notes or memories.
+
+To restore, enter the password and choose **Restore from backup…**. notdot checks the file and shows what it will add before anything changes. Restoring adds memories and notes and deletes nothing: memories you already have are skipped, and a note whose name is taken is added with “(restored)”. For the owner, the orb colour, quiet hours, reminder limits and follow-up length are replaced with the backup’s. If your notes, memories or settings change before you confirm, or someone else starts speaking, choose the backup again for a fresh preview. A wrong password, a damaged or changed file, or a backup from a newer notdot is refused without changing anything. If a restore is interrupted, notdot undoes it the next time it starts, keeping settings changed since. Until the undo finishes, notes and memories can be read but not changed, so nothing newer is lost.
 
 ## Reminders and check-ins
 
@@ -168,6 +213,6 @@ When update checks are on, notdot checks every six hours. It asks before install
 
 **Reconnect companion** restarts the conversation service. It interrupts any reply in progress. **Remove voice key** removes the saved service key.
 
-Voice recordings go to the selected voice service. Words from your request and relevant saved notes go to the model through the Codex tool. Local memories are not separately encrypted by notdot; your computer’s account and backups matter. See [Security](../SECURITY.md) for the full boundaries.
+Voice recordings go to the selected recognition service, and spoken replies are made by the selected voice service. Words from your request and relevant saved memories go to the model through the Codex tool. Notes and list requests are the exception: they are handled on this computer and do not go to the model, although your dictation still goes to the recognition service and read-backs to the voice service. Local memories are not separately encrypted by notdot; your computer’s account and backups matter. See [Security](../SECURITY.md) for the full boundaries.
 
-If backup wake recognition fails on a phrase, the primary detector keeps listening and the backup can retry on the next phrase. Settings shows a short warning while that backup failure remains unresolved. Initial model-loading or microphone errors still need attention; notdot does not silently grant microphone permission.
+If fallback wake recognition fails on a phrase, the primary detector keeps listening and the fallback can retry on the next phrase. Settings shows a short warning while that fallback failure remains unresolved. Initial model-loading or microphone errors still need attention; notdot does not silently grant microphone permission.

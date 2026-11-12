@@ -68,7 +68,7 @@ jobs:
           else
             sed -n 's/^deb /deb-src /p' /etc/apt/sources.list | sudo tee /etc/apt/sources.list.d/notdot-source.list > /dev/null
           fi
-          sudo apt-get update
+          bash scripts/prepare_linux_apt.sh
           # Runner images can contain superseded libraries whose exact sources
           # have left the current archive. Align installed binaries with the
           # enabled source indexes before bundling and collecting their sources.

@@ -53,6 +53,7 @@ jobs:
       - run: python3 scripts/distribution_notices.py
       - run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - run: node scripts/test_orb_input.mjs
+      - run: node scripts/test_interrupt_lifecycle.mjs
       - name: Check committed whitespace
         env:
           CI_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -260,7 +261,7 @@ jobs:
           components: clippy
       - name: Linux prerequisites
         run: |
-          sudo apt-get update
+          bash scripts/prepare_linux_apt.sh
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libssl-dev libdbus-1-dev libasound2-dev
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:

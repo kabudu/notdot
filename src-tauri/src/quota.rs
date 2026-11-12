@@ -227,7 +227,7 @@ async fn refresh(state: &AppState, force: bool) -> Result<(), String> {
         let s = state.snapshot.lock().await;
         (
             s.settings.voice_provider.clone(),
-            s.key_configured && !s.key_checking,
+            s.voice_key_ready(&state.credentials),
         )
     };
     if !ready {

@@ -77,6 +77,9 @@ pub async fn bind_capture(
         }
     };
     state.speakers.validate(&identity)?;
+    // An interruption may only come from the person whose reply is held.
+    // Checked before any change of person, so a refusal keeps their reply.
+    crate::interrupt::admit(&state, token, &identity).await?;
     let old = state.context();
     if old.id != identity.profile {
         // Never let a different person answer another person's pending approval.
@@ -91,6 +94,7 @@ pub async fn bind_capture(
                 .expect("settings consent")
                 .waiting()
             || old.learning.confirmations.waiting(&old.memory)
+            || old.notes.waiting().await
         {
             return Err(
                 "Finish or cancel the current confirmation before changing speaker.".into(),
@@ -113,6 +117,10 @@ pub async fn bind_capture(
         )?;
         old.learning.cancel();
         old.initiative.cancel();
+        old.notes.cancel().await;
+        // A restore preview belongs to the person who was active.
+        state.backups.cancel();
+        state.interrupt.end();
         old.session_consent
             .lock()
             .expect("session consent")

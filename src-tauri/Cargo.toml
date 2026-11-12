@@ -28,10 +28,17 @@ sentencepiece-rs = "=0.2.2"
 cpal = "=0.18.2"
 hound = "3"
 zeroize = "1"
+# Already in the tree for TLS and voiceprints: AEAD and PBKDF2 for backups.
+ring = "0.17"
 chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
 whisper-rs = { version = "=0.16.0", default-features = false }
 rubato = { version = "=0.16.2", default-features = false }
+# Native save/open panels for notes export and encrypted backups. GTK3 is the
+# toolkit Tauri already links on Linux; no portal or Wayland client is added.
+# 0.15 is the newest release linking the gtk-sys 0.18 used by Tauri (and the
+# version tauri-plugin-dialog 2 wraps).
+rfd = { version = "=0.15.4", default-features = false, features = ["gtk3"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

@@ -1,7 +1,7 @@
 //! On-device keyword spotting. One worker owns inference and microphone capture;
 //! the real-time callback only downmixes into a bounded queue. No network access.
 mod fallback;
-mod speech;
+pub(crate) mod speech;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use notdot_core::settings::Settings;
 use serde::Serialize;
@@ -1324,6 +1324,24 @@ impl Worker {
     }
 }
 
+/// Production wake detector exposed to the debug-only echo probe.
+#[cfg(debug_assertions)]
+pub mod standalone {
+    pub struct Detector(super::Detector);
+    impl Detector {
+        pub fn new(models: &std::path::Path, phrase: &str) -> Result<Self, String> {
+            super::Detector::new(models, phrase).map(Self)
+        }
+        pub fn accept(&mut self, rate: u32, samples: &[f32]) -> bool {
+            let hit = self.0.accept(rate, samples);
+            if hit {
+                self.0.reset();
+            }
+            hit
+        }
+    }
+}
+
 // Cross-compiled test binaries need resources on the machine running the tests.
 // This override is test-only; production always uses Tauri's bundled resources.
 #[cfg(test)]
@@ -1995,6 +2013,133 @@ mod tests {
                 );
             }
         }
+    }
+    /// Mix `speech` into `echo` from `offset` samples. Synthetic: models the
+    /// microphone hearing notdot's own reply plus a person, without room
+    /// acoustics, latency or loudspeaker distortion.
+    fn mix(
+        echo: &[f32],
+        echo_gain: f32,
+        speech: &[f32],
+        speech_gain: f32,
+        offset: usize,
+    ) -> Vec<f32> {
+        let len = echo.len().max(offset + speech.len());
+        (0..len)
+            .map(|i| {
+                let e = echo.get(i).copied().unwrap_or(0.) * echo_gain;
+                let s = i
+                    .checked_sub(offset)
+                    .and_then(|j| speech.get(j))
+                    .copied()
+                    .unwrap_or(0.)
+                    * speech_gain;
+                (e + s).clamp(-1., 1.)
+            })
+            .collect()
+    }
+    fn reply_echo() -> Vec<f32> {
+        // About six seconds of ordinary reply speech with short gaps.
+        let mut echo = Vec::new();
+        for _ in 0..3 {
+            echo.extend(audio("negative.wav"));
+            echo.extend(vec![0.; 3200]);
+        }
+        echo
+    }
+    #[test]
+    #[ignore = "measurement report for interruption; prints a table, asserts nothing"]
+    fn interruption_acoustic_report() {
+        let _models = model_fixture_guard();
+        let echo = reply_echo();
+        // Controls: the same placement with no echo, and the wake phrase in
+        // a pause between reply sentences.
+        for (label, offset) in [("no echo", 16_000), ("in a reply pause", 0)] {
+            let mut detector = Detector::new(&models(), "Hey Ava").unwrap();
+            let samples = if label == "no echo" {
+                mix(&echo, 0., &audio("hey-ava-uk.wav"), 0.35, offset)
+            } else {
+                let gap = audio("negative.wav").len();
+                mix(&echo, 0.2, &audio("hey-ava-uk.wav"), 0.35, gap + 200)
+            };
+            eprintln!("control {label}: {}", detects(&mut detector, &samples));
+        }
+        for echo_gain in [0.01_f32, 0.02, 0.05, 0.1, 0.2, 0.35, 0.6, 1.0] {
+            let mut row = Vec::new();
+            for (label, speech, gain) in [
+                ("echo only", Vec::new(), 0.),
+                ("echo quoting wake phrase", audio("hey-ava.wav"), echo_gain),
+                ("user wake over echo", audio("hey-ava-uk.wav"), 0.35),
+                ("user name only over echo", audio("ava.wav"), 0.35),
+            ] {
+                let samples = mix(&echo, echo_gain, &speech, gain, 16_000);
+                let mut detector = Detector::new(&models(), "Hey Ava").unwrap();
+                row.push(format!("{label}={}", detects(&mut detector, &samples)));
+            }
+            // The reply itself says the wake phrase in its own sentence.
+            let mut quoting = audio("negative.wav");
+            quoting.extend(vec![0.; 3200]);
+            quoting.extend(audio("hey-ava.wav"));
+            quoting.extend(vec![0.; 3200]);
+            let samples = mix(&quoting, echo_gain, &[], 0., 0);
+            let mut detector = Detector::new(&models(), "Hey Ava").unwrap();
+            row.push(format!(
+                "reply sentence is the wake phrase={}",
+                detects(&mut detector, &samples)
+            ));
+            eprintln!("echo_gain={echo_gain}: {}", row.join(", "));
+        }
+    }
+    #[test]
+    #[ignore = "diagnostic for interruption: which detector path finds the phrase near reply audio"]
+    fn interruption_detector_path_diagnostic() {
+        let _models = model_fixture_guard();
+        let echo = reply_echo();
+        let gap = audio("negative.wav").len();
+        let wake = audio("hey-ava-uk.wav");
+        let no_fallback = || {
+            let dir = tempfile::tempdir().unwrap();
+            let mut d = Detector::new(&models(), "Hey Ava").unwrap();
+            d.fallback =
+                fallback::Fallback::new(&dir.path().join("missing.bin"), "Hey Ava").unwrap();
+            d
+        };
+        let cases: Vec<(&str, Vec<f32>)> = vec![
+            ("directly after reply speech, no gap", {
+                let mut s: Vec<f32> = audio("negative.wav").iter().map(|x| x * 0.6).collect();
+                s.extend(wake.iter().map(|x| x * 0.35));
+                s
+            }),
+            ("overlap echo 0.05", mix(&echo, 0.05, &wake, 0.35, 16_000)),
+            ("overlap echo 0.2", mix(&echo, 0.2, &wake, 0.35, 16_000)),
+            ("overlap echo 0.35", mix(&echo, 0.35, &wake, 0.35, 16_000)),
+            ("pause echo 0.2", mix(&echo, 0.2, &wake, 0.35, gap + 200)),
+            (
+                "louder user 0.8 over echo 0.2",
+                mix(&echo, 0.2, &wake, 0.8, 16_000),
+            ),
+        ];
+        for (label, samples) in cases {
+            let mut full = Detector::new(&models(), "Hey Ava").unwrap();
+            let both = detects(&mut full, &samples);
+            let mut kws = no_fallback();
+            let kws_only = detects_unchecked(&mut kws, &samples);
+            eprintln!(
+                "{label}: full={both} kws_only={kws_only} kws_candidates={} rejected_energy={} rejected_prefix={}",
+                kws.candidates, kws.rejected_energy, kws.rejected_prefix
+            );
+        }
+    }
+    /// Like `detects`, without requiring a working fallback decoder.
+    fn detects_unchecked(detector: &mut Detector, samples: &[f32]) -> bool {
+        let mut detected = detector.accept(16000, &[0.; 8000]);
+        for chunk in samples.chunks(320) {
+            detected |= detector.accept(16000, chunk);
+        }
+        for _ in 0..40 {
+            detected |= detector.accept(16000, &[0.; 320]);
+        }
+        detected
     }
     #[test]
     fn wake_with_input_bias_and_low_frequency_rumble() {

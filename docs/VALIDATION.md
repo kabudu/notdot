@@ -6,6 +6,35 @@ Environment: macOS arm64; Rust/Cargo 1.97.0; Tauri 2.12.5; Trunk 0.22.1; install
 
 ## Verified
 
+### 2026-11-11: review fixes and Linux voice notes
+
+Independent Claude Code review found and fixed natural-list requests being intercepted as saved notes, misleading backup wording, and a failed-restore journal allowing later changes that recovery could discard. While recovery is pending, note and memory writes now fail closed; reading remains available. Native integration tests cover restart recovery, preserved unrelated settings, rejected writes and resumed writes after recovery. Saved-key readiness now follows successful native cache reads, including a silent voice-key read after unlocking a different service. Regression tests cover denied reads, deletion, provider changes and late startup results.
+
+On Ubuntu 24.04 ARM64 with WebKitGTK 2.52.6, generated speech through a virtual microphone and the real Deepgram recognition path exposed an unrecognised “shopping list called” command. The rebuilt native app accepted that exact phrase, persisted the named list with apples, bread and oat milk, and appended bananas from a second spoken command. A spoken read-back produced provider reply audio in the guest speaker monitor. “Check off bread” marked that item complete and persisted revision 3; the final native Linux UI also showed the password-error border and returned focus to the invalid field. These are unattended synthetic-voice checks, not real-person acoustic acceptance. A “tick off” fixture was recognised as “take off” and made no notebook change; no automatic reinterpretation was added.
+
+Review-fix validation: 314 Rust tests passed across the core, orb and desktop packages, with 16 explicitly ignored tests and no failures; formatting and strict native/WASM Clippy passed. The final visual review passed 154 checks at each of four window sizes, including password-error announcements, visible error borders, category-label wrapping and profile isolation with simulated services. Website and local documentation-link checks passed. All required CI jobs passed on code commit `347de12`, including Windows, Linux, both Mac architectures, packaging and release tools.
+
+### 2026-11-11: macOS spoken reply isolation
+
+Real-person tests confirmed that “Stop” and a replacement request without a wake phrase stopped the old reply. Reply starts repeated and a longer paragraph broke up. A numbered-prefix queue defect was fixed separately, but unnumbered replies still reproduced the playback problem.
+
+The exact generated MP3 clips sounded smooth when played independently. Preparing echo-cancelled capture before speech did not resolve the fault, so that experimental change was removed. The same signed candidate then bypassed `MediaElementAudioSourceNode` routing while keeping interruption enabled; the listener confirmed no repetition, a smooth longer explanation, a wake-free replacement request answered with twelve, and listening ending after “That’s all”. The fix preserves direct media playback on macOS, as already used on Linux, and retains the smooth unmetered speaking animation. Windows keeps its existing metered output graph. The scoped change passes 31 UI Rust tests, four JavaScript capture lifecycle checks, 19 production-WASM interruption scenarios and 67 general UI integration checks, including follow-up timeouts, echo guards and cancellation. Formatting and strict WASM Clippy pass with and without the debug UI. Simulated audio does not establish acoustic quality. The listener result is evidence from one live comparison, not proof across all hardware or confirmation that all platform acceptance checks are complete.
+
+
+### 2026-11-11: v0.8 native acceptance checkpoint
+
+These checks used disposable profiles and the branch based on `55b372b`, with the settings-search focus fix. They do not establish full release acceptance.
+
+- macOS: a generated phrase played through the speaker was captured by the microphone, transcribed by Deepgram, and saved as a list with the expected three items. ElevenLabs preview and reply playback completed. A separate Terra reply reached the follow-up window and returned to idle after silence; Escape stopped another active reply without later playback resuming. These are unattended checks, not listener confirmation or real-person interruption tests.
+- macOS: native note export, encrypted backup save/open, wrong-password rejection, cancelled restore, deletion of a synthetic list, and restoration of that list passed. The restored title and all three items matched.
+- Ubuntu 24.04 ARM64, WebKitGTK 2.52.6: the native app rendered, keyboard navigation reached the controls, a local list was saved, and the native file dialog saved an encrypted backup containing that list. Saved provider keys were unavailable non-interactively, so provider-audio acceptance remains pending. No unlock or authorisation prompt was requested.
+- Windows: the CI-produced candidate and resource archive passed checksum verification. Avast blocked execution pending analysis, so this attempt provides no native UI or audio pass. Protection was left unchanged.
+- Native Linux testing exposed focus moving from settings search to the model search when matching sections opened. The fix keeps typing in settings search; it was verified in the Mac and Linux native windows. The production-WASM layout suite passed at 320×360, 360×360, 450×680 and 900×900, including the new focus regression.
+
+Still required: real-person overlapping speech and trusted-speaker short commands, positive voice interruption, stronger acoustic self-echo evidence, and the blocked Windows/Linux provider-audio checks. Simulated interruption cases remain separate evidence.
+
+Later real-person check: the user confirmed that saying “Stop” during the clouds explanation stopped playback without another wake phrase. They also reported repetition and broken sound at the beginning. A regression reproduced a bare streamed `1. ` being emitted for synthesis before its sentence; the queue now waits for the following words. All 31 UI Rust tests and strict WASM Clippy pass. A numbered reply with interruption off still sounded slightly broken to the listener, while the voice preview sounded smooth, so the remaining audio issue is unresolved. This single successful Stop check does not establish replacement requests or trusted-speaker interruption acceptance.
+
 - Real Rust bridge starts Terra Medium, completes a turn, restarts and recalls the previous answer using the same persisted thread ID.
 - Native Tauri/WASM app completed a real user turn, and Desktop read the same completed history while notdot remained running. That native test used the earlier development composer; the default UI now excludes it.
 - Nine core/provider Rust tests cover settings restart/validation, explicit retention intent, memory restart/deletion and dependent-summary retraction, interleaved agent events/unsupported approval rejection, runtime exit, provider bad inputs, preview-URL safety, and voice search/pagination over a local HTTP fixture.
@@ -191,3 +220,9 @@ Completed targeted macOS voice/UI acceptance on `fd980d6`: extraction, provision
 ## Recognition comparison and alternate service
 
 The wider synthetic corpus found no measured gain from ElevenLabs rumble/background-filter experiments; those were removed. Wake-pause segmentation and the spoken approval prompt were corrected and checked acoustically. Optional Deepgram recognition/key setup is implemented and passes silent mock/compile checks; actual provider and microphone acceptance are deferred at the user’s request until tomorrow. See [results, rejected approaches and remaining gates](validation/2026-10-27-stt-recognition.md).
+
+### 2026-11-12: final acceptance and cleanup
+
+Windows live voice-list acceptance is finished and passed, confirmed by the person making the request: notdot understood the intended request despite quiet or unclear speech. This records conversational acceptance, rather than an independently verified exact-title and three-item persistence assertion. The live Windows candidate was `6d74404`; the subsequent reviewed code is covered by the green `347de12` CI run and native Linux retest above.
+
+The disposable Windows profile was preserved separately and the original profile restored with matching file hashes. Original Mac and Linux profiles were also restored; the Linux VM was shut down and its temporary audio configuration restored. Windows notdot was closed after testing. No saved keys were exported or re-entered during cleanup.

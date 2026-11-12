@@ -62,7 +62,9 @@ class Accessibility(unittest.TestCase):
 
     def test_settings_are_native_disclosures_and_intelligence_has_no_visible_selects(self):
         sections=[a for t,a in self.markup.tags if t=='details' and 'settings-section' in a.get('class','').split()]
-        self.assertEqual(len(sections),11)
+        self.assertEqual(len(sections),13)
+        ids={a.get('id') for a in sections}
+        self.assertTrue({'voice-notes-section','backup-section'}<=ids)
         self.assertTrue(any(a.get("id")=="session-section" for a in sections))
         self.assertTrue(all('open' not in a for a in sections))
         for ident in ('model','effort'):
@@ -86,6 +88,19 @@ class Accessibility(unittest.TestCase):
         self.assertNotIn('Rust',about)
         self.assertNotIn('WASM',about)
         self.assertNotIn('Tauri',about)
+
+    def test_backup_passwords_are_labelled_never_prefilled_and_dialogs_are_in_product(self):
+        for ident in ('backup-password','backup-password-repeat'):
+            field=next(a for _,a in self.markup.tags if a.get('id')==ident)
+            self.assertEqual(field['type'],'password')
+            self.assertEqual(field['autocomplete'],'new-password')
+            self.assertNotIn('value',field)
+        confirm=next(a for _,a in self.markup.tags if a.get('id')=='backup-confirm')
+        self.assertIn('hidden',confirm)
+        self.assertEqual(confirm['aria-labelledby'],'backup-confirm-heading')
+        source=(ROOT/'crates/notdot-orb/src/notes_panel.rs').read_text()
+        for native in ('alert(','confirm(','prompt(','inner_html','set_inner_html'):
+            self.assertNotIn(native,source)
 
     def test_people_enrollment_is_local_and_has_explicit_consent(self):
         controls={a.get('id'):(t,a) for t,a in self.markup.tags if a.get('id')}

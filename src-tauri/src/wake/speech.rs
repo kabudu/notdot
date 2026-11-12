@@ -6,14 +6,14 @@ use rubato::{
 use sherpa_onnx::{SileroVadModelConfig, VadModelConfig, VoiceActivityDetector};
 use std::{collections::VecDeque, path::Path};
 
-pub(super) struct SpeechGate {
+pub(crate) struct SpeechGate {
     vad: VoiceActivityDetector,
     rate: u32,
     resampler: Option<SincFixedIn<f32>>,
     pending: VecDeque<f32>,
 }
 impl SpeechGate {
-    pub(super) fn new(models: &Path) -> Result<Self, String> {
+    pub(crate) fn new(models: &Path) -> Result<Self, String> {
         let config = VadModelConfig {
             silero_vad: SileroVadModelConfig {
                 model: Some(
@@ -42,7 +42,7 @@ impl SpeechGate {
             pending: VecDeque::new(),
         })
     }
-    pub(super) fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.vad.reset();
         self.vad.clear();
         self.pending.clear();
@@ -50,7 +50,7 @@ impl SpeechGate {
             r.reset();
         }
     }
-    pub(super) fn accept(&mut self, samples: &[f32], rate: u32) -> Result<bool, String> {
+    pub(crate) fn accept(&mut self, samples: &[f32], rate: u32) -> Result<bool, String> {
         if !(8000..=192000).contains(&rate) {
             return Err("Unsupported microphone sample rate".into());
         }

@@ -95,6 +95,22 @@ On each interaction, and during enabled idle maintenance every 30 minutes, the l
 
 Turning the switch off prevents new ledger reads/writes by the companion and invalidates queued/in-flight learning results. It does **not** delete existing notes, the persistent chat, or notes already supplied in earlier conversation context. No retroactive processing of off-period chat history occurs when learning is re-enabled. Forgetting excludes a note and dependent summaries from active recall, while conversation history and underlying store history may remain; this is not secure erasure. Ingestion stops at the 2,000-record limit. The review surface shows at most 100 current records.
 
+### Spoken corrections
+
+Before a voice proposal is read back, `Memory::preview` computes, at the plan's revision, the exact active facts each proposed note would retire (same semantic key, plus records sharing the same original mixed clause). A replacement read-back quotes the old and new wording and accepts only **“yes, replace that memory”**; the ordinary save phrases are refused for it. A correction cue (“actually”, “no longer”, “I now”…) with no identified prior fact lists up to three recalled facts and asks instead of guessing. Evidence that appears only inside quotation marks is rejected, and automatic inference cannot re-create content that a user-authored correction superseded. Proposals are per profile; a speaker change is refused while one is waiting, and cancel, memory off, revision change or the 120-second expiry revokes it.
+
+### Voice notes
+
+`notdot_core::notes` holds a bounded notebook model and a deterministic grammar: creation (“make a shopping list”, “take a note”, “create a list called … with …”), add, read, find, tick off, remove, rename, replace and delete. Requests it does not recognise go to the companion as before. Missing names or text start a one-minute, single-question dialogue; “a and b” without commas asks whether it is one item or several. “That list” resolves only to an exact focus set in the last 120 seconds. Delete and replace read back and need **“yes, delete that list/note”** or **“yes, replace that note”**, bound to the note and notebook revision, single use, 120-second expiry.
+
+Each profile stores `notes.json` in its private state folder (owner `owner/`, members `profiles/<id>/`), limited to 200 notes, 100 items each, 4,000 bytes of note text and 1 MiB on disk. Reads are size-bounded on the opened handle; writes use an exclusively created random temporary file, fsync, rename and folder fsync, and distinguish “not written” from “written but not confirmed on disk”. An unreadable file is reported and left untouched. Revisions are checked to avoid wrapping. Notes are not sent to Codex and are not part of learned memory or reminders. With no voiceprints and Anyone mode, the owner's notes work without setup; once identification is in use, an unrecognised Anyone-mode voice is refused. Native list, delete and export capture one admitted person and recheck it after every await.
+
+### Encrypted backup
+
+`src-tauri/src/backup.rs` writes version 1 files: magic, version, KDF id, iteration count, salt, nonce and ciphertext length (46 bytes, authenticated as associated data), followed by ChaCha20-Poly1305 ciphertext. The key comes from PBKDF2-HMAC-SHA256 with exactly 600,000 iterations and a 16-byte random salt, using `ring`. Header fields and the 8 MiB length cap are checked before any key derivation; derivation runs off the async runtime. The plaintext is JSON with current facts and summaries (allowlisted metadata, links only between included records), the notebook and, for the owner only, colour and reminder limits. Parsing rejects unknown fields; validation checks IDs, links, sizes and preference ranges.
+
+Restore merges with fresh IDs, skipping matching memories and renaming clashing notes. A preview is bound to the person, profile epoch and memory, notes and settings revisions, and is single use. Application holds the submission gate, the person's turn lock and the settings snapshot; it writes a journal of the previous notebook, previous settings and inserted IDs before any change, then rolls everything back on failure. An unfinished journal is undone at startup (settings before they are loaded, then that person's stores). Native save and open panels use `rfd` with the GTK3 backend on Linux.
+
 ### Behaviour and follow-ups
 
 **Reactive** is the migration/default setting: respond only when addressed. **Suggestions** surfaces due reminders and inferred follow-ups as a small silent orb dot. **Proactive** announces eligible, individually permitted items through local OS speech while the voice pipeline is idle. Memory permission never grants interruption permission. Inferred follow-ups need **Allow spoken check-in** in Settings; explicit reminder requests grant permission for that reminder, but still require Proactive mode for automatic speech. No scheduler path calls model tools, sends messages, changes project files or grants external-action authority.
@@ -113,7 +129,7 @@ Mnemara gives us memory semantics we would otherwise implement over SQLite; no c
 
 ## Voice boundary
 
-The native voice path streams activated microphone audio to the selected recognition service (ElevenLabs Scribe v2 Realtime by default) while the user speaks. Only committed transcript segments become model input. A local speech detector ends the request; a temporary streaming failure can retry the bounded recording only if the backend supports batch recognition. Key, permission, credit and rate-limit errors are reported without retrying. Cancellation closes the stream and prevents a retry. Sentence-by-sentence speech uses Eleven Flash v2.5; each sentence is buffered before playback. Full-duplex interruption is not implemented. Providers opt into streaming through the Rust voice interface; batch-only providers retain the browser recording path.
+The native voice path streams activated microphone audio to the selected recognition service (ElevenLabs Scribe v2 Realtime by default) while the user speaks. Only committed transcript segments become model input. A local speech detector ends the request; a temporary streaming failure can retry the bounded recording only if the backend supports batch recognition. Key, permission, credit and rate-limit errors are reported without retrying. Cancellation closes the stream and prevents a retry. Sentence-by-sentence speech uses Eleven Flash v2.5; each sentence is buffered before playback. Optional voice interruption uses an echo-cancelled webview stream with local speech detection, preserves the start of short commands and checks the original reply owner. Speech onset pauses playback; one bounded utterance is then recognised through the selected streaming backend after endpointing. This is not continuous simultaneous recognition during playback. Real overlapping speech still needs platform acoustic validation. Providers opt into streaming through the Rust voice interface; batch-only providers retain the browser recording path.
 
 Live provider and microphone validation depends on locally configured credentials and microphone permission. Do not infer end-to-end voice success from compilation or the agent smoke tests.
 
@@ -209,7 +225,7 @@ Current automated, security, accessibility and performance evidence is recorded 
 | Recall | Finding saved memories to use in a reply. |
 | Provisional | A possible memory that still needs confirmation. |
 | Corroboration | Another chat supports the same detail. |
-| Distillation / digest | Making a shorter summary of saved notes. |
+| Distillation / digest | Making a shorter summary of saved memories. |
 | Provenance / lineage | Where a note came from and which notes support it. |
 | Inference | An AI request. |
 | Single writer | Only notdot sends messages to its companion chat. |
@@ -289,3 +305,7 @@ The in-memory running-task association does not survive application exit. Alread
 ## Voice release scorecard
 
 Use [release measures](release-measures.md) and `scripts/evaluate_release_measures.py` before voice acceptance. Record exact revision, platform, providers, hardware and human/generated evidence. Missing acoustic results remain unverified; deterministic tests are not a substitute.
+
+### Linux interruption microphone permission
+
+WebKitGTK media capture uses an explicit permission handler. It permits microphone requests only from the main app page after a one-use six-second request from the interruption UI. Other pages, windows and expired requests are refused; camera and unrelated permissions are not granted. Release builds do not trust development-server origins. This does not change OS microphone permissions. Native origin, expiry and replay tests cover the policy; actual device echo cancellation still needs platform validation.

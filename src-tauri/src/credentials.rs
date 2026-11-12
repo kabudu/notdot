@@ -21,6 +21,19 @@ impl Credentials {
             ..Self::default()
         }
     }
+    /// A silent or interactive read without the OS store, for tests.
+    #[cfg(test)]
+    pub fn read_for_test(
+        &self,
+        provider: &str,
+        load: impl FnOnce() -> Result<String, String>,
+    ) -> Result<String, String> {
+        self.read_with(provider, load)
+    }
+    #[cfg(test)]
+    pub fn remove_for_test(&self, provider: &str) -> Result<(), String> {
+        self.remove_with(provider, || Ok(()))
+    }
     pub fn cached(&self, provider: &str) -> bool {
         self.cache
             .lock()

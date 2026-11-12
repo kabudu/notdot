@@ -8,6 +8,7 @@ fi
 "$NOTDOT_TEST_PYTHON" -c 'import tarfile; assert hasattr(tarfile, "data_filter"), "Python 3.12+ is required for release checks"'
 "$NOTDOT_TEST_PYTHON" scripts/distribution_notices.py
 "$NOTDOT_TEST_PYTHON" scripts/check_voice_fixtures.py
+node scripts/test_interrupt_lifecycle.mjs
 cargo fmt --all --check
 # Exercise inference deadlines against the shipping C++ build, rather than
 # whisper-rs-sys's RelWithDebInfo/WHISPER_DEBUG diagnostic build. Keep unrelated

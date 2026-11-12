@@ -4,6 +4,14 @@ Completed work and the next additions planned for notdot. Priorities may change 
 
 ## Implemented
 
+- **Interrupt without a wake phrase.** With optional voice interruption on, say “Stop”, “Actually…” or a new request while notdot speaks. Uses local echo cancellation and the selected speech recognition service.
+
+- **Voice notes and lists.** Dictate a titled note or list, then read it back, add to it, tick items off, rename, find, export or delete it by voice. Notes stay on this computer, separate from memories, with their own copy for each person. [Settings guide](docs/settings.md#notes-and-lists).
+
+- **Correct memories by speaking.** Hear the exact saved wording a correction replaces and confirm with “yes, replace that memory”. Unclear corrections are asked about, not guessed. [Settings guide](docs/settings.md#correct-a-memory-by-speaking).
+
+- **Private backup and restore.** Save the current person's memories and notes in a password-encrypted file, with a preview before restoring. Keys, voices and permissions are never included. [Settings guide](docs/settings.md#encrypted-backup).
+
 - **Guided setup.** Check Codex, follow official installation guidance, sign in through your browser and try a conversation before finishing setup. Existing settings and saved keys are kept.
 
 - **More careful memory and check-ins.** New learned facts keep the original evidence wording. Ask why a recent check-in was suggested, snooze it or stop that saved item. Memory checks have bounded prompts and skip simple acknowledgements.
@@ -18,7 +26,7 @@ Completed work and the next additions planned for notdot. Priorities may change 
 
 - **Use other Codex chats.** Find and read local chats, with optional controls to send work, add instructions and stop tasks notdot started. Choose Read only, Confirm before sending or Send when asked. Desktop-owned chats still require a handoff. [Settings guide](docs/settings.md).
 
-- **Conversation continuity.** Turn on an optional 3–20 second listening window after spoken replies. An inner glow shows when you can answer; say “That’s all”, press Escape or stay silent to stop. The microphone pauses while notdot speaks. [Implementation and tests](https://github.com/kabudu/notdot/pull/22) · [Settings guide](docs/settings.md).
+- **Conversation continuity.** Turn on an optional 3–20 second listening window after spoken replies. An inner glow shows when you can answer; say “That’s all”, press Escape or stay silent to stop. The microphone pauses during replies unless voice interruption is enabled. [Implementation and tests](https://github.com/kabudu/notdot/pull/22) · [Settings guide](docs/settings.md).
 
 ## More voice choices
 
@@ -36,17 +44,13 @@ A new backend needs streaming where supported, reliable cancellation, clear erro
 
 ## More natural conversations
 
-- **Interrupt by speaking.** Stop a reply with your voice, without the assistant reacting to its own speaker output.
 - **More languages.** Expand recognition, wake phrases and spoken replies together, with clear choices for the languages each service supports.
 - **Clearer names and numbers.** Improve recognition of names, dates and similar-sounding words, with tests in different rooms and on different microphones.
 
 ## Memory, notes and reminders
 
-- **Voice notes.** Dictate a titled note, list or idea, then find, hear, correct or delete it by voice. Allow export and keep these notes separate from learned preferences and facts.
-- **Correct memories by speaking.** Make it easier to explain what changed, replace an old fact and confirm exactly what will be kept.
 - **Understand suggestions.** Show which remembered facts led to a suggestion or check-in and make them easy to correct.
 - **Richer reminders.** Support calendar dates, recurring reminders and a choice of snooze durations.
-- **Private backup and restore.** Offer an optional encrypted export of memories and settings, with clear control over what is included.
 
 ## Connected tools and desktop support
 

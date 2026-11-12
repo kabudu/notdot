@@ -11,6 +11,7 @@
   <link data-trunk="" href="assets/logomark.svg" rel="copy-file"/>
   <link data-trunk="" href="assets/orb-input.html" rel="copy-file"/>
   <link data-trunk="" href="assets/orb-input.js" rel="copy-file"/>
+  <link data-trunk="" href="assets/interrupt-worklet.js" rel="copy-file"/>
  </head>
  <body>
   <canvas id="orb-gl" aria-hidden="true"></canvas>
@@ -333,6 +334,19 @@
       </p>
       <label class="switch-row">
        <span class="switch-copy">
+        Interrupt while notdot speaks
+        <span class="switch-description" id="interrupt-description">
+         Say “Stop”, “Actually…” or a new request while notdot speaks. No wake phrase needed. Uses this computer’s echo cancellation and your speech recognition service.
+        </span>
+       </span>
+       <input aria-describedby="interrupt-description interrupt-status" id="interrupt-enabled" role="switch" type="checkbox"/>
+       <span aria-hidden="true" class="switch-track">
+       </span>
+      </label>
+      <p class="hint" id="interrupt-status" role="status">
+      </p>
+      <label class="switch-row">
+       <span class="switch-copy">
         Mute microphone
         <span class="switch-description">
          Stops wake listening and request capture immediately.
@@ -346,7 +360,7 @@
       <p class="hint" id="wake-status" role="status">
       </p>
       <p class="hint">
-       Wake phrases are experimental and work in English. They can miss you or wake by mistake. Listening pauses while Settings is open or notdot speaks. A pause in your speech ends the request.
+       Wake phrases are experimental and work in English. They can miss you or wake by mistake. Listening pauses while Settings is open. While notdot speaks, it listens only if interrupting is on. A pause in your speech ends the request.
       </p>
      </div>
     </details>
@@ -443,7 +457,7 @@
         Start with a clean slate?
        </h3>
        <p>
-        Delete every saved memory, unconfirmed note, summary, older memory record, reminder and suggestion from this computer. notdot will restart with a new chat.
+        Delete every saved memory, unconfirmed memory, summary, older memory record, reminder and suggestion from this computer. Notes and lists are kept. notdot will restart with a new chat.
        </p>
        <p class="hint">
         Your settings and saved key stay as they are. Old chats remain in Codex / ChatGPT history, but notdot will start a fresh chat. Backups and other copies are not erased.
@@ -464,6 +478,94 @@
       </p>
       <section aria-live="polite" id="notes">
       </section>
+     </div>
+    </details>
+    <details class="settings-section" id="voice-notes-section" data-settings-category="memory" hidden>
+     <summary>
+      <span>
+       <strong>
+        Notes &amp; lists
+       </strong>
+       <small>
+        What you dictate, kept as you said it
+       </small>
+      </span>
+     </summary>
+     <div class="settings-body">
+      <p class="hint">
+       Say “Make a shopping list”, “Add oat milk to that list”, “Take a note” or “Read my packing list”. Notes stay on this computer, apart from memories and reminders, and are not sent to Codex. Each person added in People and voices has their own.
+      </p>
+      <p class="hint">
+       Before anyone teaches notdot their voice, whoever uses this unlocked computer can use these notes, as with memories. Once voices are set up, notes need a recognised voice. Voice matching is not a password.
+      </p>
+      <div class="tool-actions">
+       <button id="review-voice-notes" type="button">
+        Review notes
+       </button>
+       <button id="export-voice-notes" type="button">
+        Export notes…
+       </button>
+      </div>
+      <p class="hint" id="voice-notes-status" role="status">
+      </p>
+      <section aria-label="Your notes and lists" id="voice-notes">
+      </section>
+     </div>
+    </details>
+    <details class="settings-section" id="backup-section" data-settings-category="memory" hidden>
+     <summary>
+      <span>
+       <strong>
+        Encrypted backup
+       </strong>
+       <small>
+        Save or restore memories and notes
+       </small>
+      </span>
+     </summary>
+     <div class="settings-body">
+      <p class="hint">
+       A backup holds the current person’s memories and notes, locked with a password you choose. The owner’s backup also keeps the orb colour, quiet hours, reminder limits and follow-up length. It never includes keys, sign-ins, saved voices, chat access, or whether listening and startup are turned on. notdot can’t recover a lost password.
+      </p>
+      <label>
+       Backup password
+       <input aria-describedby="backup-password-hint" autocomplete="new-password" id="backup-password" minlength="12" type="password"/>
+      </label>
+      <label>
+       Repeat password for a new backup
+       <input autocomplete="new-password" id="backup-password-repeat" minlength="12" type="password"/>
+      </label>
+      <p class="hint" id="backup-password-hint">
+       Use at least 12 characters.
+      </p>
+      <div class="tool-actions">
+       <button id="backup-save" type="button">
+        Save backup…
+       </button>
+       <button id="backup-open" type="button">
+        Restore from backup…
+       </button>
+      </div>
+      <section aria-labelledby="backup-confirm-heading" class="reset-confirm" hidden="" id="backup-confirm">
+       <h3 id="backup-confirm-heading">
+        Restore this backup?
+       </h3>
+       <p id="backup-preview">
+       </p>
+       <p class="hint">
+        Restoring adds memories and notes and deletes nothing. Listening, startup and chat permissions stay as they are.
+       </p>
+       <div class="tool-actions">
+        <button id="backup-keep" type="button">
+         Don’t restore
+        </button>
+        <button id="backup-apply" type="button">
+         Restore
+        </button>
+       </div>
+      </section>
+      <p class="hint" id="backup-status" role="status">
+      </p>
      </div>
     </details>
     <details class="settings-section" id="reminders-section" data-settings-category="memory" hidden>
