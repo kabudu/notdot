@@ -213,6 +213,7 @@ fn generate() -> Value {
                         // JSON has no NaN/Infinity; adapters map these names back.
                         "seconds": if seconds.is_finite() { json!(seconds) } else { json!(format!("{seconds}")) },
                         "packed": frame.uniforms.packed(SIZE, SIZE),
+                        "block": frame.uniforms.block(SIZE, SIZE),
                         "visible_task": frame.task.name(),
                         "overlays": overlays(&frame.overlays),
                     })
@@ -225,6 +226,7 @@ fn generate() -> Value {
         "contract_version": ORB_CONTRACT_VERSION,
         "shader_sha256": contract::shader_sha256(),
         "uniforms": contract::UNIFORMS,
+        "block_mapping": contract::BLOCK_MAPPING,
         "radius_fraction": contract::RADIUS_FRACTION,
         "size": SIZE,
         "sequences": sequences,

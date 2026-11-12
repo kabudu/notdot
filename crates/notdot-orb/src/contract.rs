@@ -36,6 +36,23 @@ pub const UNIFORMS: [&str; 11] = [
 ];
 /// Packed float count: vec2 + vec3 + 9 floats.
 pub const PACKED_LEN: usize = 14;
+/// Uniform-buffer layout for APIs without loose uniforms (Metal, Vulkan):
+/// four `vec4`s, `u0`..`u3`. Each canonical uniform maps to a swizzle.
+/// [`Uniforms::block`] fills it; `notdot-orb-gen` emits the same mapping.
+pub const BLOCK_VEC4S: usize = 4;
+pub const BLOCK_MAPPING: [(&str, &str); 11] = [
+    ("resolution", "u0.xy"),
+    ("phase", "u0.z"),
+    ("energy", "u0.w"),
+    ("tint", "u1.xyz"),
+    ("listening", "u1.w"),
+    ("thinking", "u2.x"),
+    ("speaking", "u2.y"),
+    ("still", "u2.z"),
+    ("task_kind", "u2.w"),
+    ("task_time", "u3.x"),
+    ("task_strength", "u3.y"),
+];
 /// Orb radius as a fraction of the drawing area's shorter side. Overlay
 /// geometry below is in multiples of this radius unless marked as pixels.
 pub const RADIUS_FRACTION: f64 = 0.17;
@@ -129,6 +146,28 @@ impl Uniforms {
             task_time: task.elapsed as f32,
             task_strength: task.strength as f32,
         }
+    }
+    /// Values in [`BLOCK_MAPPING`] layout: 16 floats, `u0`..`u3`.
+    pub fn block(&self, width: f32, height: f32) -> [f32; BLOCK_VEC4S * 4] {
+        let [r, g, b] = self.tint;
+        [
+            width,
+            height,
+            self.phase,
+            self.energy,
+            r,
+            g,
+            b,
+            self.listening,
+            self.thinking,
+            self.speaking,
+            self.still,
+            self.task_kind,
+            self.task_time,
+            self.task_strength,
+            0.,
+            0.,
+        ]
     }
     /// Values in [`UNIFORMS`] order for a drawable of `width` x `height` px.
     pub fn packed(&self, width: f32, height: f32) -> [f32; PACKED_LEN] {
@@ -519,6 +558,37 @@ mod tests {
             );
             assert_eq!(frame.task.name(), visible);
         }
+    }
+
+    #[test]
+    fn block_layout_agrees_with_its_mapping_and_the_packed_order() {
+        let uniforms = Uniforms {
+            tint: [0.5, 0.6, 0.7],
+            phase: 1.,
+            energy: 2.,
+            listening: 3.,
+            thinking: 4.,
+            speaking: 5.,
+            still: 6.,
+            task_kind: 7.,
+            task_time: 8.,
+            task_strength: 9.,
+        };
+        let packed = uniforms.packed(320., 240.);
+        let block = uniforms.block(320., 240.);
+        let mut offset = 0;
+        for (name, width) in UNIFORMS.iter().zip([2, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1]) {
+            let (_, swizzle) = BLOCK_MAPPING.iter().find(|(n, _)| n == name).unwrap();
+            let (vector, lanes) = swizzle.split_once('.').unwrap();
+            let base = 4 * vector[1..].parse::<usize>().unwrap();
+            assert_eq!(lanes.len(), width, "{name}");
+            for (lane, component) in lanes.chars().enumerate() {
+                let index = base + "xyzw".find(component).unwrap();
+                assert_eq!(block[index], packed[offset + lane], "{name}.{component}");
+            }
+            offset += width;
+        }
+        assert_eq!(offset, PACKED_LEN);
     }
 
     #[test]

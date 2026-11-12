@@ -84,6 +84,9 @@ jobs:
       # in crates/notdot-orb/fixtures are shared with the native adapters.
       - run: cargo test -p notdot-orb --no-default-features --locked
       - run: cargo clippy -p notdot-orb --no-default-features --all-targets --locked -- -D warnings
+      - run: cargo test -p notdot-orb-gen --locked
+      - name: No hand-copied or committed generated orb shaders
+        run: cargo run -q -p notdot-orb-gen --locked -- lint
       - name: Contract build has no web dependencies
         run: |
           if cargo tree -p notdot-orb --no-default-features -e normal --locked | grep -E 'web-sys|wasm-bindgen|js-sys'; then
