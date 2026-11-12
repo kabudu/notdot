@@ -67,8 +67,8 @@ jobs:
           else:
               subprocess.run(['git', 'diff', '--check'], check=True)
           PY
-  orb-contract:
-    name: Orb contract (platform-neutral)
+  mobile-foundations:
+    name: Mobile foundations (orb contract, link)
     needs: changes
     runs-on: ubuntu-22.04
     timeout-minutes: 10
@@ -87,6 +87,9 @@ jobs:
       - run: cargo test -p notdot-orb-gen --locked
       - name: No hand-copied or committed generated orb shaders
         run: cargo run -q -p notdot-orb-gen --locked -- lint
+      # Pairing, protocol and Iroh transport, including a local relay.
+      - run: cargo test -p notdot-link --locked
+      - run: cargo clippy -p notdot-link -p notdot-orb-gen --all-targets --locked -- -D warnings
       - name: Contract build has no web dependencies
         run: |
           if cargo tree -p notdot-orb --no-default-features -e normal --locked | grep -E 'web-sys|wasm-bindgen|js-sys'; then

@@ -22,6 +22,8 @@ cargo clippy -p notdot-orb --no-default-features --all-targets --locked -- -D wa
 if cargo tree -p notdot-orb --no-default-features -e normal --locked | grep -E 'web-sys|wasm-bindgen|js-sys'; then exit 1; fi
 cargo test -p notdot-orb-gen --locked
 cargo run -q -p notdot-orb-gen --locked -- lint
+cargo test -p notdot-link --locked
+cargo clippy -p notdot-link -p notdot-orb-gen --all-targets --locked -- -D warnings
 "$NOTDOT_TEST_PYTHON" -c "from pathlib import Path; s=Path('index.html').read_text(); assert 'composer' not in s and '<textarea' not in s"
 mkdir -p .local
 rustc --edition 2024 --test crates/notdot-orb/src/interaction.rs -o .local/gesture-tests
