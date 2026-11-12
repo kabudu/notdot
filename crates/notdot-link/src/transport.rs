@@ -22,7 +22,7 @@ use crate::{
     service::{Clock, Service},
 };
 use iroh::{
-    Endpoint, EndpointAddr, PublicKey, RelayMap, RelayMode, SecretKey, TransportAddr,
+    Endpoint, EndpointAddr, PublicKey, RelayMap, RelayMode, TransportAddr,
     endpoint::{Connection, ConnectionError, QuicTransportConfig, VarInt, presets},
 };
 use std::{
@@ -89,7 +89,14 @@ async fn bind(
         builder = builder.clear_ip_transports();
     }
     if net.insecure_test_relay {
-        builder = builder.ca_tls_config(iroh::tls::CaTlsConfig::insecure_skip_verify());
+        #[cfg(feature = "test-relay")]
+        {
+            builder = builder.ca_tls_config(iroh::tls::CaTlsConfig::insecure_skip_verify());
+        }
+        #[cfg(not(feature = "test-relay"))]
+        return Err(LinkError::Connection(
+            "test relay support is not compiled in".into(),
+        ));
     }
     builder
         .bind()
@@ -440,6 +447,31 @@ impl Pairing {
         self.connection.close(VarInt::from_u32(CLOSE_OK), b"done");
         Ok(outcome)
     }
+}
+
+pub use iroh::SecretKey;
+
+/// A relay map holding one relay URL (as carried in a QR code). Plain
+/// `http` relays (a local development relay) are refused unless allowed.
+pub fn relay_map(url: &str, allow_plain_http: bool) -> Result<RelayMap, LinkError> {
+    let url: iroh::RelayUrl = url.parse().map_err(|_| LinkError::BadQr("relay url"))?;
+    match url.scheme() {
+        "https" => {}
+        "http" if allow_plain_http => {}
+        _ => return Err(LinkError::BadQr("relay must use https")),
+    }
+    Ok(RelayMap::from(url))
+}
+
+/// The same address with only its relay paths, to force the relay route.
+pub fn relay_only(addr: &EndpointAddr) -> EndpointAddr {
+    EndpointAddr::from_parts(
+        addr.id,
+        addr.addrs
+            .iter()
+            .filter(|a| matches!(a, TransportAddr::Relay(_)))
+            .cloned(),
+    )
 }
 
 /// Build the desktop's address from a scanned QR. The key is what is

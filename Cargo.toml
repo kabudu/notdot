@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/notdot-core", "crates/notdot-orb", "crates/notdot-voice", "crates/notdot-speakers", "crates/notdot-wake-runtime", "crates/notdot-orb-gen", "crates/notdot-link", "crates/notdot-wake-kws", "src-tauri"]
+members = ["crates/notdot-core", "crates/notdot-orb", "crates/notdot-voice", "crates/notdot-speakers", "crates/notdot-wake-runtime", "crates/notdot-orb-gen", "crates/notdot-link", "crates/notdot-wake-kws", "crates/notdot-mobile-core", "src-tauri"]
 resolver = "3"
 exclude = ["vendor/glib"]
 [workspace.package]

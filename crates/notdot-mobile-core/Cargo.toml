@@ -1,0 +1,32 @@
+[package]
+publish = false
+name = "notdot-mobile-core"
+description = "Shared Rust core for the notdot iOS and Android apps (UniFFI)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+name = "notdot_mobile_core"
+[features]
+default = ["wake"]
+# On-device keyword spotting (sherpa-onnx native libraries).
+wake = ["dep:notdot-wake-kws"]
+# Generator for the Swift/Kotlin bindings (development only).
+bindgen = ["uniffi/cli"]
+[dependencies]
+uniffi = { version = "0.32", features = ["tokio"] }
+notdot-orb = { path = "../notdot-orb", default-features = false }
+notdot-link = { path = "../notdot-link" }
+notdot-wake-kws = { path = "../notdot-wake-kws", optional = true }
+tokio = { workspace = true }
+thiserror = "2"
+[build-dependencies]
+notdot-orb-gen = { path = "../notdot-orb-gen" }
+[dev-dependencies]
+notdot-orb-gen = { path = "../notdot-orb-gen" }
+hound = "3"
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
