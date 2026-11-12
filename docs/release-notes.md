@@ -1,8 +1,11 @@
-An easier first conversation, more careful memories and less background work.
+Interrupt replies naturally, keep voice notes and lists, and protect your memories with encrypted backups.
 
-- **Guided setup.** Connect Codex, follow official installation guidance, sign in and test a spoken conversation, with clear retry and cancellation.
-- **Grounded memories.** New learned facts preserve your original wording, with bounded memory checks that skip simple acknowledgements.
-- **Clearer check-ins.** Ask why a recent update was suggested, say “Later” or dismiss it by voice, with existing quiet hours and permissions respected.
-- **Lower overhead.** Idle memory-analysis runtimes close after two minutes, task-status polling avoids unnecessary journal copies, and the orb draws fewer frames behind Settings.
-- **No extra pass for empty speech.** An empty transcription no longer triggers a second batch request.
-- **Easier troubleshooting.** Export a small report without keys, chats, memories or recordings.
+- **Saved keys after unlocking.** A voice key that loads once the system keyring is unlocked now makes voice ready, without asking again.
+
+- **Smoother replies on Mac.** Speech uses direct playback to avoid repeated starts caused by the audio-metering connection.
+
+- **Natural interruption.** Say “Stop”, “Actually…” or a new request during replies, without repeating the wake phrase, with optional echo-cancelled listening.
+
+- **Voice notes and lists.** Dictate, read back, add to, tick off, rename, find, export and delete notes and lists by voice. “Add oat milk to that list” only uses the list you just used; anything unclear is asked about. Notes stay on this computer, separate for each person.
+- **Correct memories by speaking.** notdot reads back the exact saved detail it will replace and waits for “yes, replace that memory”. Quoted words can't change memory, and a replaced detail doesn't return later.
+- **Encrypted backup.** Save one person's memories and notes with a password, preview a restore before it happens, and keep keys, voices and permissions out of the file. An interrupted restore is undone at the next start.
