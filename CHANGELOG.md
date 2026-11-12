@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-12
+
+Interrupt replies naturally, keep voice notes and lists, and protect your memories with encrypted backups.
+
 - **Saved keys after unlocking.** A voice key that loads once the system keyring is unlocked now makes voice ready, without asking again.
 
 - **Smoother replies on Mac.** Speech uses direct playback to avoid repeated starts caused by the audio-metering connection.
