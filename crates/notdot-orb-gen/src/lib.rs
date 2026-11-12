@@ -156,10 +156,18 @@ pub struct Msl {
     pub entry_point: String,
 }
 
-fn translate(source: &str, stage: naga::ShaderStage) -> Result<Msl, Error> {
-    let module = naga::front::glsl::Frontend::default()
+/// Metal function names, distinct so both stages link into one library.
+pub const MSL_FRAGMENT_FUNCTION: &str = "notdot_orb_fragment";
+pub const MSL_VERTEX_FUNCTION: &str = "notdot_orb_vertex";
+
+fn translate(source: &str, stage: naga::ShaderStage, name: &str) -> Result<Msl, Error> {
+    let mut module = naga::front::glsl::Frontend::default()
         .parse(&naga::front::glsl::Options::from(stage), source)
         .map_err(|e| Error::Parse(e.emit_to_string(source)))?;
+    match module.entry_points.as_mut_slice() {
+        [entry] => entry.name = name.to_owned(),
+        _ => return Err(Error::Rewrite("expected exactly one entry point")),
+    }
     let info = naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
         naga::valid::Capabilities::empty(),
@@ -170,7 +178,7 @@ fn translate(source: &str, stage: naga::ShaderStage) -> Result<Msl, Error> {
         lang_version: (2, 1),
         fake_missing_bindings: false,
         per_entry_point_map: [(
-            "main".to_owned(),
+            name.to_owned(),
             naga::back::msl::EntryPointResources {
                 resources: [(
                     naga::ResourceBinding {
@@ -213,12 +221,20 @@ fn translate(source: &str, stage: naga::ShaderStage) -> Result<Msl, Error> {
 /// iOS fragment stage. Bind 16 floats from `Uniforms::block` at
 /// `[[buffer(0)]]`; the output is premultiplied RGBA.
 pub fn msl_fragment() -> Result<Msl, Error> {
-    translate(&vulkan_glsl()?, naga::ShaderStage::Fragment)
+    translate(
+        &vulkan_glsl()?,
+        naga::ShaderStage::Fragment,
+        MSL_FRAGMENT_FUNCTION,
+    )
 }
 
 /// iOS vertex stage: `contract::QUAD` as float2 vertex attribute 0.
 pub fn msl_vertex() -> Result<Msl, Error> {
-    translate(&vulkan_vertex_glsl()?, naga::ShaderStage::Vertex)
+    translate(
+        &vulkan_vertex_glsl()?,
+        naga::ShaderStage::Vertex,
+        MSL_VERTEX_FUNCTION,
+    )
 }
 
 /// One lint finding.
@@ -293,7 +309,8 @@ mod tests {
         verify(&vertex.source).unwrap();
         assert!(vertex.source.contains("vertex "));
         assert!(vertex.source.contains("[[attribute(0)]]"));
-        assert_ne!(fragment.entry_point, vertex.entry_point.clone() + "x");
+        assert_eq!(fragment.entry_point, MSL_FRAGMENT_FUNCTION);
+        assert_eq!(vertex.entry_point, MSL_VERTEX_FUNCTION);
     }
 
     #[test]
