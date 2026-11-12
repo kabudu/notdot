@@ -1,0 +1,10 @@
+[package]
+publish = false
+name = "notdot-wake-kws"
+description = "On-device wake keyword spotting shared by notdot desktop and mobile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[dependencies]
+sherpa-onnx = "=2.0.0"
+sentencepiece-rs = "=0.2.2"

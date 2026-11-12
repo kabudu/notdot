@@ -1,6 +1,6 @@
 //! Local, speech-gated recognition for phrases the small keyword model misses.
 //! Audio is bounded, ephemeral, and never sent to a voice provider or written.
-use super::VoiceGate;
+use notdot_wake_kws::VoiceGate;
 use notdot_wake_runtime::engine::DecodeLimits;
 use std::time::{Duration, Instant};
 use std::{

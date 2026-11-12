@@ -4078,6 +4078,7 @@ dependencies = [
  "notdot-core",
  "notdot-speakers",
  "notdot-voice",
+ "notdot-wake-kws",
  "notdot-wake-runtime",
  "reqwest 0.12.28",
  "rfd",
@@ -4180,6 +4181,14 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "tokio-tungstenite",
+]
+
+[[package]]
+name = "notdot-wake-kws"
+version = "0.8.0"
+dependencies = [
+ "sentencepiece-rs",
+ "sherpa-onnx",
 ]
 
 [[package]]
