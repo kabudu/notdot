@@ -256,18 +256,17 @@ impl Desktop {
 
     /// Remove a phone and drop its live connections at once.
     pub fn revoke(&self, device: DeviceId) {
+        // Hold the live lock across the registry change: serve_link
+        // registers and re-checks under the same lock, so no connection
+        // can slip between revocation and the close below.
+        let mut live = self.state.live.lock().expect("live lock");
         self.state
             .registry
             .lock()
             .expect("registry lock")
             .revoke(device);
-        let connections = self
-            .state
-            .live
-            .lock()
-            .expect("live lock")
-            .remove(&device)
-            .unwrap_or_default();
+        let connections = live.remove(&device).unwrap_or_default();
+        drop(live);
         for connection in connections {
             connection.close(VarInt::from_u32(refusal_code(Refusal::Revoked)), b"revoked");
         }
@@ -373,13 +372,20 @@ async fn serve_link(connection: Connection, peer: DeviceId, state: Arc<DesktopSt
         );
         return;
     }
-    state
-        .live
-        .lock()
-        .expect("live lock")
-        .entry(peer)
-        .or_default()
-        .push(connection.clone());
+    {
+        // Register, then re-check under the same lock `revoke` takes, so a
+        // revocation between the first check and here still closes us.
+        let mut live = state.live.lock().expect("live lock");
+        if let Err(refusal) = state.authorize(peer) {
+            drop(live);
+            connection.close(
+                VarInt::from_u32(refusal_code(refusal)),
+                refusal.to_string().as_bytes(),
+            );
+            return;
+        }
+        live.entry(peer).or_default().push(connection.clone());
+    }
     while let Ok((mut send, mut recv)) = connection.accept_bi().await {
         let state = state.clone();
         let connection = connection.clone();
@@ -418,7 +424,20 @@ async fn serve_link(connection: Connection, peer: DeviceId, state: Arc<DesktopSt
                     found: state.service.cancel(&peer, id),
                 },
             };
-            if frame::write(&mut send, &reply).await.is_ok() {
+            let written = match frame::write(&mut send, &reply).await {
+                // Never drop a call silently: say why instead.
+                Err(LinkError::FrameTooLarge) => {
+                    let refusal = ServerFrame::Failed {
+                        id: reply.id().unwrap_or(RequestId(0)),
+                        error: OpError::BadRequest {
+                            reason: "reply too large".into(),
+                        },
+                    };
+                    frame::write(&mut send, &refusal).await
+                }
+                other => other,
+            };
+            if written.is_ok() {
                 let _ = send.finish();
             }
         });

@@ -190,6 +190,13 @@ pub fn sas(secret: &[u8], offer: &[u8], desktop: DeviceId, phone: DeviceId) -> S
     Sas(u32::from_be_bytes(out) % 1_000_000)
 }
 
+/// Invisible Unicode format characters (bidi overrides, zero-width marks)
+/// that could make a phone name look like another on the approval screen.
+fn is_format(c: char) -> bool {
+    matches!(c, '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
+}
+
 /// Phone side: build the request for a scanned QR and the code to display.
 /// `phone` must be the key the phone's transport will authenticate with.
 pub fn phone_request(
@@ -421,12 +428,16 @@ impl PairingDesk {
         if offer.state != OfferState::Open {
             return Err(LinkError::OfferUsed);
         }
-        if request.name.is_empty()
+        if request.name.trim().is_empty()
             || request.name.len() > MAX_NAME_BYTES
-            || request.name.chars().any(char::is_control)
-            || request.step_up_key.len() > 133
+            || request.name.chars().any(|c| c.is_control() || is_format(c))
         {
-            return Err(LinkError::BadRequest("name or step-up key"));
+            return Err(LinkError::BadRequest("phone name"));
+        }
+        if !request.step_up_key.is_empty()
+            && p256::ecdsa::VerifyingKey::from_sec1_bytes(&request.step_up_key).is_err()
+        {
+            return Err(LinkError::BadRequest("step-up key"));
         }
         let mac = proof_mac(
             &offer.secret,
@@ -514,6 +525,10 @@ mod tests {
     const PHONE: DeviceId = DeviceId([2; 32]);
     const THIEF: DeviceId = DeviceId([3; 32]);
 
+    fn step_up_key() -> Vec<u8> {
+        crate::stepup::tests::public(&crate::stepup::tests::key())
+    }
+
     fn owner() -> ProfileRef {
         ProfileRef {
             id: "owner".into(),
@@ -548,7 +563,7 @@ mod tests {
     #[test]
     fn approved_pairing_registers_profile_scopes_and_matching_codes() {
         let (mut desk, qr) = desk_with_offer(0);
-        let (request, phone_sas) = phone_request(&qr, PHONE, "Ama's phone", &[4; 65]);
+        let (request, phone_sas) = phone_request(&qr, PHONE, "Ama's phone", &step_up_key());
         let pending = desk.submit(PHONE, &request, 10).unwrap();
         assert_eq!(pending.sas, phone_sas);
         assert_eq!(phone_sas.to_string().len(), 7);
@@ -660,8 +675,20 @@ mod tests {
         let (mut desk, qr) = desk_with_offer(0);
         let (request, _) = phone_request(&qr, PHONE, &"x".repeat(MAX_NAME_BYTES + 1), &[]);
         assert!(desk.submit(PHONE, &request, 1).is_err());
-        let (request, _) = phone_request(&qr, PHONE, "bad\u{7}name", &[]);
-        assert!(desk.submit(PHONE, &request, 1).is_err());
+        for name in [
+            "bad\u{7}name",
+            "Ama\u{202E}enohp",
+            "zero\u{200B}width",
+            "   ",
+        ] {
+            let (request, _) = phone_request(&qr, PHONE, name, &[]);
+            assert!(desk.submit(PHONE, &request, 1).is_err(), "{name:?}");
+        }
+        let (request, _) = phone_request(&qr, PHONE, "phone", &[4; 65]);
+        assert!(matches!(
+            desk.submit(PHONE, &request, 1),
+            Err(LinkError::BadRequest("step-up key"))
+        ));
     }
 
     #[test]
@@ -694,8 +721,8 @@ mod tests {
     fn sensitive_scope_needs_owner_profile_step_up_key_and_live_grant() {
         let mut registry = DeviceRegistry::default();
         for (device, profile, key) in [
-            (PHONE, DeviceProfile::Owner, vec![4; 65]),
-            (THIEF, DeviceProfile::Member, vec![4; 65]),
+            (PHONE, DeviceProfile::Owner, step_up_key()),
+            (THIEF, DeviceProfile::Member, step_up_key()),
         ] {
             let (mut desk, _) = desk_with_offer(0);
             let qr = desk

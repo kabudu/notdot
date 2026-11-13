@@ -18,7 +18,10 @@ pub const CHALLENGE_TTL_MS: u64 = 60_000;
 /// Outstanding challenges per desktop.
 pub const MAX_CHALLENGES: usize = 32;
 
-/// SHA-256 of the canonical JSON of an operation.
+/// SHA-256 of the operation as serde_json encodes it. Both sides use this
+/// Rust crate today, so the bytes agree. Before `link/1` is frozen, define
+/// the digest over explicitly canonical bytes so a non-Rust client could
+/// reproduce it (review finding, tracked in mobile/README.md).
 pub fn op_digest(op: &crate::protocol::Op) -> [u8; 32] {
     Sha256::digest(serde_json::to_vec(op).expect("ops serialise")).into()
 }

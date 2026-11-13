@@ -1,8 +1,11 @@
 //! Desktop-side execution of `link/1` calls, independent of the transport.
 //!
-//! - Idempotency: a call is identified by (device, [`RequestId`]). A retry
-//!   after a reconnect returns the recorded outcome, or joins the call still
-//!   running; the side effect happens at most once.
+//! - Idempotency: a call is identified by (device, [`RequestId`]) and bound
+//!   to its operation's digest. A retry after a reconnect returns the
+//!   recorded outcome of a committed (or cancelled) side effect, or joins
+//!   the call still running; the side effect happens at most once. Refusals
+//!   and read-only results are not recorded: they change nothing, so a retry
+//!   simply runs again (e.g. after fetching a step-up challenge).
 //! - Independence from the connection: calls run in their own task, so a
 //!   dropped connection never abandons or cancels a half-done call.
 //! - Cancellation: only an explicit cancel stops a call, and only before it
@@ -15,7 +18,7 @@
 //! The store is synthetic. In the desktop it becomes the existing notes,
 //! settings and memory modules behind the same checks.
 use crate::{
-    DeviceId, LinkError,
+    DeviceId,
     pairing::{DeviceRecord, Scope},
     protocol::{MAX_NOTE_BYTES, Op, OpError, RequestId, ServerFrame, StepUpProof},
     stepup::{StepUpDesk, op_digest},
@@ -34,6 +37,11 @@ pub const MAX_RECORDED: usize = 256;
 /// Longest synthetic task, in steps of [`TASK_STEP`].
 pub const MAX_TASK_STEPS: u32 = 2_000;
 pub const TASK_STEP: Duration = Duration::from_millis(5);
+/// Notes kept per profile in the synthetic store.
+pub const MAX_NOTES_PER_PROFILE: usize = 500;
+/// ListNotes returns the newest notes that fit in this many bytes of text,
+/// so the reply always fits one frame.
+pub const MAX_LIST_BYTES: usize = 48 * 1024;
 
 #[derive(Debug, Default, Clone)]
 pub struct ProfileData {
@@ -47,13 +55,18 @@ pub struct ProfileData {
 
 #[derive(Default)]
 struct Calls {
-    in_flight: HashMap<RequestId, (watch::Receiver<Option<ServerFrame>>, watch::Sender<bool>)>,
-    recorded: HashMap<RequestId, ServerFrame>,
+    in_flight: HashMap<RequestId, InFlight>,
+    recorded: HashMap<RequestId, ([u8; 32], ServerFrame)>,
     order: VecDeque<RequestId>,
 }
+struct InFlight {
+    digest: [u8; 32],
+    result: watch::Receiver<Option<ServerFrame>>,
+    cancel: watch::Sender<bool>,
+}
 impl Calls {
-    fn record(&mut self, id: RequestId, frame: ServerFrame) {
-        if self.recorded.insert(id, frame).is_none() {
+    fn record(&mut self, id: RequestId, digest: [u8; 32], frame: ServerFrame) {
+        if self.recorded.insert(id, (digest, frame)).is_none() {
             self.order.push_back(id);
         }
         while self.order.len() > MAX_RECORDED {
@@ -88,6 +101,23 @@ pub struct Service {
 
 fn failed(id: RequestId, error: OpError) -> ServerFrame {
     ServerFrame::Failed { id, error }
+}
+
+fn reused(id: RequestId) -> ServerFrame {
+    failed(
+        id,
+        OpError::BadRequest {
+            reason: "request id reused for a different operation".into(),
+        },
+    )
+}
+
+/// Operations whose committed outcome must be replayed, not repeated.
+fn has_side_effect(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::AddNote { .. } | Op::StageSetting { .. } | Op::RunTask { .. } | Op::ResetMemory {}
+    )
 }
 
 impl Service {
@@ -127,29 +157,52 @@ impl Service {
         op: Op,
         step_up: Option<StepUpProof>,
     ) -> ServerFrame {
+        let digest = op_digest(&op);
         let mut result = {
             let mut state = self.lock();
             let calls = state.calls.entry(device.device).or_default();
-            if let Some(frame) = calls.recorded.get(&id) {
-                return frame.clone();
+            if let Some((recorded, frame)) = calls.recorded.get(&id) {
+                return if *recorded == digest {
+                    frame.clone()
+                } else {
+                    reused(id)
+                };
             }
-            if let Some((result, _)) = calls.in_flight.get(&id) {
-                result.clone()
+            if let Some(running) = calls.in_flight.get(&id) {
+                if running.digest != digest {
+                    return reused(id);
+                }
+                running.result.clone()
             } else {
                 if calls.in_flight.len() >= MAX_IN_FLIGHT {
                     return failed(id, OpError::Busy);
                 }
                 let (done, result) = watch::channel(None);
                 let (cancel, cancelled) = watch::channel(false);
-                calls.in_flight.insert(id, (result.clone(), cancel));
+                calls.in_flight.insert(
+                    id,
+                    InFlight {
+                        digest,
+                        result: result.clone(),
+                        cancel,
+                    },
+                );
                 let service = self.clone();
                 let device = device.clone();
                 tokio::spawn(async move {
+                    let replay = has_side_effect(&op);
                     let frame = service.execute(&device, id, op, step_up, cancelled).await;
                     let mut state = service.lock();
                     let calls = state.calls.entry(device.device).or_default();
                     calls.in_flight.remove(&id);
-                    calls.record(id, frame.clone());
+                    if replay
+                        && matches!(
+                            frame,
+                            ServerFrame::Done { .. } | ServerFrame::Cancelled { .. }
+                        )
+                    {
+                        calls.record(id, digest, frame.clone());
+                    }
                     let _ = done.send(Some(frame));
                 });
                 result
@@ -175,8 +228,8 @@ impl Service {
             .get(device)
             .and_then(|calls| calls.in_flight.get(&id))
         {
-            Some((_, cancel)) => {
-                let _ = cancel.send(true);
+            Some(running) => {
+                let _ = running.cancel.send(true);
                 true
             }
             None => false,
@@ -211,6 +264,14 @@ impl Service {
                 }
                 let mut state = self.lock();
                 let data = state.profiles.entry(profile).or_default();
+                if data.notes.len() >= MAX_NOTES_PER_PROFILE {
+                    return failed(
+                        id,
+                        OpError::BadRequest {
+                            reason: "note limit reached".into(),
+                        },
+                    );
+                }
                 data.next_note += 1;
                 let note = data.next_note;
                 data.notes.push((note, text));
@@ -221,12 +282,26 @@ impl Service {
                     return failed(id, OpError::Forbidden);
                 }
                 let state = self.lock();
-                let notes: Vec<_> = state
+                let all = state
                     .profiles
                     .get(&profile)
-                    .map(|data| data.notes.clone())
+                    .map(|data| data.notes.as_slice())
                     .unwrap_or_default();
-                done(serde_json::json!({"notes": notes}))
+                // Newest notes that fit, returned oldest first.
+                let mut budget = MAX_LIST_BYTES;
+                let mut notes: Vec<_> = all
+                    .iter()
+                    .rev()
+                    .take_while(|(_, text)| {
+                        let fits = text.len() <= budget;
+                        budget = budget.saturating_sub(text.len());
+                        fits
+                    })
+                    .cloned()
+                    .collect();
+                notes.reverse();
+                let truncated = notes.len() < all.len();
+                done(serde_json::json!({"notes": notes, "truncated": truncated}))
             }
             Op::ReadSettings {} => {
                 if !need(Scope::ReadSettings) {
@@ -311,14 +386,19 @@ impl Service {
                     return failed(id, OpError::NeedsStepUp);
                 };
                 let mut state = self.lock();
-                if let Err(LinkError::StepUpRejected) = state.step_up.verify(
-                    device.device,
-                    &device.step_up_key,
-                    &proof.nonce,
-                    &op_digest(&op),
-                    &proof.signature,
-                    now,
-                ) {
+                // Fail closed: any verification error refuses the action.
+                if state
+                    .step_up
+                    .verify(
+                        device.device,
+                        &device.step_up_key,
+                        &proof.nonce,
+                        &op_digest(&op),
+                        &proof.signature,
+                        now,
+                    )
+                    .is_err()
+                {
                     return failed(id, OpError::StepUpRejected);
                 }
                 let data = state.profiles.entry(profile).or_default();
@@ -442,12 +522,18 @@ mod tests {
         let (frame, ()) = tokio::join!(call, cancel);
         assert_eq!(frame, ServerFrame::Cancelled { id });
         assert_eq!(service.profile("owner").tasks_completed, 0);
-        // Cancelling a finished call finds nothing and changes nothing.
+        // Cancelling a finished call finds nothing and changes nothing; a
+        // retry replays the cancellation instead of running the task.
         assert!(!service.cancel(&owner.device, id));
+        let task = Op::RunTask {
+            label: "long".into(),
+            steps: 400,
+        };
         assert_eq!(
-            service.call(&owner, id, Op::Ping {}, None).await,
+            service.call(&owner, id, task, None).await,
             ServerFrame::Cancelled { id }
         );
+        assert_eq!(service.profile("owner").tasks_completed, 0);
     }
 
     #[tokio::test]
@@ -641,11 +727,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_request_id_is_bound_to_its_operation_and_refusals_are_not_replayed() {
+        let (service, _) = service();
+        let mut owner = record(2, "owner", DeviceProfile::Owner);
+        let id = RequestId(1);
+        assert!(matches!(
+            service.call(&owner, id, note("milk"), None).await,
+            ServerFrame::Done { .. }
+        ));
+        // Same id, different operation: refused, nothing recorded or run.
+        assert!(matches!(
+            service.call(&owner, id, note("eggs"), None).await,
+            ServerFrame::Failed {
+                error: OpError::BadRequest { .. },
+                ..
+            }
+        ));
+        assert_eq!(service.profile("owner").notes.len(), 1);
+        // NeedsStepUp is not recorded: the same id succeeds once a proof
+        // is attached (the natural client flow).
+        owner.sensitive_until_ms = Some(10_000);
+        let reset = RequestId(2);
+        assert_eq!(
+            service.call(&owner, reset, Op::ResetMemory {}, None).await,
+            failed(reset, OpError::NeedsStepUp)
+        );
+        let digest = op_digest(&Op::ResetMemory {});
+        let ServerFrame::Done { result, .. } = service
+            .call(&owner, RequestId(3), Op::StepUpChallenge { digest }, None)
+            .await
+        else {
+            panic!()
+        };
+        let nonce: [u8; 32] = crate::b64::decode(result["nonce"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let signature: Signature =
+            stepup::tests::key().sign(&stepup::message(DESKTOP, owner.device, &nonce, &digest));
+        let proof = StepUpProof {
+            nonce,
+            signature: signature.to_der().as_bytes().to_vec(),
+        };
+        assert!(matches!(
+            service
+                .call(&owner, reset, Op::ResetMemory {}, Some(proof))
+                .await,
+            ServerFrame::Done { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn notes_are_bounded_and_listing_always_fits_a_frame() {
+        let (service, _) = service();
+        let owner = record(2, "owner", DeviceProfile::Owner);
+        let big = "n".repeat(MAX_NOTE_BYTES);
+        for n in 0..MAX_NOTES_PER_PROFILE as u128 {
+            service.call(&owner, RequestId(n), note(&big), None).await;
+        }
+        assert!(matches!(
+            service
+                .call(&owner, RequestId(9_999), note("one more"), None)
+                .await,
+            ServerFrame::Failed {
+                error: OpError::BadRequest { .. },
+                ..
+            }
+        ));
+        let ServerFrame::Done { result, .. } = service
+            .call(&owner, RequestId(10_000), Op::ListNotes {}, None)
+            .await
+        else {
+            panic!()
+        };
+        assert_eq!(result["truncated"], true);
+        let frame = serde_json::to_vec(&ServerFrame::Done {
+            id: RequestId(0),
+            result,
+        })
+        .unwrap();
+        assert!(frame.len() < crate::protocol::MAX_FRAME, "{}", frame.len());
+    }
+
+    #[tokio::test]
     async fn recorded_outcomes_are_bounded() {
         let (service, _) = service();
         let owner = record(2, "owner", DeviceProfile::Owner);
         for n in 0..(MAX_RECORDED as u128 + 10) {
-            service.call(&owner, RequestId(n), Op::Ping {}, None).await;
+            service.call(&owner, RequestId(n), note("x"), None).await;
         }
         let state = service.lock();
         let calls = &state.calls[&owner.device];

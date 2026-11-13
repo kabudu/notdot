@@ -12,7 +12,7 @@ pub fn wake_phrase(name: String, name_only: bool) -> Result<String, MobileError>
 }
 
 #[derive(uniffi::Object)]
-pub struct WakeEngine(Mutex<Spotter>);
+pub struct WakeEngine(Mutex<(Spotter, u32)>);
 
 #[uniffi::export]
 impl WakeEngine {
@@ -22,7 +22,7 @@ impl WakeEngine {
     pub fn new(models: String, name: String, name_only: bool) -> Result<Self, MobileError> {
         let phrase = wake_phrase(name, name_only)?;
         Spotter::new(Path::new(&models), &phrase)
-            .map(|spotter| Self(Mutex::new(spotter)))
+            .map(|spotter| Self(Mutex::new((spotter, 0))))
             .map_err(|message| MobileError::Wake { detail: message })
     }
 
@@ -31,7 +31,14 @@ impl WakeEngine {
         if !(8_000..=192_000).contains(&rate) || samples.len() > rate as usize * 2 {
             return false;
         }
-        let mut spotter = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let (spotter, last_rate) = &mut *guard;
+        // A route change (e.g. Bluetooth) can change the rate; the stream's
+        // timing assumes one rate, so start afresh.
+        if *last_rate != rate {
+            spotter.reset();
+            *last_rate = rate;
+        }
         let hit = spotter.accept(rate, &samples);
         if hit {
             spotter.reset();
@@ -40,7 +47,7 @@ impl WakeEngine {
     }
 
     pub fn reset(&self) {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).reset();
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).0.reset();
     }
 }
 

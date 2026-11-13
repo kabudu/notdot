@@ -75,6 +75,7 @@ None of this is evidence of behaviour on a physical phone. Nothing here was hear
 - **W2 / W2-A, long hands-free sessions:** behaviour through lock, Doze and OEM battery managers on real devices; battery drain per hour; App Review and Play review of a long user-started session.
 - **W3–W5:** starting from an Action button, Control, Siri, widget or tile while suspended or after a force-quit; pre-emption by calls and assistants on hardware.
 - **Keys:** the prototype keeps the phone's identity key in memory. Next is a this-device-only Keychain/Keystore key, created only from a user action so no prompt appears while the user is away.
+- **Before freezing `link/1`:** define the step-up operation digest over explicitly canonical bytes (today it is serde_json output, shared by Rust on both sides).
 - **Relay deployment:** a recommendation only (see `deploy/relay/README.md`); needs owner approval.
 
 ## iOS: two lifetimes, kept separate

@@ -231,6 +231,8 @@ impl Paint {
     }
 }
 fn theme_rgb(hue: f64, chroma: f64, lightness: f64) -> [f32; 3] {
+    // Same cleaning as `theme::tint`: native callers may pass any f64.
+    let hue = if hue.is_finite() { hue } else { 0. };
     let h = hue.rem_euclid(360.) / 60.;
     let x = chroma * (1. - (h.rem_euclid(2.) - 1.).abs());
     let (r, g, b) = match h as u32 {

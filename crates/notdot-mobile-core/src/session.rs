@@ -220,9 +220,10 @@ impl Session {
 
     fn end(&mut self, reason: EndReason) {
         self.state = SessionState::Ended { reason };
+        // A user pause belongs to the session. Interruption and silencing
+        // are facts about the OS and outlive it: a session restarted
+        // during a call must start paused.
         self.user_paused = false;
-        self.interrupted = false;
-        self.silenced = false;
     }
 
     fn settle_pause(&mut self) {
@@ -276,6 +277,10 @@ impl Session {
                     self.state = SessionState::HandsFree;
                     self.started_ms = now_ms;
                     self.last_activity_ms = now_ms;
+                    // Starting is an explicit request to listen; OS-held
+                    // pauses (a call, silencing) still apply.
+                    self.user_paused = false;
+                    self.settle_pause();
                 }
             }
             SessionEvent::Stop if self.in_session() => self.end(EndReason::UserStopped),
@@ -283,7 +288,8 @@ impl Session {
             SessionEvent::Activity if self.state == SessionState::HandsFree => {
                 self.last_activity_ms = now_ms;
             }
-            SessionEvent::PauseListening => {
+            // Only a running session can be paused by the user.
+            SessionEvent::PauseListening if self.in_session() => {
                 self.user_paused = true;
                 self.settle_pause();
             }
@@ -576,6 +582,46 @@ mod tests {
                 reason: PauseReason::UserPaused
             }
         );
+    }
+
+    #[test]
+    fn pause_state_does_not_leak_between_sessions() {
+        // A pause outside a session is ignored.
+        let mut s = session(Platform::Ios);
+        s.handle(SessionEvent::AppVisible, 0);
+        s.handle(SessionEvent::PauseListening, 1);
+        s.handle(
+            SessionEvent::Start {
+                source: StartSource::App,
+            },
+            2,
+        );
+        let e = s.handle(SessionEvent::Silenced { silenced: false }, 3);
+        assert_eq!(e.state, SessionState::HandsFree);
+        // A session ended during a call and restarted during the same call
+        // starts paused, with the microphone off.
+        s.handle(SessionEvent::InterruptionBegan, 4);
+        s.handle(SessionEvent::Stop, 5);
+        let e = s.handle(
+            SessionEvent::Start {
+                source: StartSource::App,
+            },
+            6,
+        );
+        assert_eq!(
+            e.state,
+            SessionState::Paused {
+                reason: PauseReason::Interrupted
+            }
+        );
+        assert!(!e.microphone);
+        let e = s.handle(
+            SessionEvent::InterruptionEnded {
+                should_resume: true,
+            },
+            7,
+        );
+        assert_eq!((e.state, e.microphone), (SessionState::HandsFree, true));
     }
 
     #[test]
