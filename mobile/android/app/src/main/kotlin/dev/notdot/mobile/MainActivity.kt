@@ -105,7 +105,10 @@ private fun Home(start: () -> Unit) {
 @Composable
 private fun Pairing() {
     val scope = rememberCoroutineScope()
-    val link = remember { PhoneLink() }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // Identity and paired computer survive restarts (Keystore-sealed).
+    val store = remember { IdentityStore.standard(context) }
+    var link by remember { mutableStateOf(runCatching { store.restoreLink() }.getOrElse { PhoneLink() }) }
     var qr by remember { mutableStateOf("") }
     var message by remember { mutableStateOf("Not linked") }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -113,10 +116,15 @@ private fun Pairing() {
         Button({
             scope.launch {
                 message = try {
+                    // The identity is created (once) by this user action.
+                    if (store.identity() == null) link = PhoneLink.restore(store.identityCreatingIfNeeded(), null)
                     val code = link.pair(qr.trim(), "Android phone")
                     message = "Check the computer shows $code, then choose Allow there."
                     when (val result = link.awaitApproval()) {
-                        is PairResult.Approved -> "Linked (${link.connect(false)})"
+                        is PairResult.Approved -> {
+                            store.savePairedRecord(link.pairedRecord())
+                            "Linked (${link.connect(false)})"
+                        }
                         PairResult.Denied -> "The computer said no."
                         is PairResult.Rejected -> result.reason
                     }

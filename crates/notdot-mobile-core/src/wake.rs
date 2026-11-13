@@ -37,15 +37,6 @@ impl Inner {
 pub struct WakeEngine(Mutex<Inner>);
 
 impl WakeEngine {
-    #[cfg(test)]
-    fn backup_busy(&self) -> bool {
-        #[cfg(feature = "whisper")]
-        if let Some(backup) = &self.lock().backup {
-            return backup.is_busy();
-        }
-        false
-    }
-
     fn build(
         models: &str,
         name: String,
@@ -149,6 +140,17 @@ impl WakeEngine {
         None
     }
 
+    /// Whether a backup decode is running. Tests that feed recorded audio
+    /// faster than real time pace it in real time while this is true, so
+    /// the decoder sees what it would live.
+    pub fn backup_busy(&self) -> bool {
+        #[cfg(feature = "whisper")]
+        if let Some(backup) = &self.lock().backup {
+            return backup.is_busy();
+        }
+        false
+    }
+
     pub fn backup_stats(&self) -> BackupStats {
         #[cfg(feature = "whisper")]
         if let Some(backup) = &self.lock().backup {
@@ -208,9 +210,9 @@ mod tests {
 
     /// Feed `wake` (at `gain`) after other speech and a short pause, in
     /// 20 ms packets as a microphone callback would, then 0.8 s of silence.
-    /// The clips are fed faster than real time; trailing silence continues
-    /// in real time while a backup decode is running (at most 4 s), so the
-    /// result is not cut off. Returns whether it woke and, if so, the host
+    /// Packets go faster than real time except while a backup decode runs,
+    /// when they are paced in real time, as they would arrive live; then
+    /// silence continues while a decode is still running (at most 4 s). Returns whether it woke and, if so, the host
     /// time from the end of the clip to the wake.
     fn detects(engine: &WakeEngine, wake: &str, gain: f32) -> (bool, Option<std::time::Duration>) {
         let (before, rate) = clip("negative.wav");
@@ -227,6 +229,9 @@ mod tests {
         for (index, chunk) in audio.chunks(packet).enumerate() {
             if index * packet >= clip_end && ended.is_none() {
                 ended = Some(std::time::Instant::now());
+            }
+            if engine.backup_busy() {
+                std::thread::sleep(std::time::Duration::from_millis(20));
             }
             if engine.accept(chunk.to_vec(), rate) {
                 return (true, ended.map(|t| t.elapsed()));

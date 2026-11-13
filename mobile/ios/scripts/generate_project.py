@@ -20,7 +20,7 @@ def uid(*parts):
 
 
 APP_SOURCES = ['Notdot/NotdotApp.swift', 'Notdot/ContentView.swift', 'Notdot/OrbView.swift', 'Notdot/OrbRenderer.swift',
-               'Notdot/AppModel.swift', 'Notdot/LinkModel.swift', 'Notdot/AudioCapture.swift', 'Notdot/Intents.swift',
+               'Notdot/AppModel.swift', 'Notdot/LinkModel.swift', 'Notdot/IdentityStore.swift', 'Notdot/AudioCapture.swift', 'Notdot/Intents.swift',
                'NotdotShared/SessionActivity.swift', 'build/generated/notdot_mobile_core.swift']
 WIDGET_SOURCES = ['NotdotWidgets/NotdotWidgets.swift', 'NotdotShared/SessionActivity.swift']
 TEST_SOURCES = ['NotdotTests/NotdotTests.swift']
@@ -124,7 +124,7 @@ app_settings = dict(core, **{
     'INFOPLIST_KEY_CFBundleDisplayName': 'notdot', 'INFOPLIST_KEY_UILaunchScreen_Generation': 'YES',
     'INFOPLIST_KEY_UISupportedInterfaceOrientations': 'UIInterfaceOrientationPortrait',
     'LD_RUNPATH_SEARCH_PATHS': '$(inherited) @executable_path/Frameworks',
-    'OTHER_LDFLAGS': '-lnotdot_mobile_core -framework SherpaOnnxC -framework SystemConfiguration -framework Security -framework Network',
+    'OTHER_LDFLAGS': '-lnotdot_mobile_core -framework SherpaOnnxC -framework SystemConfiguration -framework Security -framework Network -framework Accelerate -lc++',
     'FRAMEWORK_SEARCH_PATHS': '$(SRCROOT)/build/lib/$(PLATFORM_NAME)',
     'SWIFT_ACTIVE_COMPILATION_CONDITIONS': 'NOTDOT_WAKE',
     'ASSETCATALOG_COMPILER_APPICON_NAME': '',

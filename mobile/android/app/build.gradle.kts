@@ -9,16 +9,27 @@ plugins {
 val core = rootProject.layout.projectDirectory.dir("build-core")
 val repo = rootProject.layout.projectDirectory.dir("../..")
 
-// The desktop's wake models (keyword spotter only; no Whisper fallback yet),
-// copied into generated assets so nothing is duplicated in the source tree.
+// The desktop's wake models (keyword spotter, plus the Whisper backup model
+// unless built with -PnotdotWhisper=false), copied into generated assets so
+// nothing is duplicated in the source tree.
+val whisper = (findProperty("notdotWhisper") as String?)?.toBoolean() ?: true
 val wakeAssets = layout.buildDirectory.dir("generated/wake-assets")
 val copyWakeModels by tasks.registering(Copy::class) {
     from(repo.dir("src-tauri/resources/wake")) {
         include("phonetic/**", "bpe.model", "encoder.onnx", "decoder.onnx", "joiner.onnx", "tokens.txt", "LICENSE", "NOTICE.md")
+        if (whisper) include("ggml-tiny.en-q5_1.bin", "WHISPER-LICENSE")
     }
     into(wakeAssets.map { it.dir("wake") })
 }
-tasks.named("preBuild") { dependsOn(copyWakeModels) }
+// The desktop's wake test clips, for instrumented tests only.
+val wakeFixtures = layout.buildDirectory.dir("generated/wake-fixtures")
+val copyWakeFixtures by tasks.registering(Copy::class) {
+    from(repo.dir("src-tauri/tests/fixtures")) {
+        include("hey-ava.wav", "hey-ava-uk.wav", "hey-ava-us.wav", "ava.wav", "negative.wav")
+    }
+    into(wakeFixtures.map { it.dir("fixtures") })
+}
+tasks.named("preBuild") { dependsOn(copyWakeModels, copyWakeFixtures) }
 
 android {
     namespace = "dev.notdot.mobile"
@@ -45,6 +56,10 @@ android {
         compose = true
         buildConfig = true
     }
+    androidResources {
+        // The quantised model does not compress; store it as is.
+        noCompress += "bin"
+    }
     sourceSets {
         getByName("main") {
             java.srcDir(core.dir("kotlin"))
@@ -54,6 +69,7 @@ android {
         getByName("androidTest") {
             // Golden orb frames shared with iOS and the desktop contract.
             assets.srcDir(repo.dir("crates/notdot-orb/fixtures"))
+            assets.srcDir(wakeFixtures)
         }
     }
     testOptions {

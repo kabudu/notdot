@@ -108,27 +108,87 @@ final class WakeCorpusTests: XCTestCase {
         return Array(UnsafeBufferPointer(start: buffer.floatChannelData![0], count: Int(buffer.frameLength)))
     }
 
-    func testCorpusNeverFalseAcceptsAndTheSpotterWakes() throws {
-        let models = try XCTUnwrap(Bundle.main.resourceURL?.appendingPathComponent("wake").path)
-        let engine = try WakeEngine(models: models, name: "Ava", nameOnly: false)
+    /// Feed `clip` after other speech, in 20 ms packets: faster than real
+    /// time, except while a backup decode runs, when packets are paced in
+    /// real time as they would arrive live. Then silence continues while a
+    /// decode is still running (up to 4 s).
+    private func detects(_ engine: WakeEngine, _ clip: String, _ gain: Float) throws -> Bool {
         let before = try samples("negative.wav").map { $0 * 0.3 }
-        func detects(_ clip: String, _ gain: Float) throws -> Bool {
-            let audio = before + [Float](repeating: 0, count: 3_200) + (try samples(clip)).map { $0 * gain } + [Float](repeating: 0, count: 12_800)
-            engine.reset()
-            var hit = false
-            for start in stride(from: 0, to: audio.count, by: 320) {
-                hit = engine.accept(samples: Array(audio[start..<min(start + 320, audio.count)]), rate: 16_000) || hit
-            }
-            return hit
+        let audio = before + [Float](repeating: 0, count: 3_200) + (try samples(clip)).map { $0 * gain } + [Float](repeating: 0, count: 12_800)
+        engine.reset()
+        for start in stride(from: 0, to: audio.count, by: 320) {
+            if engine.backupBusy() { Thread.sleep(forTimeInterval: 0.02) }
+            if engine.accept(samples: Array(audio[start..<min(start + 320, audio.count)]), rate: 16_000) { return true }
         }
-        let woke = try ["hey-ava.wav", "hey-ava-uk.wav", "hey-ava-us.wav"].filter { try detects($0, 0.35) }
+        for _ in 0..<200 where engine.backupBusy() {
+            Thread.sleep(forTimeInterval: 0.02)
+            if engine.accept(samples: [Float](repeating: 0, count: 320), rate: 16_000) { return true }
+        }
+        return false
+    }
+
+    private var models: String {
+        get throws { try XCTUnwrap(Bundle.main.resourceURL?.appendingPathComponent("wake").path) }
+    }
+
+    func testCorpusNeverFalseAcceptsAndTheSpotterWakes() throws {
+        let engine = try WakeEngine.spotterOnly(models: try models, name: "Ava", nameOnly: false)
+        XCTAssertEqual(engine.backupState(), .off)
+        let woke = try ["hey-ava.wav", "hey-ava-uk.wav", "hey-ava-us.wav"].filter { try detects(engine, $0, 0.35) }
         print("iOS spotter-only recall at 0.35: \(woke)")
         XCTAssertFalse(woke.isEmpty)
         for clip in ["ava.wav", "negative.wav"] {
             for gain: Float in [0.05, 0.35, 0.8] {
-                XCTAssertFalse(try detects(clip, gain), "\(clip)@\(gain)")
+                XCTAssertFalse(try detects(engine, clip, gain), "\(clip)@\(gain)")
             }
         }
+    }
+
+    /// The full desktop detector (spotter plus the embedded Whisper backup).
+    func testTheFullDetectorWakesOnQuietSpeechAndNeverFalseAccepts() throws {
+        let engine = try WakeEngine(models: try models, name: "Ava", nameOnly: false)
+        let loading = Date()
+        while engine.backupState() == .loading, Date().timeIntervalSince(loading) < 60 {
+            _ = engine.accept(samples: [], rate: 16_000)
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        XCTAssertEqual(engine.backupState(), .ready, engine.backupError() ?? "")
+        print("iOS backup ready after \(Date().timeIntervalSince(loading)) s")
+        for gain: Float in [0.35, 0.05] {
+            for clip in ["hey-ava.wav", "hey-ava-uk.wav", "hey-ava-us.wav"] {
+                XCTAssertTrue(try detects(engine, clip, gain), "\(clip)@\(gain)")
+            }
+        }
+        for clip in ["ava.wav", "negative.wav"] {
+            for gain: Float in [0.05, 0.35, 0.8] {
+                XCTAssertFalse(try detects(engine, clip, gain), "\(clip)@\(gain)")
+            }
+        }
+        let stats = engine.backupStats()
+        print("iOS backup stats: \(stats)")
+        XCTAssertEqual(stats.failures, 0)
+        XCTAssertGreaterThan(stats.decodes, 0)
+    }
+}
+
+/// Keychain persistence with a disposable service name; removed afterwards.
+final class IdentityStoreTests: XCTestCase {
+    func testIdentityAndRecordSurviveAndClear() throws {
+        let store = IdentityStore(service: "dev.notdot.mobile.test.\(UUID().uuidString)")
+        defer { try? store.clear() }
+        XCTAssertNil(try store.identity())
+        let identity = try store.identityCreatingIfNeeded()
+        XCTAssertEqual(identity.count, 32)
+        XCTAssertEqual(try store.identityCreatingIfNeeded(), identity, "created once")
+        try store.savePairedRecord("notdot-paired:1:e30")
+        XCTAssertEqual(try store.pairedRecord(), "notdot-paired:1:e30")
+        // A new store value (as after an app restart) reads the same items.
+        let restarted = IdentityStore(service: store.service)
+        XCTAssertEqual(try restarted.identity(), identity)
+        _ = try PhoneLink.restore(identity: identity, paired: nil)
+        try restarted.clear()
+        XCTAssertNil(try store.identity())
+        XCTAssertNil(try store.pairedRecord())
     }
 }
 

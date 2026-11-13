@@ -19,11 +19,15 @@ flags=""
 if [ "$configuration" = Release ]; then profile=release; flags=--release; fi
 features=""
 if [ "${NOTDOT_WAKE:-1}" = 1 ]; then features="--features wake"; fi
+# The desktop's Whisper backup (whisper.cpp via CMake) on top of the spotter.
+if [ -n "$features" ] && [ "${NOTDOT_WHISPER:-1}" = 1 ]; then features="--features whisper"; fi
+# whisper.cpp builds with CMake; find it before the environment is cleared.
+cmake_bin=$(PATH="$PATH:/opt/homebrew/bin:/usr/local/bin" command -v cmake || true)
 # Run cargo outside Xcode's build environment: its SDK, toolchain and
 # platform variables confuse the C builds of Rust dependencies (ring).
 clean() {
   env -i HOME="$HOME" PATH="$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin" TMPDIR="${TMPDIR:-/tmp}" USER="${USER:-}" \
-    CARGO_TARGET_DIR="$root/target/mobile" "$@"
+    CARGO_TARGET_DIR="$root/target/mobile" ${cmake_bin:+CMAKE="$cmake_bin"} "$@"
 }
 (cd "$root/mobile/rust" && clean IPHONEOS_DEPLOYMENT_TARGET=18.0 \
   cargo rustc --locked --lib --crate-type staticlib --target "$target" $flags $features)

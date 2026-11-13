@@ -6,7 +6,9 @@ import java.io.File
 
 /**
  * The desktop's wake models, packaged as assets (`wake/`) and copied to
- * private storage once, because sherpa-onnx reads files by path.
+ * private storage once, because sherpa-onnx and whisper.cpp read files by
+ * path. Each file is written to a temporary name and renamed, so an
+ * interrupted copy is redone rather than leaving a truncated model.
  */
 object WakeModels {
     @Volatile private var cached: WakeEngine? = null
@@ -20,7 +22,11 @@ object WakeModels {
     private fun copy(context: Context, asset: String, target: File) {
         val children = context.assets.list(asset).orEmpty()
         if (children.isEmpty()) {
-            if (!target.exists()) context.assets.open(asset).use { input -> target.outputStream().use(input::copyTo) }
+            if (!target.exists()) {
+                val partial = File(target.parentFile, "${target.name}.partial")
+                context.assets.open(asset).use { input -> partial.outputStream().use(input::copyTo) }
+                check(partial.renameTo(target)) { "could not install ${target.name}" }
+            }
             return
         }
         target.mkdirs()

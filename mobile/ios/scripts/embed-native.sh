@@ -1,7 +1,7 @@
 #!/bin/sh
 # Xcode phase: embed SherpaOnnxC.framework and the desktop's wake models
-# (keyword spotter files only) into the app bundle. Nothing is copied into
-# the source tree.
+# (keyword spotter files, plus the Whisper backup model when the core is
+# built with it) into the app bundle. Nothing is copied into the source tree.
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
 root=$(cd "$here/../.." && pwd)
@@ -17,3 +17,8 @@ mkdir -p "$models"
 src="$root/src-tauri/resources/wake"
 cp "$src/bpe.model" "$src/encoder.onnx" "$src/decoder.onnx" "$src/joiner.onnx" "$src/tokens.txt" "$src/LICENSE" "$src/NOTICE.md" "$models/"
 rm -rf "$models/phonetic" && cp -R "$src/phonetic" "$models/phonetic"
+if [ "${NOTDOT_WHISPER:-1}" = 1 ]; then
+  cp "$src/ggml-tiny.en-q5_1.bin" "$src/WHISPER-LICENSE" "$models/"
+else
+  rm -f "$models/ggml-tiny.en-q5_1.bin" "$models/WHISPER-LICENSE"
+fi

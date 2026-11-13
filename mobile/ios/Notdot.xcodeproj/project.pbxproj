@@ -230,6 +230,12 @@
 			path = Notdot.app;
 			sourceTree = BUILT_PRODUCTS_DIR;
 		};
+		55F2A54BC134610C23CA1760 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Notdot/IdentityStore.swift;
+			sourceTree = "<group>";
+		};
 		577B2E971B047CFEA9E155AD = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -265,7 +271,7 @@
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				OTHER_LDFLAGS = "-lnotdot_mobile_core -framework SherpaOnnxC -framework SystemConfiguration -framework Security -framework Network";
+				OTHER_LDFLAGS = "-lnotdot_mobile_core -framework SherpaOnnxC -framework SystemConfiguration -framework Security -framework Network -framework Accelerate -lc++";
 				FRAMEWORK_SEARCH_PATHS = "$(SRCROOT)/build/lib/$(PLATFORM_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = NOTDOT_WAKE;
 				ASSETCATALOG_COMPILER_APPICON_NAME = "";
@@ -275,6 +281,10 @@
 		5FA8E011D222575765E48AFF = {
 			isa = PBXBuildFile;
 			fileRef = A72DD61519D69947DC99A873;
+		};
+		6023058347F28E299420B8DE = {
+			isa = PBXBuildFile;
+			fileRef = "55F2A54BC134610C23CA1760";
 		};
 		643AF0863947E1FBCB15FEDC = {
 			isa = XCBuildConfiguration;
@@ -298,7 +308,7 @@
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				OTHER_LDFLAGS = "-lnotdot_mobile_core -framework SherpaOnnxC -framework SystemConfiguration -framework Security -framework Network";
+				OTHER_LDFLAGS = "-lnotdot_mobile_core -framework SherpaOnnxC -framework SystemConfiguration -framework Security -framework Network -framework Accelerate -lc++";
 				FRAMEWORK_SEARCH_PATHS = "$(SRCROOT)/build/lib/$(PLATFORM_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "NOTDOT_WAKE DEBUG";
 				ASSETCATALOG_COMPILER_APPICON_NAME = "";
@@ -313,6 +323,7 @@
 				"0219F477F9B32FB07F19941B",
 				A72DD61519D69947DC99A873,
 				FC02B6EAD518CDB4CBBA27D2,
+				"55F2A54BC134610C23CA1760",
 				"8B66A17399C9987A162EAFBF",
 				E59E2004A91DBF7B2B4386CC,
 				A0409E8EFFFDD9F75A3B85DF,
@@ -569,6 +580,7 @@
 				A39EADAC204209AD3987956C,
 				"8B10D2B922BD7D4632CC2727",
 				"00411A92D374C52B3489F430",
+				"6023058347F28E299420B8DE",
 				"5FA8E011D222575765E48AFF",
 				ACBF2248890D7DBF3328D0A6,
 				"3446C34BD12AE41001D720D9",

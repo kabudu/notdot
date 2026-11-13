@@ -6,16 +6,21 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import uniffi.notdot_mobile_core.BackupState
 import uniffi.notdot_mobile_core.LinkRoute
 import uniffi.notdot_mobile_core.PairResult
 import uniffi.notdot_mobile_core.PhoneLink
 import uniffi.notdot_mobile_core.newRequestId
+import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.zip.Inflater
@@ -127,5 +132,99 @@ class DeviceTest {
         assertEquals(note, link.addNote(id, "Synthetic note"))
         assertEquals(1, link.listNotes().count { it == "Synthetic note" })
         println("emulator link: first route $first, then relay; retry committed once")
+    }
+
+    /** 16 kHz mono 16-bit PCM WAV from the test assets, data chunk only. */
+    private fun pcm16(path: String): List<Float> {
+        val bytes = asset(path)
+        var offset = 12
+        while (offset + 8 <= bytes.size) {
+            val id = String(bytes, offset, 4)
+            val size = ByteBuffer.wrap(bytes, offset + 4, 4).order(ByteOrder.LITTLE_ENDIAN).int
+            if (id == "data") {
+                val data = ByteBuffer.wrap(bytes, offset + 8, size).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+                return List(data.remaining()) { data.get(it) / 32768f }
+            }
+            offset += 8 + size + (size and 1)
+        }
+        error("no data chunk in $path")
+    }
+
+    /**
+     * The full desktop detector through the app's packaged models and native
+     * libraries: the corpus fed in 20 ms packets, paced in real time while a
+     * backup decode runs (as live). Offline audio; no microphone.
+     */
+    @Test
+    fun fullDetectorWakesOnTheCorpusThroughThePackagedModels() {
+        val target = InstrumentationRegistry.getInstrumentation().targetContext
+        val engine = checkNotNull(WakeModels.engine(target)) { "wake engine" }
+        val loading = System.currentTimeMillis()
+        while (engine.backupState() == BackupState.LOADING && System.currentTimeMillis() - loading < 60_000) {
+            engine.accept(emptyList(), 16_000u)
+            Thread.sleep(20)
+        }
+        assertEquals(engine.backupError(), BackupState.READY, engine.backupState())
+        println("emulator backup ready after ${System.currentTimeMillis() - loading} ms")
+        fun detects(clip: String, gain: Float): Boolean {
+            val audio = pcm16("fixtures/negative.wav").map { it * 0.3f } + List(3_200) { 0f } +
+                pcm16("fixtures/$clip").map { it * gain } + List(12_800) { 0f }
+            engine.reset()
+            for (chunk in audio.chunked(320)) {
+                if (engine.backupBusy()) Thread.sleep(20)
+                if (engine.accept(chunk, 16_000u)) return true
+            }
+            repeat(200) {
+                if (!engine.backupBusy()) return false
+                Thread.sleep(20)
+                if (engine.accept(List(320) { 0f }, 16_000u)) return true
+            }
+            return false
+        }
+        for (gain in listOf(0.35f, 0.05f)) for (clip in listOf("hey-ava.wav", "hey-ava-uk.wav", "hey-ava-us.wav")) {
+            assertTrue("$clip@$gain", detects(clip, gain))
+        }
+        for (clip in listOf("ava.wav", "negative.wav")) for (gain in listOf(0.05f, 0.35f, 0.8f)) {
+            assertFalse("$clip@$gain", detects(clip, gain))
+        }
+        val stats = engine.backupStats()
+        println("emulator backup stats: $stats")
+        assertEquals(0uL, stats.failures)
+    }
+
+    /** Keystore-sealed identity with a disposable key alias and folder. */
+    @Test
+    fun identityStoreSealsSurvivesAndRefusesTampering() {
+        val target = InstrumentationRegistry.getInstrumentation().targetContext
+        val tag = System.nanoTime()
+        val dir = File(target.cacheDir, "identity-test-$tag")
+        val store = IdentityStore(dir, "notdot-test-$tag")
+        try {
+            assertNull(store.identity())
+            val identity = store.identityCreatingIfNeeded()
+            assertEquals(32, identity.size)
+            assertArrayEquals(identity, store.identityCreatingIfNeeded())
+            store.savePairedRecord("notdot-paired:1:e30")
+            // A new instance, as after a restart, reads the same sealed files.
+            val restarted = IdentityStore(dir, "notdot-test-$tag")
+            assertArrayEquals(identity, restarted.identity())
+            assertEquals("notdot-paired:1:e30", restarted.pairedRecord())
+            PhoneLink.restore(identity, null)
+            // Nothing on disk is the plain identity.
+            assertFalse(File(dir, "identity.sealed").readBytes().toList().windowed(32).any { it == identity.toList() })
+            // A swapped file fails its authentication tag.
+            File(dir, "identity.sealed").copyTo(File(dir, "paired.sealed"), overwrite = true)
+            assertTrue(runCatching { restarted.pairedRecord() }.isFailure)
+            // So does a flipped byte.
+            val file = File(dir, "identity.sealed")
+            val bytes = file.readBytes()
+            bytes[bytes.size - 1] = (bytes[bytes.size - 1].toInt() xor 1).toByte()
+            file.writeBytes(bytes)
+            assertTrue(runCatching { restarted.identity() }.isFailure)
+        } finally {
+            store.clear()
+            dir.deleteRecursively()
+        }
+        assertNull(IdentityStore(dir, "notdot-test-$tag").identity())
     }
 }

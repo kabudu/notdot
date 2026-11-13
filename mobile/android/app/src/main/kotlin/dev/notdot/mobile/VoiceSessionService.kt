@@ -99,7 +99,12 @@ class VoiceSessionService : Service() {
                 val rms = kotlin.math.sqrt(sum / read).toFloat()
                 meterSum += rms; meterCount++; meterPeak = maxOf(meterPeak, rms)
                 if (meterCount * read >= rate) {
-                    android.util.Log.i("notdot.voice", "capture rate=$rate mean_rms=${meterSum / meterCount} peak_rms=$meterPeak wake=${wake != null}")
+                    // Backup decoder state and counters (no audio or text).
+                    val backup = wake?.let { w ->
+                        val s = w.backupStats()
+                        "${w.backupState()} decodes=${s.decodes} wakes=${s.wakes} failures=${s.failures} decode_ms_total=${s.decodeMsTotal} decode_ms_max=${s.decodeMsMax}"
+                    } ?: "none"
+                    android.util.Log.i("notdot.voice", "capture rate=$rate mean_rms=${meterSum / meterCount} peak_rms=$meterPeak backup=$backup")
                     meterSum = 0f; meterCount = 0; meterPeak = 0f
                 }
                 if (wake?.accept(packet.copyOf(read).toList(), rate.toUInt()) == true) {

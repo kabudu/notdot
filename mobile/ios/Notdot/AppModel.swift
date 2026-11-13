@@ -59,7 +59,9 @@ final class AppModel: ObservableObject {
             let rms = (samples.reduce(0) { $0 + $1 * $1 } / Float(max(samples.count, 1))).squareRoot()
             meter = (meter.sum + rms, meter.count + 1, max(meter.peak, rms))
             if meter.count * samples.count >= Int(rate) {
-                AppModel.log.info("capture rate=\(rate) mean_rms=\(meter.sum / Float(meter.count)) peak_rms=\(meter.peak)")
+                // Backup decoder state and counters (no audio or text).
+                let backup = self.wake.map { w in let s = w.backupStats(); return "\(w.backupState()) decodes=\(s.decodes) wakes=\(s.wakes) failures=\(s.failures) decode_ms_total=\(s.decodeMsTotal) decode_ms_max=\(s.decodeMsMax)" } ?? "none"
+                AppModel.log.info("capture rate=\(rate) mean_rms=\(meter.sum / Float(meter.count)) peak_rms=\(meter.peak) backup=\(backup, privacy: .public)")
                 meter = (0, 0, 0)
             }
             guard let wake = self.wake, wake.accept(samples: samples, rate: rate) else { return }

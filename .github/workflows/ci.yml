@@ -69,10 +69,10 @@ jobs:
               subprocess.run(['git', 'diff', '--check'], check=True)
           PY
   mobile-foundations:
-    name: Mobile foundations (orb contract, link)
+    name: Mobile foundations (orb contract, link, wake)
     needs: changes
     runs-on: ubuntu-22.04
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -93,6 +93,10 @@ jobs:
       # UniFFI mobile core: orb, session lifecycle, link (wake needs native libs).
       - run: cargo test -p notdot-mobile-core --no-default-features --locked
       - run: cargo clippy -p notdot-mobile-core --no-default-features --all-targets --locked -- -D warnings
+      # The full wake detector (keyword spotter + Whisper backup) on the
+      # desktop corpus, offline, as the apps run it.
+      - run: cargo test -p notdot-mobile-core --locked
+      - run: cargo clippy -p notdot-mobile-core --all-targets --locked -- -D warnings
       - run: cargo clippy -p notdot-link -p notdot-orb-gen --all-targets --features notdot-link/test-relay --locked -- -D warnings
       - name: Contract build has no web dependencies
         run: |
@@ -112,7 +116,7 @@ jobs:
           - os: ubuntu-22.04
             target: aarch64-linux-android
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -139,6 +143,23 @@ jobs:
             cargo rustc --locked --lib --crate-type cdylib --target ${{ matrix.target }}
           else
             IPHONEOS_DEPLOYMENT_TARGET=18.0 cargo rustc --locked --lib --crate-type staticlib --target ${{ matrix.target }}
+          fi
+      - name: Build the app library with the wake detector (spotter + Whisper)
+        working-directory: mobile/rust
+        shell: bash
+        run: |
+          if [ "${{ matrix.target }}" = aarch64-linux-android ]; then
+            ndk="$ANDROID_NDK_LATEST_HOME"
+            bin="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+            export ANDROID_NDK_HOME="$ndk" CMAKE_ANDROID_NDK="$ndk" CMAKE_ANDROID_ARCH_ABI=arm64-v8a CMAKE_SYSTEM_VERSION=29
+            export CC_aarch64_linux_android="$bin/aarch64-linux-android29-clang"
+            export CXX_aarch64_linux_android="$bin/aarch64-linux-android29-clang++"
+            export AR_aarch64_linux_android="$bin/llvm-ar"
+            export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$bin/../sysroot"
+            export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$bin/aarch64-linux-android29-clang"
+            cargo rustc --locked --lib --crate-type cdylib --target ${{ matrix.target }} --features whisper
+          else
+            IPHONEOS_DEPLOYMENT_TARGET=18.0 cargo rustc --locked --lib --crate-type staticlib --target ${{ matrix.target }} --features whisper
           fi
   release-tools:
     needs: changes

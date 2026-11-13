@@ -225,8 +225,7 @@ impl Backup {
         self.utterances.reset();
     }
 
-    /// Whether a decode is running (tests wait for results with it).
-    #[cfg(test)]
+    /// Whether a decode is running.
     pub fn is_busy(&self) -> bool {
         self.busy
     }
