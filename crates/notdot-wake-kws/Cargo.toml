@@ -8,3 +8,7 @@ license.workspace = true
 [dependencies]
 sherpa-onnx = "=2.0.0"
 sentencepiece-rs = "=0.2.2"
+[dev-dependencies]
+# acoustic_wake example only: microphone capture and WAV clips.
+cpal = "=0.18.2"
+hound = "3"

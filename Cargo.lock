@@ -4322,6 +4322,8 @@ dependencies = [
 name = "notdot-wake-kws"
 version = "0.8.0"
 dependencies = [
+ "cpal",
+ "hound",
  "sentencepiece-rs",
  "sherpa-onnx",
 ]

@@ -1558,6 +1558,116 @@ mod tests {
         );
     }
 
+    /// Acoustic diagnostic for the mobile wake gate (W1) on a Mac: plays each
+    /// synthetic clip in NOTDOT_WAKE_ACOUSTIC_DIR through the default output
+    /// (`afplay`, one at a time) while the production native microphone path
+    /// feeds two detectors: the full desktop detector and the spotter alone.
+    /// Clips named `pos*` should wake. Audio is processed in memory only.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "plays audio and opens the microphone; set NOTDOT_WAKE_ACOUSTIC_DIR"]
+    fn macos_speaker_to_microphone_synthetic_clip_diagnostic() {
+        let Ok(dir) = std::env::var("NOTDOT_WAKE_ACOUSTIC_DIR") else {
+            return;
+        };
+        let _models = model_fixture_guard();
+        let mut clips: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "wav"))
+            .collect();
+        clips.sort();
+        let mut full = Detector::new(&models(), "Hey Ava").unwrap();
+        let fallback_dir = tempfile::tempdir().unwrap();
+        let mut spotter = Detector::new(&models(), "Hey Ava").unwrap();
+        spotter.fallback =
+            fallback::Fallback::new(&fallback_dir.path().join("missing.bin"), "Hey Ava").unwrap();
+        let microphone = Microphone::open().unwrap();
+        let rate = microphone.rate;
+        let (window_send, window_receive) = mpsc::channel();
+        let started = Instant::now();
+        let player = std::thread::spawn({
+            let clips = clips.clone();
+            move || {
+                std::thread::sleep(Duration::from_millis(1500));
+                for clip in clips {
+                    let start = started.elapsed();
+                    assert!(
+                        std::process::Command::new("/usr/bin/afplay")
+                            .arg(&clip)
+                            .status()
+                            .unwrap()
+                            .success()
+                    );
+                    window_send.send((clip, start, started.elapsed())).unwrap();
+                    // Long enough for the fallback's end-of-speech decode.
+                    std::thread::sleep(Duration::from_millis(3500));
+                }
+            }
+        });
+        let (mut full_hits, mut spotter_hits) = (Vec::new(), Vec::new());
+        let mut peak = 0f32;
+        while !player.is_finished() {
+            if let Ok(samples) = microphone.receiver.recv_timeout(Duration::from_millis(50)) {
+                peak = peak.max(energy(&samples));
+                let at = started.elapsed();
+                if full.accept(rate, &samples) {
+                    full_hits.push(at);
+                    full.reset();
+                }
+                if spotter.accept(rate, &samples) {
+                    spotter_hits.push(at);
+                    spotter.reset();
+                }
+            }
+        }
+        player.join().unwrap();
+        assert_eq!(
+            microphone.failed.load(Ordering::Relaxed),
+            0,
+            "microphone failed"
+        );
+        let windows: Vec<_> = window_receive.try_iter().collect();
+        let hit = |hits: &[Duration], start: Duration, end: Duration| {
+            hits.iter()
+                .any(|at| *at >= start && *at <= end + Duration::from_millis(3000))
+        };
+        let (mut full_ok, mut spotter_ok) = (0, 0);
+        for (clip, start, end) in &windows {
+            let expect = clip
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("pos");
+            let (f, s) = (
+                hit(&full_hits, *start, *end),
+                hit(&spotter_hits, *start, *end),
+            );
+            full_ok += usize::from(f == expect);
+            spotter_ok += usize::from(s == expect);
+            eprintln!(
+                "acoustic clip {}: expected={expect} full={f} spotter_only={s}",
+                clip.file_name().unwrap().to_string_lossy()
+            );
+        }
+        let stray = |hits: &[Duration]| {
+            hits.iter()
+                .filter(|at| {
+                    !windows.iter().any(|(_, start, end)| {
+                        **at >= *start && **at <= *end + Duration::from_millis(3000)
+                    })
+                })
+                .count()
+        };
+        eprintln!(
+            "acoustic synthetic clips: {} played at {rate} Hz, peak frame rms {peak:.4}; full detector correct {full_ok} (stray {}); spotter only correct {spotter_ok} (stray {}); fallback backend {}",
+            windows.len(),
+            stray(&full_hits),
+            stray(&spotter_hits),
+            full.fallback.backend()
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     #[ignore = "explicit local microphone lease; aggregate diagnostics only, no audio retention or providers"]
@@ -1863,6 +1973,55 @@ mod tests {
                 kws.spotter.candidates, kws.spotter.rejected_energy, kws.spotter.rejected_prefix
             );
         }
+    }
+    /// Diagnostic for the mobile wake gate (W1): the full desktop detector
+    /// (spotter + Whisper fallback) versus the spotter alone on a folder of
+    /// 16 kHz 16-bit WAV clips; names starting `pos` should wake. Clips are
+    /// generated locally (e.g. macOS `say`); nothing is played or recorded.
+    #[test]
+    #[ignore = "set NOTDOT_WAKE_CLIP_DIR to a folder of synthetic clips"]
+    fn synthetic_clip_folder_full_versus_spotter_diagnostic() {
+        let Ok(dir) = std::env::var("NOTDOT_WAKE_CLIP_DIR") else {
+            return;
+        };
+        let _models = model_fixture_guard();
+        let mut clips: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "wav"))
+            .collect();
+        clips.sort();
+        let (mut full_ok, mut spotter_ok) = (0, 0);
+        for clip in &clips {
+            let mut reader = hound::WavReader::open(clip).unwrap();
+            assert_eq!(reader.spec().sample_rate, 16000);
+            let samples: Vec<f32> = reader
+                .samples::<i16>()
+                .map(|v| v.unwrap() as f32 / 32768.)
+                .collect();
+            let expect = clip
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("pos");
+            let mut full = Detector::new(&models(), "Hey Ava").unwrap();
+            let both = detects(&mut full, &samples);
+            let dir = tempfile::tempdir().unwrap();
+            let mut kws = Detector::new(&models(), "Hey Ava").unwrap();
+            kws.fallback =
+                fallback::Fallback::new(&dir.path().join("missing.bin"), "Hey Ava").unwrap();
+            let spotter = detects_unchecked(&mut kws, &samples);
+            full_ok += usize::from(both == expect);
+            spotter_ok += usize::from(spotter == expect);
+            eprintln!(
+                "clip {}: expected={expect} full={both} spotter_only={spotter}",
+                clip.file_name().unwrap().to_string_lossy()
+            );
+        }
+        eprintln!(
+            "synthetic clips: {} total; full detector correct {full_ok}; spotter only correct {spotter_ok}",
+            clips.len()
+        );
     }
     /// Like `detects`, without requiring a working fallback decoder.
     fn detects_unchecked(detector: &mut Detector, samples: &[f32]) -> bool {
