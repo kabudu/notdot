@@ -213,6 +213,15 @@ mod tests {
             .into_owned()
     }
 
+    /// Whisper tests run one at a time: they assert decode budgets and
+    /// cancellation times, which parallel decodes on a small CI runner
+    /// would distort (a phone runs one engine).
+    #[cfg(feature = "whisper")]
+    fn whisper_alone() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Wait (bounded) for the backup to finish loading.
     #[cfg(feature = "whisper")]
     fn ready(engine: &WakeEngine) -> BackupState {
@@ -299,6 +308,7 @@ mod tests {
     #[cfg(feature = "whisper")]
     #[test]
     fn the_full_detector_wakes_on_the_corpus_and_rejects_offline() {
+        let _alone = whisper_alone();
         let engine = WakeEngine::new(models(), "Ava".into(), false).unwrap();
         assert_eq!(
             ready(&engine),
@@ -357,6 +367,7 @@ mod tests {
     #[cfg(feature = "whisper")]
     #[test]
     fn reset_discards_a_running_decode_and_drop_is_bounded() {
+        let _alone = whisper_alone();
         let engine = WakeEngine::new(models(), "Ava".into(), false).unwrap();
         assert_eq!(ready(&engine), BackupState::Ready);
         // Quiet "Hey Ava": the spotter misses it; the backup alone wakes.
@@ -469,6 +480,7 @@ mod tests {
     #[test]
     #[ignore = "set NOTDOT_WAKE_CLIP_DIR to a folder of synthetic clips"]
     fn synthetic_clip_folder_diagnostic() {
+        let _alone = whisper_alone();
         let Ok(dir) = std::env::var("NOTDOT_WAKE_CLIP_DIR") else {
             return;
         };
@@ -598,6 +610,7 @@ mod tests {
     #[cfg(feature = "whisper")]
     #[test]
     fn slow_decodes_keep_utterances_apart_without_false_wakes() {
+        let _alone = whisper_alone();
         let engine = WakeEngine::with_backup(&models(), "Ava", |models, phrase| {
             crate::backup::slowed(
                 crate::backup::whisper(models, phrase),
