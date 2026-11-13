@@ -277,15 +277,21 @@ impl VoiceGate {
     }
 }
 
-/// Collects one spoken utterance at a time for the full-context (Whisper)
-/// backup decoder. Shared by desktop and mobile so both cut audio the same
-/// way: half a second of lead-in before speech, a 350 ms pause (a natural gap
+/// Cuts speech into utterances for the full-context (Whisper) backup
+/// decoder. Shared by desktop and mobile so both cut audio the same way:
+/// half a second of lead-in before speech, a 350 ms pause (a natural gap
 /// between greeting and name stays inside one utterance), at most six
 /// seconds, and nothing with under 200 ms of speech.
 ///
-/// Memory is bounded by the six-second cap plus the half-second lead-in.
-/// While the decoder is busy, audio keeps accumulating up to the cap and the
-/// utterance is released only once the decoder is free again, as before.
+/// Utterances end at their pause even while the decoder is busy, so speech
+/// that arrives during a slow decode is never joined to the next utterance
+/// (the decode rules accept the wake phrase only at an utterance's start).
+/// Finished utterances wait, oldest first, in a queue of at most
+/// [`Self::MAX_WAITING`]; when it is full the oldest is dropped (and
+/// counted), so a decoder that cannot keep up costs recall of old speech,
+/// never unbounded memory or latency. Memory is bounded by the waiting
+/// utterances, the one being collected (six seconds each) and the
+/// half-second lead-in.
 pub struct Utterances {
     gate: VoiceGate,
     tail: std::collections::VecDeque<f32>,
@@ -293,6 +299,9 @@ pub struct Utterances {
     silence: usize,
     speech: usize,
     pause_ms: u32,
+    rate: u32,
+    waiting: std::collections::VecDeque<Vec<f32>>,
+    dropped: u64,
 }
 impl Default for Utterances {
     fn default() -> Self {
@@ -303,18 +312,35 @@ impl Default for Utterances {
             silence: 0,
             speech: 0,
             pause_ms: 350,
+            rate: 0,
+            waiting: std::collections::VecDeque::new(),
+            dropped: 0,
         }
     }
 }
 impl Utterances {
     /// Longest utterance kept, in seconds.
     pub const MAX_SECONDS: usize = 6;
+    /// Finished utterances kept while the decoder is busy.
+    pub const MAX_WAITING: usize = 2;
 
-    /// Feed one packet. Returns a finished utterance when `ready` (the
-    /// decoder can take work) and either the pause or the cap is reached.
-    /// A finished segment with too little speech is dropped silently.
+    /// Feed one packet. Returns the oldest finished utterance when `ready`
+    /// (the decoder can take work). A finished segment with too little
+    /// speech is dropped silently. A change of rate starts afresh.
     pub fn push(&mut self, rate: u32, samples: &[f32], ready: bool) -> Option<Vec<f32>> {
-        let rate = rate as usize;
+        if rate != self.rate {
+            self.reset();
+            self.rate = rate;
+        }
+        self.collect(rate as usize, samples);
+        if ready {
+            self.waiting.pop_front()
+        } else {
+            None
+        }
+    }
+
+    fn collect(&mut self, rate: usize, samples: &[f32]) {
         let voiced = self.gate.observe(energy(samples));
         if self.samples.is_empty() {
             if voiced {
@@ -324,7 +350,7 @@ impl Utterances {
                 while self.tail.len() > rate / 2 {
                     self.tail.pop_front();
                 }
-                return None;
+                return;
             }
         }
         let remaining = (rate * Self::MAX_SECONDS).saturating_sub(self.samples.len());
@@ -336,19 +362,20 @@ impl Utterances {
         } else {
             self.silence += samples.len();
         }
-        let mut finished = None;
-        if ready
-            && (self.silence >= rate * self.pause_ms as usize / 1000
-                || self.samples.len() >= rate * Self::MAX_SECONDS)
+        if self.silence >= rate * self.pause_ms as usize / 1000
+            || self.samples.len() >= rate * Self::MAX_SECONDS
         {
-            let samples = std::mem::take(&mut self.samples);
+            let finished = std::mem::take(&mut self.samples);
             if self.speech >= rate / 5 {
-                finished = Some(samples);
+                if self.waiting.len() == Self::MAX_WAITING {
+                    self.waiting.pop_front();
+                    self.dropped += 1;
+                }
+                self.waiting.push_back(finished);
             }
             self.speech = 0;
             self.silence = 0;
         }
-        finished
     }
 
     /// Whether an utterance has started and is still being collected.
@@ -356,16 +383,27 @@ impl Utterances {
         !self.samples.is_empty()
     }
 
+    /// Finished utterances waiting for the decoder.
+    pub fn waiting(&self) -> usize {
+        self.waiting.len()
+    }
+
+    /// Utterances dropped because the decoder could not keep up.
+    pub fn dropped(&self) -> u64 {
+        self.dropped
+    }
+
     /// Change the end-of-utterance pause (diagnostics only; default 350 ms).
     pub fn set_pause_ms(&mut self, ms: u32) {
         self.pause_ms = ms;
     }
 
-    /// Drop collected audio but keep the learned noise floor (after a
-    /// decoder error).
+    /// Drop collected and waiting audio but keep the learned noise floor
+    /// (after a decoder error).
     pub fn clear(&mut self) {
         self.samples.clear();
         self.tail.clear();
+        self.waiting.clear();
         self.speech = 0;
         self.silence = 0;
     }
@@ -425,16 +463,19 @@ mod tests {
         for _ in 0..50 {
             assert!(cut.push(rate, &quiet, true).is_none());
         }
-        // 400 ms of speech, then a pause while the decoder is busy: held.
+        // 400 ms of speech, then a pause while the decoder is busy: it ends
+        // at the pause (18 packets reach 350 ms) and waits.
         for _ in 0..20 {
             assert!(cut.push(rate, &loud, true).is_none());
         }
         for _ in 0..30 {
             assert!(cut.push(rate, &quiet, false).is_none());
         }
+        assert_eq!(cut.waiting(), 1);
+        assert!(!cut.is_collecting());
         // Released once the decoder is free, with half a second of lead-in.
         let utterance = cut.push(rate, &quiet, true).expect("utterance");
-        assert_eq!(utterance.len(), 8_000 + 20 * packet + 31 * packet);
+        assert_eq!(utterance.len(), 8_000 + 20 * packet + 18 * packet);
         // A click under 200 ms of speech is dropped, not decoded.
         cut.push(rate, &loud, true);
         for _ in 0..20 {
@@ -454,6 +495,53 @@ mod tests {
         );
         cut.reset();
         assert!(cut.push(rate, &quiet, true).is_none());
+    }
+    #[test]
+    fn a_busy_decoder_never_joins_utterances_and_its_queue_is_bounded() {
+        let rate = 16_000;
+        let packet = 320;
+        let quiet = vec![0.0001f32; packet];
+        let mut cut = Utterances::default();
+        for _ in 0..50 {
+            cut.push(rate, &quiet, true);
+        }
+        // Five utterances of distinct lengths (300..700 ms of speech), each
+        // followed by a 400 ms pause, all while the decoder is busy.
+        for n in 0..5 {
+            let loud = vec![0.05f32 + 0.01 * n as f32; packet];
+            for _ in 0..15 + 5 * n {
+                assert!(cut.push(rate, &loud, false).is_none());
+            }
+            for _ in 0..20 {
+                assert!(cut.push(rate, &quiet, false).is_none());
+            }
+            assert!(cut.waiting() <= Utterances::MAX_WAITING);
+        }
+        assert_eq!(cut.dropped(), 3);
+        // The two newest come out in order, each on its own: the last
+        // speech packet of each is its own level, never another's.
+        for n in [3usize, 4] {
+            let u = cut.push(rate, &quiet, true).expect("waiting utterance");
+            let speech: Vec<_> = u.iter().filter(|s| **s > 0.01).collect();
+            assert_eq!(speech.len(), (15 + 5 * n) * packet);
+            assert!(
+                speech
+                    .iter()
+                    .all(|s| (**s - (0.05 + 0.01 * n as f32)).abs() < 1e-6)
+            );
+        }
+        assert!(cut.push(rate, &quiet, true).is_none());
+        // A rate change or reset forgets waiting audio.
+        let loud = vec![0.05f32; packet];
+        for _ in 0..20 {
+            cut.push(rate, &loud, false);
+        }
+        for _ in 0..20 {
+            cut.push(rate, &quiet, false);
+        }
+        assert_eq!(cut.waiting(), 1);
+        assert!(cut.push(48_000, &quiet, true).is_none());
+        assert_eq!(cut.waiting(), 0);
     }
     #[test]
     fn voice_gate_tracks_a_quiet_floor_and_ignores_bad_levels() {

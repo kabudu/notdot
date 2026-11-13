@@ -66,6 +66,22 @@ impl WakeEngine {
         })))
     }
 
+    /// The full detector with a substitute backup decoder (tests only).
+    #[cfg(all(test, feature = "whisper"))]
+    pub(crate) fn with_backup(
+        models: &str,
+        name: &str,
+        load: impl FnOnce(&Path, &str) -> crate::backup::Load,
+    ) -> Self {
+        let phrase = wake_phrase(name.into(), false).unwrap();
+        let models = Path::new(models);
+        Self(Mutex::new(Inner {
+            spotter: Spotter::new(models, &phrase).unwrap(),
+            backup: Some(Backup::start_with(load(models, &phrase)).unwrap()),
+            rate: 0,
+        }))
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -434,7 +450,8 @@ mod tests {
             }
             wakes += usize::from(engine.accept(chunk.to_vec(), rate));
         }
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(4);
+        // Queued utterances decode one after another; bounded by the queue.
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
         while engine.backup_busy() && std::time::Instant::now() < until {
             std::thread::sleep(std::time::Duration::from_millis(20));
             wakes += usize::from(engine.accept(vec![0.; packet], rate));
@@ -534,6 +551,77 @@ mod tests {
             ms as f64 / 1000. / minutes,
             stats.decode_ms_max,
         );
+    }
+
+    /// A clip's speech without its padding: from 120 ms before the first
+    /// voiced 20 ms frame to 100 ms after the last.
+    #[cfg(feature = "whisper")]
+    fn speech(name: &str, gain: f32) -> Vec<f32> {
+        let (samples, rate) = clip(name);
+        let frame = rate as usize / 50;
+        let voiced: Vec<usize> = samples
+            .chunks(frame)
+            .enumerate()
+            .filter(|(_, c)| notdot_wake_kws::energy(c) > 0.01)
+            .map(|(i, _)| i * frame)
+            .collect();
+        let start = voiced[0].saturating_sub(rate as usize * 12 / 100);
+        let end = (voiced[voiced.len() - 1] + frame + rate as usize / 10).min(samples.len());
+        samples[start..end].iter().map(|s| s * gain).collect()
+    }
+
+    /// One live stream in which the speech after the first utterance
+    /// arrives while that utterance is still decoding on a slow phone:
+    /// unrelated speech, a near miss (the name alone), then `last` at
+    /// `gain`, separated by 400 ms pauses (just over the 350 ms utterance
+    /// gap).
+    #[cfg(feature = "whisper")]
+    fn slow_stream(engine: &WakeEngine, last: &str, gain: f32) -> usize {
+        let gap = |audio: &mut Vec<f32>| audio.extend(std::iter::repeat_n(0., 6_400));
+        let mut audio = vec![0.; 8_000];
+        audio.extend(speech("negative.wav", 0.35));
+        gap(&mut audio);
+        audio.extend(speech("ava.wav", 0.35));
+        gap(&mut audio);
+        audio.extend(speech(last, gain));
+        audio.extend(std::iter::repeat_n(0., 24_000));
+        engine.reset();
+        stream(engine, &audio, 16_000)
+    }
+
+    /// Gate W1 adversarial: with decodes slower than the speech arriving,
+    /// utterances finished during a decode keep their boundaries, so a wake
+    /// phrase after unrelated speech and a near miss is still decoded on its
+    /// own (the decode rules accept the phrase only at an utterance's
+    /// start). Quiet phrases (0.05, which the spotter misses) must wake;
+    /// near misses and other speech must not, at any level.
+    #[cfg(feature = "whisper")]
+    #[test]
+    fn slow_decodes_keep_utterances_apart_without_false_wakes() {
+        let engine = WakeEngine::with_backup(&models(), "Ava", |models, phrase| {
+            crate::backup::slowed(
+                crate::backup::whisper(models, phrase),
+                std::time::Duration::from_millis(2_500),
+            )
+        });
+        assert_eq!(ready(&engine), BackupState::Ready);
+        for clip in POSITIVES {
+            let wakes = slow_stream(&engine, clip, 0.05);
+            eprintln!(
+                "slow decoder: unrelated, near miss, then quiet {clip} -> {wakes} wakes; {:?}",
+                engine.backup_stats()
+            );
+            assert_eq!(wakes, 1, "quiet {clip} after other speech must wake once");
+        }
+        for (clip, gain) in [("ava.wav", 0.05), ("ava.wav", 0.8), ("negative.wav", 0.35)] {
+            assert_eq!(
+                slow_stream(&engine, clip, gain),
+                0,
+                "{clip}@{gain} must not wake"
+            );
+        }
+        let stats = engine.backup_stats();
+        assert_eq!(stats.failures, 0, "{stats:?}");
     }
 
     #[test]

@@ -93,17 +93,37 @@ fn load(
     Ok(context)
 }
 
-impl Backup {
-    pub fn start(models: &Path, phrase: &str) -> Result<Self, String> {
-        let model: PathBuf = models.join(MODEL);
-        let phrase = phrase.to_owned();
-        let threads = std::thread::available_parallelism()
-            .map_or(1, |n| n.get())
-            .clamp(1, 2) as i32;
+/// One decode on the worker: audio, its rate, the shared epoch and the
+/// epoch the job belongs to (a mismatch aborts it). True if addressed.
+pub(crate) type Decode = Box<dyn FnMut(&[f32], u32, Arc<AtomicU64>, u64) -> Result<bool, String>>;
+/// Builds the decoder on the worker thread, since loading takes a while.
+pub(crate) type Load = Box<dyn FnOnce(Arc<AtomicU64>) -> Result<Decode, String> + Send>;
+
+/// The desktop's Whisper decoder for `models`.
+pub(crate) fn whisper(models: &Path, phrase: &str) -> Load {
+    let model: PathBuf = models.join(MODEL);
+    let phrase = phrase.to_owned();
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .clamp(1, 2) as i32;
+    Box::new(move |epoch| {
+        let context = load(&model, &phrase, epoch, threads)?;
         let limits = DecodeLimits {
             budget: BUDGET,
             threads,
         };
+        Ok(Box::new(move |samples: &[f32], rate, epoch, expected| {
+            engine::recognize(&context, &phrase, samples, rate, epoch, expected, limits)
+        }) as Decode)
+    })
+}
+
+impl Backup {
+    pub fn start(models: &Path, phrase: &str) -> Result<Self, String> {
+        Self::start_with(whisper(models, phrase))
+    }
+
+    pub(crate) fn start_with(load: Load) -> Result<Self, String> {
         let (sender, jobs) = mpsc::sync_channel::<Job>(1);
         // Bounded: one load event plus at most one decode result per job.
         let (results, events) = mpsc::sync_channel::<Event>(4);
@@ -112,10 +132,10 @@ impl Backup {
         let thread = std::thread::Builder::new()
             .name("notdot-wake-backup".into())
             .spawn(move || {
-                let context = match load(&model, &phrase, worker_epoch.clone(), threads) {
-                    Ok(context) => {
+                let mut decode = match load(worker_epoch.clone()) {
+                    Ok(decode) => {
                         let _ = results.send(Event::Loaded(Ok(())));
-                        context
+                        decode
                     }
                     Err(error) => {
                         let _ = results.send(Event::Loaded(Err(error)));
@@ -124,15 +144,7 @@ impl Backup {
                 };
                 while let Ok(job) = jobs.recv() {
                     let started = Instant::now();
-                    let result = engine::recognize(
-                        &context,
-                        &phrase,
-                        &job.samples,
-                        job.rate,
-                        worker_epoch.clone(),
-                        job.epoch,
-                        limits,
-                    );
+                    let result = decode(&job.samples, job.rate, worker_epoch.clone(), job.epoch);
                     drop(job.samples);
                     let event = Event::Decoded {
                         epoch: job.epoch,
@@ -202,6 +214,7 @@ impl Backup {
         if heard {
             return true;
         }
+        self.stats.dropped = self.utterances.dropped();
         if self.state != BackupState::Ready || self.sender.is_none() {
             return false;
         }
@@ -240,5 +253,132 @@ impl Drop for Backup {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+/// Test decoders: a delay in front of any decoder (a slow phone), honouring
+/// cancellation as Whisper's abort callback does.
+#[cfg(test)]
+pub(crate) fn slowed(load: Load, delay: Duration) -> Load {
+    Box::new(move |epoch| {
+        let mut decode = load(epoch)?;
+        Ok(Box::new(
+            move |samples: &[f32], rate, epoch: Arc<AtomicU64>, expected| {
+                let until = Instant::now() + delay;
+                while Instant::now() < until {
+                    if epoch.load(Ordering::Relaxed) != expected {
+                        return Err("Wake recognition was cancelled".into());
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                decode(samples, rate, epoch, expected)
+            },
+        ) as Decode)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// A decoder that takes `delay`, records each utterance's length and
+    /// answers `heard`, without a model.
+    fn fake(delay: Duration, heard: bool, log: Arc<Mutex<Vec<usize>>>) -> Load {
+        slowed(
+            Box::new(move |_| {
+                Ok(Box::new(move |samples: &[f32], _, _, _| {
+                    log.lock().unwrap().push(samples.len());
+                    Ok(heard)
+                }) as Decode)
+            }),
+            delay,
+        )
+    }
+
+    const RATE: u32 = 16_000;
+    const PACKET: usize = 320;
+
+    fn started(load: Load) -> Backup {
+        let mut backup = Backup::start_with(load).unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        while backup.state == BackupState::Loading && Instant::now() < until {
+            backup.accept(RATE, &[]);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(backup.state, BackupState::Ready);
+        for _ in 0..50 {
+            assert!(!backup.accept(RATE, &[0.0001; PACKET]));
+        }
+        backup
+    }
+
+    /// `packets` of speech then a 400 ms pause, fed faster than real time.
+    fn say(backup: &mut Backup, packets: usize) -> bool {
+        let mut heard = false;
+        for _ in 0..packets {
+            heard |= backup.accept(RATE, &[0.05; PACKET]);
+        }
+        for _ in 0..20 {
+            heard |= backup.accept(RATE, &[0.0001; PACKET]);
+        }
+        heard
+    }
+
+    /// Silence until the decoder is idle with nothing waiting (bounded).
+    fn drain(backup: &mut Backup) -> bool {
+        let mut heard = false;
+        let until = Instant::now() + Duration::from_secs(10);
+        while (backup.is_busy() || backup.utterances.waiting() > 0) && Instant::now() < until {
+            heard |= backup.accept(RATE, &[0.0001; PACKET]);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!backup.is_busy());
+        heard
+    }
+
+    /// Overload: eight utterances while the first decodes. Two wait, the
+    /// rest (oldest first) are dropped and counted; every decode gets one
+    /// utterance of its own, the newest last.
+    #[test]
+    fn overload_keeps_the_newest_utterances_and_counts_the_rest() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut backup = started(fake(Duration::from_millis(500), false, log.clone()));
+        for n in 0..8 {
+            assert!(!say(&mut backup, 15 + n));
+            assert!(backup.utterances.waiting() <= Utterances::MAX_WAITING);
+        }
+        assert!(!drain(&mut backup));
+        // Lead-in (the 2 quiet packets after the previous pause ended it),
+        // speech, and the 350 ms pause (18 packets).
+        let len = |n: usize| (2 + 15 + n + 18) * PACKET;
+        let decoded = log.lock().unwrap().clone();
+        assert_eq!(decoded.len(), 3);
+        assert_eq!(decoded[1..], [len(6), len(7)]);
+        assert_eq!(backup.stats.dropped, 5);
+        assert_eq!(backup.stats.decodes, 3);
+    }
+
+    /// A reset cancels the running decode and forgets waiting utterances;
+    /// a result for the old epoch never wakes, even from a decoder that
+    /// would say yes to everything.
+    #[test]
+    fn reset_rejects_running_and_waiting_utterances() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut backup = started(fake(Duration::from_millis(500), true, log.clone()));
+        assert!(!say(&mut backup, 20));
+        assert!(backup.is_busy());
+        assert!(!say(&mut backup, 20));
+        assert!(!say(&mut backup, 20));
+        assert_eq!(backup.utterances.waiting(), 2);
+        backup.reset();
+        assert!(!drain(&mut backup), "a reset utterance woke");
+        assert_eq!(backup.stats.wakes, 0);
+        // The cancelled decode never reached the decoder; nothing else ran.
+        assert!(log.lock().unwrap().is_empty());
+        // Afterwards it works again.
+        assert!(!say(&mut backup, 20));
+        assert!(drain(&mut backup));
+        assert_eq!(backup.stats.wakes, 1);
     }
 }

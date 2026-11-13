@@ -18,4 +18,6 @@ pub struct BackupStats {
     pub failures: u64,
     pub decode_ms_total: u64,
     pub decode_ms_max: u64,
+    /// Utterances dropped because decoding could not keep up with speech.
+    pub dropped: u64,
 }
