@@ -74,6 +74,16 @@ async fn bind(
     net: &NetConfig,
     alpns: Vec<Vec<u8>>,
 ) -> Result<Endpoint, LinkError> {
+    bind_on(secret, net, alpns, None).await
+}
+
+/// Bind, on `port` (all interfaces, IPv4 and IPv6) if given.
+async fn bind_on(
+    secret: Option<SecretKey>,
+    net: &NetConfig,
+    alpns: Vec<Vec<u8>>,
+    port: Option<u16>,
+) -> Result<Endpoint, LinkError> {
     let transport = QuicTransportConfig::builder()
         .max_concurrent_bidi_streams(VarInt::from_u32(MAX_STREAMS))
         .max_concurrent_uni_streams(VarInt::from_u32(0))
@@ -90,6 +100,19 @@ async fn bind(
     }
     if !net.direct {
         builder = builder.clear_ip_transports();
+    } else if let Some(port) = port {
+        let bad = |e: iroh::endpoint::InvalidSocketAddr| LinkError::Connection(e.to_string());
+        builder = builder
+            .bind_addr(std::net::SocketAddr::from((
+                std::net::Ipv4Addr::UNSPECIFIED,
+                port,
+            )))
+            .map_err(bad)?
+            .bind_addr(std::net::SocketAddr::from((
+                std::net::Ipv6Addr::UNSPECIFIED,
+                port,
+            )))
+            .map_err(bad)?;
     }
     if !net.relay_roots.is_empty() {
         builder = builder.ca_tls_config(iroh::tls::CaTlsConfig::custom_roots(
@@ -122,11 +145,31 @@ fn now_ms(clock: &Clock) -> u64 {
     clock()
 }
 
+/// Current security epoch of a profile, or `None` if it no longer exists.
+pub type EpochSource = Arc<dyn Fn(&str) -> Option<u64> + Send + Sync>;
+
+/// How a [`Desktop`] stores state and takes effect.
+#[derive(Default)]
+pub struct DesktopOptions {
+    /// Where calls take effect; a synthetic in-memory store if `None`.
+    pub backend: Option<Arc<dyn crate::service::Backend>>,
+    /// A private directory for paired phones and keys; in memory if `None`.
+    pub state_dir: Option<std::path::PathBuf>,
+    /// The desktop's people and their epochs; [`Desktop::set_profile_epoch`]
+    /// otherwise.
+    pub epochs: Option<EpochSource>,
+}
+
 struct DesktopState {
     desk: Mutex<PairingDesk>,
     registry: Mutex<DeviceRegistry>,
+    registry_file: Option<crate::store::JsonFile>,
+    port: Option<u16>,
     epochs: Mutex<HashMap<String, u64>>,
+    epoch_source: Option<EpochSource>,
     live: Mutex<HashMap<DeviceId, Vec<Connection>>>,
+    /// Every connection and stream task, aborted on close.
+    tasks: Mutex<tokio::task::JoinSet<()>>,
     changed: watch::Sender<u64>,
     service: Service,
     clock: Clock,
@@ -137,11 +180,31 @@ impl DesktopState {
     }
     fn authorize(&self, peer: DeviceId) -> Result<DeviceRecord, Refusal> {
         let epochs = self.epochs.lock().expect("epochs lock").clone();
+        let source = self.epoch_source.clone();
         self.registry
             .lock()
             .expect("registry lock")
-            .authorize(peer, |profile| epochs.get(profile).copied())
+            .authorize(peer, |profile| match &source {
+                Some(source) => source(profile),
+                None => epochs.get(profile).copied(),
+            })
             .cloned()
+    }
+    fn spawn(&self, task: impl std::future::Future<Output = ()> + Send + 'static) {
+        let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
+        while tasks.try_join_next().is_some() {}
+        tasks.spawn(task);
+    }
+    fn save_registry(&self, registry: &DeviceRegistry) -> Result<(), LinkError> {
+        match &self.registry_file {
+            Some(file) => file
+                .save(&crate::store::RegistrySnapshot {
+                    port: self.port,
+                    ..registry.snapshot()
+                })
+                .map_err(|e| LinkError::Io(e.to_string())),
+            None => Ok(()),
+        }
     }
 }
 
@@ -152,22 +215,96 @@ pub struct Desktop {
     accept: tokio::task::JoinHandle<()>,
 }
 impl Desktop {
+    /// An in-memory desktop over a synthetic store (tests, simulator).
     pub async fn bind(
         secret: Option<SecretKey>,
         net: &NetConfig,
         clock: Clock,
     ) -> Result<Self, LinkError> {
-        let endpoint = bind(secret, net, vec![PAIR_ALPN.to_vec(), LINK_ALPN.to_vec()]).await?;
+        Self::bind_with(secret, net, clock, DesktopOptions::default()).await
+    }
+
+    /// A desktop with a backend and, optionally, saved state. Saved state
+    /// that cannot be read (or is from a newer notdot) is an error: nothing
+    /// starts, and nothing is overwritten.
+    pub async fn bind_with(
+        secret: Option<SecretKey>,
+        net: &NetConfig,
+        clock: Clock,
+        options: DesktopOptions,
+    ) -> Result<Self, LinkError> {
+        // Read saved state before touching the network.
+        let mut registry_port = None;
+        let (registry, registry_file, saved_service) = match &options.state_dir {
+            Some(dir) => {
+                crate::store::private_dir(dir).map_err(|e| LinkError::Io(e.to_string()))?;
+                let (file, saved) = crate::store::JsonFile::open::<crate::store::RegistrySnapshot>(
+                    dir,
+                    crate::store::REGISTRY_FILE,
+                )
+                .map_err(|e| LinkError::Io(e.to_string()))?;
+                let (service_file, service_saved) = crate::store::JsonFile::open::<
+                    crate::service::ServiceSnapshot,
+                >(
+                    dir, crate::store::SERVICE_FILE
+                )
+                .map_err(|e| LinkError::Io(e.to_string()))?;
+                let saved = saved.unwrap_or_default();
+                registry_port = saved.port;
+                (
+                    DeviceRegistry::restore(saved),
+                    Some(file),
+                    Some((service_file, service_saved.unwrap_or_default())),
+                )
+            }
+            None => (DeviceRegistry::default(), None, None),
+        };
+        let alpns = vec![PAIR_ALPN.to_vec(), LINK_ALPN.to_vec()];
+        // Reuse the saved port when possible; another app may have taken it.
+        let saved_port = registry_port;
+        let endpoint = match saved_port {
+            Some(port) => match bind_on(secret.clone(), net, alpns.clone(), Some(port)).await {
+                Ok(endpoint) => endpoint,
+                Err(_) => bind(secret, net, alpns).await?,
+            },
+            None => bind(secret, net, alpns).await?,
+        };
+        let port = endpoint.bound_sockets().first().map(|a| a.port());
         let id = device_id(endpoint.id());
+        let service = match options.backend {
+            Some(backend) => Service::with_backend(id, clock.clone(), backend),
+            None => Service::new(id, clock.clone()),
+        };
+        if let Some((file, snapshot)) = saved_service {
+            let paired = |device: &DeviceId| registry.get(device).is_some();
+            if let Err(error) = service.restore(snapshot, Arc::new(file), &paired) {
+                endpoint.close().await;
+                return Err(LinkError::Io(error));
+            }
+        }
         let state = Arc::new(DesktopState {
             desk: Mutex::new(PairingDesk::new(id)),
-            registry: Mutex::new(DeviceRegistry::default()),
+            registry: Mutex::new(registry),
+            registry_file,
+            port,
             epochs: Mutex::new(HashMap::new()),
+            epoch_source: options.epochs,
             live: Mutex::new(HashMap::new()),
+            tasks: Mutex::new(tokio::task::JoinSet::new()),
             changed: watch::channel(0).0,
-            service: Service::new(id, clock.clone()),
+            service,
             clock,
         });
+        if state.registry_file.is_some() && port != registry_port {
+            let saved = {
+                let registry = state.registry.lock().expect("registry lock");
+                state.save_registry(&registry)
+            };
+            if let Err(error) = saved {
+                endpoint.close().await;
+                return Err(error);
+            }
+        }
         let accept = tokio::spawn(accept_loop(endpoint.clone(), state.clone()));
         Ok(Self {
             endpoint,
@@ -233,19 +370,39 @@ impl Desktop {
             .collect()
     }
 
-    /// Owner approves after comparing codes.
+    /// Owner approves after comparing codes. Saved before it takes effect.
     pub fn approve(&self, pending: &PendingApproval) -> Result<DeviceRecord, LinkError> {
         let now = now_ms(&self.state.clock);
-        // A new pairing starts without a step-up key or grant: forget them
-        // before the new record exists, so the two never coexist.
-        self.state.service.forget_step_up(pending.device);
+        // A new pairing starts without a step-up key, grant or recorded
+        // calls: forget them before the new record exists, so the two never
+        // coexist.
+        self.state.service.forget_device(pending.device)?;
         let record = {
             let mut desk = self.state.desk.lock().expect("desk lock");
             let mut registry = self.state.registry.lock().expect("registry lock");
-            desk.approve(&pending.offer, &mut registry, now)?
+            let previous = registry.get(&pending.device).cloned();
+            let was_revoked = registry.authorize(pending.device, |_| None) == Err(Refusal::Revoked);
+            let record = desk.approve(&pending.offer, &mut registry, now)?;
+            if let Err(error) = self.state.save_registry(&registry) {
+                // Not saved, so not paired.
+                registry.remove(&pending.device);
+                if let Some(previous) = previous {
+                    let _ = registry.insert_restored(previous);
+                }
+                if was_revoked {
+                    registry.revoke(pending.device);
+                }
+                return Err(error);
+            }
+            record
         };
         self.state.notify();
         Ok(record)
+    }
+
+    /// Paired phones, for the owner's screens.
+    pub fn devices(&self) -> Vec<DeviceRecord> {
+        self.state.registry.lock().expect("registry lock").list()
     }
 
     pub fn deny(&self, pending: &PendingApproval) {
@@ -257,23 +414,31 @@ impl Desktop {
         self.state.notify();
     }
 
-    /// Remove a phone and drop its live connections at once.
-    pub fn revoke(&self, device: DeviceId) {
+    /// Remove a phone and drop its live connections at once. It takes
+    /// effect in memory even if it cannot be saved (the error says so).
+    pub fn revoke(&self, device: DeviceId) -> Result<(), LinkError> {
         // Hold the live lock across the registry change: serve_link
         // registers and re-checks under the same lock, so no connection
         // can slip between revocation and the close below.
         let mut live = self.state.live.lock().expect("live lock");
-        self.state
-            .registry
-            .lock()
-            .expect("registry lock")
-            .revoke(device);
-        self.state.service.forget_step_up(device);
+        let saved = {
+            let mut registry = self.state.registry.lock().expect("registry lock");
+            registry.revoke(device);
+            self.state.save_registry(&registry)
+        };
+        let forgotten = self.state.service.forget_device(device);
         let connections = live.remove(&device).unwrap_or_default();
         drop(live);
         for connection in connections {
             connection.close(VarInt::from_u32(refusal_code(Refusal::Revoked)), b"revoked");
         }
+        self.state.notify();
+        saved.and(forgotten)
+    }
+
+    /// Owner action: end a phone's sensitive-action grant now.
+    pub fn withdraw_sensitive(&self, device: DeviceId) -> Result<(), LinkError> {
+        self.state.service.withdraw_sensitive(device)
     }
 
     /// Owner action: allow an owner phone with an attested step-up key to
@@ -300,16 +465,26 @@ impl Desktop {
         self.state.service.step_up_state(device)
     }
 
+    /// Stop: no more connections, calls or saves from this desktop. A call
+    /// that was running stays written down as running, so after a restart
+    /// it reads as interrupted.
     pub async fn close(self) {
         self.accept.abort();
+        self.state.service.shutdown();
+        self.state
+            .tasks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .abort_all();
         self.endpoint.close().await;
     }
 }
 
 async fn accept_loop(endpoint: Endpoint, state: Arc<DesktopState>) {
     while let Some(incoming) = endpoint.accept().await {
+        let task_state = state.clone();
         let state = state.clone();
-        tokio::spawn(async move {
+        task_state.spawn(async move {
             let Ok(connection) = incoming.await else {
                 return;
             };
@@ -409,7 +584,7 @@ async fn serve_link(connection: Connection, peer: DeviceId, state: Arc<DesktopSt
     while let Ok((mut send, mut recv)) = connection.accept_bi().await {
         let state = state.clone();
         let connection = connection.clone();
-        tokio::spawn(async move {
+        state.clone().spawn(async move {
             let Ok(Some(request)) = frame::read::<ClientFrame>(&mut recv).await else {
                 return;
             };

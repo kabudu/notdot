@@ -15,6 +15,7 @@ pub mod pairing;
 pub mod protocol;
 pub mod service;
 pub mod stepup;
+pub mod store;
 pub mod transport;
 
 use serde::{Deserialize, Serialize};
@@ -87,6 +88,36 @@ pub(crate) fn random_bytes<const N: usize>() -> [u8; N] {
 /// Decode the link's base64url (no padding) text.
 pub fn b64_decode(text: &str) -> Option<Vec<u8>> {
     b64::decode(text)
+}
+
+/// Base64url for stored byte strings (no length limit; files are bounded).
+pub(crate) mod b64_any {
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&super::b64::encode(bytes))
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        let text = String::deserialize(d)?;
+        super::b64::decode(&text).ok_or_else(|| serde::de::Error::custom("not base64url"))
+    }
+}
+
+/// A list of stored byte strings.
+pub(crate) mod b64_list {
+    use serde::{Deserialize, Deserializer, Serializer, ser::SerializeSeq};
+    pub fn serialize<S: Serializer>(list: &[Vec<u8>], s: S) -> Result<S::Ok, S::Error> {
+        let mut seq = s.serialize_seq(Some(list.len()))?;
+        for item in list {
+            seq.serialize_element(&super::b64::encode(item))?;
+        }
+        seq.end()
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Vec<u8>>, D::Error> {
+        Vec::<String>::deserialize(d)?
+            .iter()
+            .map(|t| super::b64::decode(t).ok_or_else(|| serde::de::Error::custom("not base64url")))
+            .collect()
+    }
 }
 
 pub(crate) mod b64 {

@@ -210,7 +210,7 @@ async fn unpaired_revoked_and_stale_phones_are_refused() {
             let link = link.clone();
             tokio::spawn(async move { link.closed().await })
         };
-        desktop.revoke(phone.id());
+        desktop.revoke(phone.id()).unwrap();
         assert_eq!(closed.await.unwrap(), Some(Refusal::Revoked));
         match phone.connect(desktop.addr()).await {
             Err(LinkError::Refused(Refusal::Revoked)) => {}

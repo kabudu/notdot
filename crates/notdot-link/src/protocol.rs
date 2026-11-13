@@ -138,6 +138,13 @@ pub enum OpError {
     AttestationRejected {
         reason: String,
     },
+    /// The desktop stopped while this call was running; it may or may not
+    /// have taken effect, so it is not run again under this id.
+    Interrupted,
+    /// This desktop can't do this now or at all; `reason` is plain language.
+    NotAvailable {
+        reason: String,
+    },
     BadRequest {
         reason: String,
     },

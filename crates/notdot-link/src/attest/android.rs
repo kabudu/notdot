@@ -85,20 +85,24 @@ impl StatusList {
 /// lifetime; two days tolerates one missed refresh.
 pub const MAX_STATUS_AGE_MS: u64 = 48 * 3_600_000;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Level {
     TrustedEnvironment,
     StrongBox,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Verified {
     pub level: Level,
     pub package: String,
+    #[serde(with = "crate::b64_list")]
     pub signers: Vec<Vec<u8>>,
     pub attestation_version: u64,
     /// Serial numbers of every certificate in the chain, for later
     /// revocation checks.
+    #[serde(with = "crate::b64_list")]
     pub serials: Vec<Vec<u8>>,
 }
 

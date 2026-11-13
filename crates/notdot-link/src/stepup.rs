@@ -123,6 +123,15 @@ struct Challenge {
     expires_ms: u64,
 }
 
+/// A saved enrolment and grant (see [`StepUpDesk::snapshot`]).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Registration {
+    pub phone: DeviceId,
+    pub enrollment: crate::attest::Enrollment,
+    pub granted_until_ms: Option<u64>,
+}
+
 /// A phone's enrolled key and the owner's grant for it.
 struct Registered {
     enrollment: crate::attest::Enrollment,
@@ -334,8 +343,47 @@ impl StepUpDesk {
         Ok(())
     }
 
+    /// The durable part: enrolled keys and grants. Challenges are never
+    /// saved, so nothing signed before a restart can be used after it.
+    pub fn snapshot(&self) -> Vec<Registration> {
+        let mut out: Vec<_> = self
+            .registered
+            .iter()
+            .map(|(phone, r)| Registration {
+                phone: *phone,
+                enrollment: r.enrollment.clone(),
+                granted_until_ms: r.granted_until_ms,
+            })
+            .collect();
+        out.sort_by_key(|r| r.phone.0);
+        out
+    }
+
+    /// Restore keys and grants saved by [`Self::snapshot`].
+    pub fn restore(&mut self, registrations: Vec<Registration>) {
+        self.registered = registrations
+            .into_iter()
+            .map(|r| {
+                (
+                    r.phone,
+                    Registered {
+                        enrollment: r.enrollment,
+                        granted_until_ms: r.granted_until_ms,
+                    },
+                )
+            })
+            .collect();
+    }
+
     /// Forget a phone's key, grant and challenges (removal, re-pairing, or
     /// the owner withdrawing sensitive access entirely).
+    /// End a phone's grant now, keeping its key.
+    pub fn withdraw(&mut self, phone: DeviceId) {
+        if let Some(registered) = self.registered.get_mut(&phone) {
+            registered.granted_until_ms = None;
+        }
+    }
+
     pub fn forget(&mut self, phone: DeviceId) {
         self.registered.remove(&phone);
         self.challenges.retain(|_, c| c.phone != phone);

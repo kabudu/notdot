@@ -323,11 +323,48 @@ impl DeviceRegistry {
         self.devices.insert(record.device, record);
         Ok(())
     }
+    /// Put back a record removed by an unsaved approval.
+    pub(crate) fn insert_restored(&mut self, record: DeviceRecord) -> Result<(), LinkError> {
+        self.insert(record)
+    }
+
+    /// Undo an approval that could not be saved.
+    pub(crate) fn remove(&mut self, device: &DeviceId) {
+        self.devices.remove(device);
+    }
+
     /// Remove a phone. Its key stays refused so it can be told to wipe.
     pub fn revoke(&mut self, device: DeviceId) -> bool {
         self.revoked.insert(device);
         self.devices.remove(&device).is_some()
     }
+    pub fn snapshot(&self) -> crate::store::RegistrySnapshot {
+        let mut devices: Vec<_> = self.devices.values().cloned().collect();
+        devices.sort_by_key(|d| d.device.0);
+        let mut revoked: Vec<_> = self.revoked.iter().copied().collect();
+        revoked.sort_by_key(|d| d.0);
+        crate::store::RegistrySnapshot {
+            devices,
+            revoked,
+            port: None,
+        }
+    }
+
+    pub fn restore(snapshot: crate::store::RegistrySnapshot) -> Self {
+        Self {
+            devices: snapshot
+                .devices
+                .into_iter()
+                .map(|d| (d.device, d))
+                .collect(),
+            revoked: snapshot.revoked.into_iter().collect(),
+        }
+    }
+
+    pub fn list(&self) -> Vec<DeviceRecord> {
+        self.snapshot().devices
+    }
+
     pub fn get(&self, device: &DeviceId) -> Option<&DeviceRecord> {
         self.devices.get(device)
     }

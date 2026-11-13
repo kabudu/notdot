@@ -255,8 +255,10 @@ impl Protection {
 }
 
 /// An enrolled step-up key.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Enrollment {
+    #[serde(with = "crate::b64_any")]
     pub step_up_key: Vec<u8>,
     pub protection: Protection,
     /// The App Attest key and state, for iPhones.
@@ -269,9 +271,12 @@ pub struct Enrollment {
     pub enrolled_ms: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppAttestKey {
+    #[serde(with = "crate::b64_any")]
     pub key: Vec<u8>,
+    #[serde(with = "crate::b64_32")]
     pub rp_id_hash: [u8; 32],
     pub environment: apple::Environment,
     pub counter: u32,

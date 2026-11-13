@@ -558,6 +558,12 @@ fn refused(frame: ServerFrame) -> MobileError {
                 detail: format!("Your computer couldn't verify this phone: {reason}."),
             },
             OpError::Busy => link_error("Your computer is busy. Try again in a moment."),
+            OpError::Interrupted => link_error(
+                "Your computer restarted while doing this, so it may or may not have happened. Check before trying again.",
+            ),
+            OpError::NotAvailable { reason } => MobileError::Unavailable {
+                detail: format!("Your computer can't do that: {reason}."),
+            },
             other => link_error(format!("Your computer refused: {other:?}")),
         },
         ServerFrame::Cancelled { .. } => MobileError::Cancelled {
@@ -692,7 +698,7 @@ mod tests {
             let record = phone.paired_record().await.unwrap();
             drop(phone);
 
-            desktop.revoke(device);
+            desktop.revoke(device).unwrap();
             let restarted = PhoneLink::restore(identity.clone(), Some(record)).unwrap();
             // Refused, reported as such (so native code wipes its keys),
             // and the pairing is forgotten.
@@ -1090,7 +1096,7 @@ mod tests {
                 1
             );
             // Removal forgets the key; pairing again starts from scratch.
-            desktop.revoke(device);
+            desktop.revoke(device).unwrap();
             let error = restarted.step_up_status().await.unwrap_err();
             assert!(matches!(error, MobileError::Unpaired { .. }), "{error:?}");
             pair(&desktop, &restarted, "owner").await;
@@ -1133,11 +1139,215 @@ mod tests {
             let device = pair(&desktop, &phone, "owner").await;
             phone.connect(false).await.unwrap();
             phone.list_notes().await.unwrap();
-            desktop.revoke(device);
+            desktop.revoke(device).unwrap();
             let error = phone.list_notes().await.unwrap_err();
             assert!(matches!(error, MobileError::Unpaired { .. }), "{error:?}");
             assert!(phone.paired_record().await.is_none());
             assert!(phone.connect(false).await.is_err(), "not paired any more");
+        })
+        .await;
+    }
+
+    /// A desktop that saves its state in `dir`, with a fixed identity.
+    async fn saved_desktop(
+        roots: &TestRoots,
+        dir: &std::path::Path,
+        secret: &notdot_link::transport::SecretKey,
+        backend: Arc<dyn notdot_link::service::Backend>,
+    ) -> Desktop {
+        let net = NetConfig {
+            relays: None,
+            direct: true,
+            insecure_test_relay: false,
+            relay_roots: Vec::new(),
+        };
+        let desktop = Desktop::bind_with(
+            Some(secret.clone()),
+            &net,
+            system_clock(),
+            notdot_link::transport::DesktopOptions {
+                backend: Some(backend),
+                state_dir: Some(dir.to_path_buf()),
+                epochs: Some(Arc::new(|p: &str| {
+                    matches!(p, "owner" | "member").then_some(1)
+                })),
+            },
+        )
+        .await
+        .unwrap();
+        desktop.set_attestation_policy(roots.policy(now()));
+        desktop
+    }
+
+    /// A backend whose memory reset never finishes, to stop the desktop
+    /// part-way through a destructive call.
+    struct Stuck(Arc<notdot_link::service::SyntheticBackend>);
+    impl notdot_link::service::Backend for Stuck {
+        fn add_note(
+            &self,
+            p: String,
+            t: String,
+        ) -> notdot_link::service::BoxFuture<Result<u64, OpError>> {
+            self.0.add_note(p, t)
+        }
+        fn list_notes(
+            &self,
+            p: String,
+        ) -> notdot_link::service::BoxFuture<Result<Vec<(u64, String)>, OpError>> {
+            self.0.list_notes(p)
+        }
+        fn read_settings(
+            &self,
+            p: String,
+        ) -> notdot_link::service::BoxFuture<
+            Result<(u64, std::collections::BTreeMap<String, String>), OpError>,
+        > {
+            self.0.read_settings(p)
+        }
+        fn stage_setting(
+            &self,
+            p: String,
+            k: String,
+            v: String,
+            r: u64,
+        ) -> notdot_link::service::BoxFuture<Result<u64, OpError>> {
+            self.0.stage_setting(p, k, v, r)
+        }
+        fn run_task(
+            &self,
+            p: String,
+            l: String,
+            n: u32,
+            c: tokio::sync::watch::Receiver<bool>,
+        ) -> notdot_link::service::BoxFuture<Result<Option<serde_json::Value>, OpError>> {
+            self.0.run_task(p, l, n, c)
+        }
+        fn reset_memory(&self, _: String) -> notdot_link::service::BoxFuture<Result<u64, OpError>> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn keys_grants_and_outcomes_survive_a_desktop_restart_and_nothing_runs_twice() {
+        within(async {
+            let roots = TestRoots::new(now());
+            let dir = std::env::temp_dir().join(format!("notdot-restart-{}", new_request_id()));
+            let secret = notdot_link::transport::SecretKey::generate();
+            let store = Arc::new(notdot_link::service::SyntheticBackend::default());
+            let desktop = saved_desktop(&roots, &dir, &secret, Arc::new(store.clone())).await;
+            let (phone, device, identity) = connected(&desktop, "owner").await;
+            let (member, member_id, _) = connected(&desktop, "member").await;
+            let keys = TestKeys::new(&roots, false);
+            phone.set_up_step_up(keys.clone()).await.unwrap();
+            desktop.grant_sensitive(device, now() + 600_000).unwrap();
+            store.remember("owner", "one");
+            let erase = new_request_id();
+            assert_eq!(
+                phone
+                    .reset_memory(erase.clone(), keys.clone())
+                    .await
+                    .unwrap(),
+                1
+            );
+            let note = new_request_id();
+            let first = member
+                .add_note(note.clone(), "member note".into())
+                .await
+                .unwrap();
+            let record = phone.paired_record().await.unwrap();
+            phone.disconnect().await;
+            member.disconnect().await;
+            drop(phone);
+            desktop.close().await;
+
+            // Restart: same identity, same saved state, same data.
+            let desktop = saved_desktop(&roots, &dir, &secret, Arc::new(store.clone())).await;
+            assert_eq!(desktop.devices().len(), 2);
+            let phone = PhoneLink::restore(identity, Some(record)).unwrap();
+            phone.connect(false).await.unwrap();
+            let status = phone.step_up_status().await.unwrap();
+            assert!(status.enrolled && status.granted, "{status:?}");
+            // The recorded erase comes back without a prompt or a second effect.
+            store.remember("owner", "two");
+            assert_eq!(phone.reset_memory(erase, keys.clone()).await.unwrap(), 1);
+            assert_eq!(store.profile("owner").memories.len(), 1);
+            assert_eq!(keys.signed.load(Ordering::SeqCst), 1);
+            // So does the member's note, and the member still can't erase.
+            member.connect(false).await.unwrap();
+            assert_eq!(
+                member.add_note(note, "member note".into()).await.unwrap(),
+                first
+            );
+            assert_eq!(store.profile("member").notes.len(), 1);
+            let error = member
+                .reset_memory(new_request_id(), keys.clone())
+                .await
+                .unwrap_err();
+            assert!(matches!(error, MobileError::Denied { .. }), "{error:?}");
+
+            // Removal survives a restart too.
+            desktop.revoke(member_id).unwrap();
+            phone.disconnect().await;
+            desktop.close().await;
+            let desktop = saved_desktop(&roots, &dir, &secret, Arc::new(store.clone())).await;
+            assert_eq!(desktop.devices().len(), 1);
+            let error = match member.connect(false).await {
+                Err(error) => error,
+                Ok(_) => member.list_notes().await.unwrap_err(),
+            };
+            assert!(matches!(error, MobileError::Unpaired { .. }), "{error:?}");
+            desktop.close().await;
+            std::fs::remove_dir_all(&dir).unwrap();
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_erase_interrupted_by_a_restart_is_reported_never_rerun() {
+        within(async {
+            let roots = TestRoots::new(now());
+            let dir = std::env::temp_dir().join(format!("notdot-interrupt-{}", new_request_id()));
+            let secret = notdot_link::transport::SecretKey::generate();
+            let store = Arc::new(notdot_link::service::SyntheticBackend::default());
+            let desktop =
+                saved_desktop(&roots, &dir, &secret, Arc::new(Stuck(store.clone()))).await;
+            let (phone, device, identity) = connected(&desktop, "owner").await;
+            let keys = TestKeys::new(&roots, false);
+            phone.set_up_step_up(keys.clone()).await.unwrap();
+            desktop.grant_sensitive(device, now() + 600_000).unwrap();
+            store.remember("owner", "keep");
+            let erase = new_request_id();
+            let stuck = {
+                let phone = phone.clone();
+                let keys = keys.clone();
+                let erase = erase.clone();
+                tokio::spawn(async move { phone.reset_memory(erase, keys).await })
+            };
+            // Wait until the erase is running, then stop the desktop.
+            let until = std::time::Instant::now() + Duration::from_secs(10);
+            while keys.signed.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < until {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let record = phone.paired_record().await.unwrap();
+            // Closing never waits for the stuck call.
+            tokio::time::timeout(Duration::from_secs(5), desktop.close())
+                .await
+                .expect("close does not wait for running calls");
+            stuck.abort();
+            drop(phone);
+
+            let desktop = saved_desktop(&roots, &dir, &secret, Arc::new(store.clone())).await;
+            let phone = PhoneLink::restore(identity, Some(record)).unwrap();
+            phone.connect(false).await.unwrap();
+            let error = phone.reset_memory(erase, keys.clone()).await.unwrap_err();
+            assert!(
+                matches!(&error, MobileError::Link { detail } if detail.contains("may or may not")),
+                "{error:?}"
+            );
+            assert_eq!(keys.signed.load(Ordering::SeqCst), 1, "no second prompt");
+            desktop.close().await;
+            std::fs::remove_dir_all(&dir).unwrap();
         })
         .await;
     }

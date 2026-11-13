@@ -6,26 +6,31 @@
 //!   the call still running; the side effect happens at most once. Refusals
 //!   and read-only results are not recorded: they change nothing, so a retry
 //!   simply runs again (e.g. after fetching a step-up challenge).
+//! - Across restarts: with a [`ServiceStore`], a side-effecting call is
+//!   written down before it runs and its outcome after. A call that was
+//!   running when the desktop stopped comes back as
+//!   [`OpError::Interrupted`] for that id: it may or may not have happened,
+//!   so it is never run again under the same id.
 //! - Independence from the connection: calls run in their own task, so a
 //!   dropped connection never abandons or cancels a half-done call.
 //! - Cancellation: only an explicit cancel stops a call, and only before it
-//!   commits. Commit and the final cancellation check share one lock.
+//!   commits.
 //! - Backpressure: at most [`MAX_IN_FLIGHT`] calls per device; more get
 //!   `Busy` (not recorded, so the same id can be retried).
 //! - Isolation: every call acts on the device's own profile, chosen at
-//!   pairing; scopes are checked on every call.
-//!
-//! The store is synthetic. In the desktop it becomes the existing notes,
-//! settings and memory modules behind the same checks.
+//!   pairing; scopes are checked on every call, and the [`Backend`] checks
+//!   again against the desktop's own people and permissions.
 use crate::{
     DeviceId, LinkError,
     attest::AttestationPolicy,
     pairing::{DeviceRecord, Scope},
     protocol::{MAX_NOTE_BYTES, Op, OpError, RequestId, ServerFrame, StepUpProof},
-    stepup::{StepUpDesk, StepUpState, op_digest},
+    stepup::{Registration, StepUpDesk, StepUpState, op_digest},
 };
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
+    future::Future,
+    pin::Pin,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -44,6 +49,38 @@ pub const MAX_NOTES_PER_PROFILE: usize = 500;
 /// so the reply always fits one frame.
 pub const MAX_LIST_BYTES: usize = 48 * 1024;
 
+pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
+/// A settings revision and its values.
+pub type Settings = (u64, BTreeMap<String, String>);
+
+/// Where calls take effect. The desktop implements this over its own notes,
+/// settings and memory, re-checking each profile's permissions; tests and
+/// the desktop simulator use [`SyntheticBackend`]. `profile` is always the
+/// calling phone's own profile.
+pub trait Backend: Send + Sync + 'static {
+    fn add_note(&self, profile: String, text: String) -> BoxFuture<Result<u64, OpError>>;
+    /// All notes, oldest first.
+    fn list_notes(&self, profile: String) -> BoxFuture<Result<Vec<(u64, String)>, OpError>>;
+    fn read_settings(&self, profile: String) -> BoxFuture<Result<Settings, OpError>>;
+    fn stage_setting(
+        &self,
+        profile: String,
+        key: String,
+        value: String,
+        base_revision: u64,
+    ) -> BoxFuture<Result<u64, OpError>>;
+    /// Run a task; `Ok(None)` if `cancelled` was set before it committed.
+    fn run_task(
+        &self,
+        profile: String,
+        label: String,
+        steps: u32,
+        cancelled: watch::Receiver<bool>,
+    ) -> BoxFuture<Result<Option<serde_json::Value>, OpError>>;
+    /// Erase the profile's memories; returns how many were removed.
+    fn reset_memory(&self, profile: String) -> BoxFuture<Result<u64, OpError>>;
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct ProfileData {
     pub notes: Vec<(u64, String)>,
@@ -54,9 +91,133 @@ pub struct ProfileData {
     pub tasks_completed: u64,
 }
 
+/// An in-memory store for tests and the desktop simulator.
+#[derive(Default)]
+pub struct SyntheticBackend {
+    profiles: Mutex<HashMap<String, ProfileData>>,
+}
+impl SyntheticBackend {
+    fn with<T>(&self, profile: &str, f: impl FnOnce(&mut ProfileData) -> T) -> T {
+        let mut profiles = self.profiles.lock().unwrap_or_else(|e| e.into_inner());
+        f(profiles.entry(profile.to_owned()).or_default())
+    }
+    pub fn profile(&self, id: &str) -> ProfileData {
+        self.with(id, |d| d.clone())
+    }
+    pub fn remember(&self, profile: &str, memory: &str) {
+        self.with(profile, |d| d.memories.push(memory.to_owned()));
+    }
+}
+fn ready<T: Send + 'static>(value: T) -> BoxFuture<T> {
+    Box::pin(std::future::ready(value))
+}
+impl Backend for Arc<SyntheticBackend> {
+    fn add_note(&self, profile: String, text: String) -> BoxFuture<Result<u64, OpError>> {
+        ready(self.with(&profile, |data| {
+            if data.notes.len() >= MAX_NOTES_PER_PROFILE {
+                return Err(OpError::BadRequest {
+                    reason: "note limit reached".into(),
+                });
+            }
+            data.next_note += 1;
+            data.notes.push((data.next_note, text));
+            Ok(data.next_note)
+        }))
+    }
+    fn list_notes(&self, profile: String) -> BoxFuture<Result<Vec<(u64, String)>, OpError>> {
+        ready(Ok(self.with(&profile, |d| d.notes.clone())))
+    }
+    fn read_settings(&self, profile: String) -> BoxFuture<Result<Settings, OpError>> {
+        ready(Ok(self.with(&profile, |d| (d.revision, d.settings.clone()))))
+    }
+    fn stage_setting(
+        &self,
+        profile: String,
+        key: String,
+        value: String,
+        base_revision: u64,
+    ) -> BoxFuture<Result<u64, OpError>> {
+        ready(self.with(&profile, |data| {
+            if data.revision != base_revision {
+                return Err(OpError::Conflict {
+                    revision: data.revision,
+                });
+            }
+            data.settings.insert(key, value);
+            data.revision += 1;
+            Ok(data.revision)
+        }))
+    }
+    fn run_task(
+        &self,
+        profile: String,
+        label: String,
+        steps: u32,
+        cancelled: watch::Receiver<bool>,
+    ) -> BoxFuture<Result<Option<serde_json::Value>, OpError>> {
+        let this = self.clone();
+        Box::pin(async move {
+            for _ in 0..steps {
+                if *cancelled.borrow() {
+                    return Ok(None);
+                }
+                tokio::time::sleep(TASK_STEP).await;
+            }
+            // Final check under the commit lock: cancel and commit cannot
+            // both happen.
+            Ok(this.with(&profile, |data| {
+                if *cancelled.borrow() {
+                    return None;
+                }
+                data.tasks_completed += 1;
+                Some(serde_json::json!({"label": label, "completed": data.tasks_completed}))
+            }))
+        })
+    }
+    fn reset_memory(&self, profile: String) -> BoxFuture<Result<u64, OpError>> {
+        ready(Ok(self.with(&profile, |data| {
+            let removed = data.memories.len() as u64;
+            data.memories.clear();
+            removed
+        })))
+    }
+}
+
+/// The durable part of the service.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceSnapshot {
+    pub registrations: Vec<Registration>,
+    pub outcomes: Vec<SavedOutcome>,
+}
+
+/// A side-effecting call: `frame` is its final outcome, or `None` while it
+/// is still running.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SavedOutcome {
+    pub device: DeviceId,
+    pub id: RequestId,
+    #[serde(with = "crate::b64_32")]
+    pub digest: [u8; 32],
+    pub frame: Option<ServerFrame>,
+}
+
+/// Where the service saves its durable part.
+pub trait ServiceStore: Send + Sync {
+    fn save(&self, snapshot: &ServiceSnapshot) -> Result<(), String>;
+}
+impl ServiceStore for crate::store::JsonFile {
+    fn save(&self, snapshot: &ServiceSnapshot) -> Result<(), String> {
+        crate::store::JsonFile::save(self, snapshot).map_err(|e| e.to_string())
+    }
+}
+
 #[derive(Default)]
 struct Calls {
     in_flight: HashMap<RequestId, InFlight>,
+    /// Side-effecting calls written down before they ran.
+    pending: HashMap<RequestId, [u8; 32]>,
     recorded: HashMap<RequestId, ([u8; 32], ServerFrame)>,
     order: VecDeque<RequestId>,
 }
@@ -79,10 +240,53 @@ impl Calls {
 }
 
 struct State {
-    profiles: HashMap<String, ProfileData>,
     calls: HashMap<DeviceId, Calls>,
     step_up: StepUpDesk,
     policy: AttestationPolicy,
+    store: Option<Arc<dyn ServiceStore>>,
+    /// Set by [`Service::shutdown`]: nothing more is saved or started.
+    closed: bool,
+    tasks: tokio::task::JoinSet<()>,
+}
+impl State {
+    fn snapshot(&self) -> ServiceSnapshot {
+        let mut outcomes = Vec::new();
+        for (device, calls) in &self.calls {
+            for id in &calls.order {
+                if let Some((digest, frame)) = calls.recorded.get(id) {
+                    outcomes.push(SavedOutcome {
+                        device: *device,
+                        id: *id,
+                        digest: *digest,
+                        frame: Some(frame.clone()),
+                    });
+                }
+            }
+            for (id, digest) in &calls.pending {
+                outcomes.push(SavedOutcome {
+                    device: *device,
+                    id: *id,
+                    digest: *digest,
+                    frame: None,
+                });
+            }
+        }
+        ServiceSnapshot {
+            registrations: self.step_up.snapshot(),
+            outcomes,
+        }
+    }
+
+    /// Save, if this service has a store and is still running.
+    fn persist(&self) -> Result<(), String> {
+        if self.closed {
+            return Err("phone links stopped".into());
+        }
+        match &self.store {
+            Some(store) => store.save(&self.snapshot()),
+            None => Ok(()),
+        }
+    }
 }
 
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
@@ -98,6 +302,8 @@ pub fn system_clock() -> Clock {
 #[derive(Clone)]
 pub struct Service {
     state: Arc<Mutex<State>>,
+    backend: Arc<dyn Backend>,
+    synthetic: Option<Arc<SyntheticBackend>>,
     clock: Clock,
 }
 
@@ -114,6 +320,12 @@ fn reused(id: RequestId) -> ServerFrame {
     )
 }
 
+fn unsaved() -> OpError {
+    OpError::NotAvailable {
+        reason: "your computer couldn't save this request, so it didn't run".into(),
+    }
+}
+
 /// Operations whose committed outcome must be replayed, not repeated.
 fn has_side_effect(op: &Op) -> bool {
     matches!(
@@ -127,16 +339,65 @@ fn has_side_effect(op: &Op) -> bool {
 }
 
 impl Service {
+    /// An in-memory service over a [`SyntheticBackend`] (tests, simulator).
     pub fn new(desktop: DeviceId, clock: Clock) -> Self {
+        let synthetic = Arc::new(SyntheticBackend::default());
+        let mut service = Self::with_backend(desktop, clock, Arc::new(synthetic.clone()));
+        service.synthetic = Some(synthetic);
+        service
+    }
+
+    /// A service over `backend`, with nothing saved yet.
+    pub fn with_backend(desktop: DeviceId, clock: Clock, backend: Arc<dyn Backend>) -> Self {
         Self {
             state: Arc::new(Mutex::new(State {
-                profiles: HashMap::new(),
                 calls: HashMap::new(),
                 step_up: StepUpDesk::new(desktop),
                 policy: AttestationPolicy::default(),
+                store: None,
+                closed: false,
+                tasks: tokio::task::JoinSet::new(),
             })),
+            backend,
+            synthetic: None,
             clock,
         }
+    }
+
+    /// Restore saved state and save every change from now on. Calls that
+    /// were running when it was saved come back as interrupted. Keys of
+    /// phones not in `paired` are dropped.
+    pub fn restore(
+        &self,
+        snapshot: ServiceSnapshot,
+        store: Arc<dyn ServiceStore>,
+        paired: &dyn Fn(&DeviceId) -> bool,
+    ) -> Result<(), String> {
+        let mut state = self.lock();
+        state.step_up.restore(
+            snapshot
+                .registrations
+                .into_iter()
+                .filter(|r| paired(&r.phone))
+                .collect(),
+        );
+        state.calls.clear();
+        for saved in snapshot.outcomes {
+            if !paired(&saved.device) {
+                continue;
+            }
+            let frame = saved.frame.unwrap_or(ServerFrame::Failed {
+                id: saved.id,
+                error: OpError::Interrupted,
+            });
+            state
+                .calls
+                .entry(saved.device)
+                .or_default()
+                .record(saved.id, saved.digest, frame);
+        }
+        state.store = Some(store);
+        state.persist()
     }
 
     /// Which platform evidence the desktop accepts for step-up keys. The
@@ -157,13 +418,42 @@ impl Service {
 
     /// Owner action: allow an enrolled phone's sensitive requests until
     /// `until_ms`. The caller checks the phone's profile.
-    pub fn grant_sensitive(&self, device: DeviceId, until_ms: u64) -> Result<(), crate::LinkError> {
-        self.lock().step_up.grant(device, until_ms)
+    pub fn grant_sensitive(&self, device: DeviceId, until_ms: u64) -> Result<(), LinkError> {
+        let mut state = self.lock();
+        let previous = state.step_up.state(device).and_then(|s| s.granted_until_ms);
+        state.step_up.grant(device, until_ms)?;
+        if let Err(error) = state.persist() {
+            // Not saved, so not granted.
+            match previous {
+                Some(until) => state.step_up.grant(device, until)?,
+                None => state.step_up.withdraw(device),
+            }
+            return Err(LinkError::Io(error));
+        }
+        Ok(())
     }
 
-    /// Forget a phone's step-up key and grant.
-    pub fn forget_step_up(&self, device: DeviceId) {
-        self.lock().step_up.forget(device);
+    /// Owner action: end a phone's grant now, keeping its key.
+    pub fn withdraw_sensitive(&self, device: DeviceId) -> Result<(), LinkError> {
+        let mut state = self.lock();
+        state.step_up.withdraw(device);
+        state.persist().map_err(LinkError::Io)
+    }
+
+    /// Forget a phone's step-up key, grant and recorded calls.
+    pub fn forget_device(&self, device: DeviceId) -> Result<(), LinkError> {
+        let mut state = self.lock();
+        state.step_up.forget(device);
+        state.calls.remove(&device);
+        state.persist().map_err(LinkError::Io)
+    }
+
+    /// Stop running calls and saving. Calls already written down as running
+    /// stay so, and read as interrupted after a restart.
+    pub fn shutdown(&self) {
+        let mut state = self.lock();
+        state.closed = true;
+        state.tasks.abort_all();
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -171,9 +461,24 @@ impl Service {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Snapshot of a profile, for tests and the desktop UI.
+    /// The synthetic store, for tests and the desktop simulator.
+    pub fn synthetic(&self) -> Option<&Arc<SyntheticBackend>> {
+        self.synthetic.as_ref()
+    }
+
+    /// Snapshot of a synthetic profile (tests and the simulator).
     pub fn profile(&self, id: &str) -> ProfileData {
-        self.lock().profiles.get(id).cloned().unwrap_or_default()
+        self.synthetic
+            .as_ref()
+            .map(|s| s.profile(id))
+            .unwrap_or_default()
+    }
+
+    /// Add a memory to a synthetic profile (tests and the simulator).
+    pub fn remember(&self, profile: &str, memory: &str) {
+        if let Some(s) = &self.synthetic {
+            s.remember(profile, memory);
+        }
     }
 
     pub fn in_flight(&self, device: &DeviceId) -> usize {
@@ -193,7 +498,8 @@ impl Service {
     ) -> ServerFrame {
         let digest = op_digest(&op);
         let mut result = {
-            let mut state = self.lock();
+            let mut guard = self.lock();
+            let state = &mut *guard;
             let calls = state.calls.entry(device.device).or_default();
             if let Some((recorded, frame)) = calls.recorded.get(&id) {
                 return if *recorded == digest {
@@ -211,6 +517,26 @@ impl Service {
                 if calls.in_flight.len() >= MAX_IN_FLIGHT {
                     return failed(id, OpError::Busy);
                 }
+                if state.closed {
+                    return failed(
+                        id,
+                        OpError::NotAvailable {
+                            reason: "phone links are stopping".into(),
+                        },
+                    );
+                }
+                let replay = has_side_effect(&op);
+                if replay {
+                    // Written down before it can run.
+                    calls.pending.insert(id, digest);
+                    if state.persist().is_err() {
+                        if let Some(calls) = state.calls.get_mut(&device.device) {
+                            calls.pending.remove(&id);
+                        }
+                        return failed(id, unsaved());
+                    }
+                }
+                let calls = state.calls.entry(device.device).or_default();
                 let (done, result) = watch::channel(None);
                 let (cancel, cancelled) = watch::channel(false);
                 calls.in_flight.insert(
@@ -223,19 +549,25 @@ impl Service {
                 );
                 let service = self.clone();
                 let device = device.clone();
-                tokio::spawn(async move {
-                    let replay = has_side_effect(&op);
+                while state.tasks.try_join_next().is_some() {}
+                state.tasks.spawn(async move {
                     let frame = service.execute(&device, id, op, step_up, cancelled).await;
-                    let mut state = service.lock();
+                    let mut guard = service.lock();
+                    let state = &mut *guard;
                     let calls = state.calls.entry(device.device).or_default();
                     calls.in_flight.remove(&id);
-                    if replay
-                        && matches!(
+                    if replay {
+                        calls.pending.remove(&id);
+                        if matches!(
                             frame,
                             ServerFrame::Done { .. } | ServerFrame::Cancelled { .. }
-                        )
-                    {
-                        calls.record(id, digest, frame.clone());
+                        ) {
+                            calls.record(id, digest, frame.clone());
+                        }
+                        // If this save fails the call stays written down as
+                        // running, so after a restart it reads as interrupted
+                        // rather than running again.
+                        let _ = state.persist();
                     }
                     let _ = done.send(Some(frame));
                 });
@@ -282,6 +614,7 @@ impl Service {
         let profile = device.profile.id.clone();
         let need = |scope: Scope| device.allows(scope);
         let done = |result: serde_json::Value| ServerFrame::Done { id, result };
+        let backend = self.backend.clone();
         match op {
             Op::Ping {} => done(serde_json::json!({"pong": true})),
             Op::AddNote { text } => {
@@ -296,31 +629,19 @@ impl Service {
                         },
                     );
                 }
-                let mut state = self.lock();
-                let data = state.profiles.entry(profile).or_default();
-                if data.notes.len() >= MAX_NOTES_PER_PROFILE {
-                    return failed(
-                        id,
-                        OpError::BadRequest {
-                            reason: "note limit reached".into(),
-                        },
-                    );
+                match backend.add_note(profile, text).await {
+                    Ok(note) => done(serde_json::json!({"note": note})),
+                    Err(error) => failed(id, error),
                 }
-                data.next_note += 1;
-                let note = data.next_note;
-                data.notes.push((note, text));
-                done(serde_json::json!({"note": note}))
             }
             Op::ListNotes {} => {
                 if !need(Scope::Notes) {
                     return failed(id, OpError::Forbidden);
                 }
-                let state = self.lock();
-                let all = state
-                    .profiles
-                    .get(&profile)
-                    .map(|data| data.notes.as_slice())
-                    .unwrap_or_default();
+                let all = match backend.list_notes(profile).await {
+                    Ok(all) => all,
+                    Err(error) => return failed(id, error),
+                };
                 // Newest notes that fit, returned oldest first.
                 let mut budget = MAX_LIST_BYTES;
                 let mut notes: Vec<_> = all
@@ -341,9 +662,12 @@ impl Service {
                 if !need(Scope::ReadSettings) {
                     return failed(id, OpError::Forbidden);
                 }
-                let state = self.lock();
-                let data = state.profiles.get(&profile).cloned().unwrap_or_default();
-                done(serde_json::json!({"revision": data.revision, "settings": data.settings}))
+                match backend.read_settings(profile).await {
+                    Ok((revision, settings)) => {
+                        done(serde_json::json!({"revision": revision, "settings": settings}))
+                    }
+                    Err(error) => failed(id, error),
+                }
             }
             Op::StageSetting {
                 key,
@@ -361,19 +685,13 @@ impl Service {
                         },
                     );
                 }
-                let mut state = self.lock();
-                let data = state.profiles.entry(profile).or_default();
-                if data.revision != base_revision {
-                    return failed(
-                        id,
-                        OpError::Conflict {
-                            revision: data.revision,
-                        },
-                    );
+                match backend
+                    .stage_setting(profile, key, value, base_revision)
+                    .await
+                {
+                    Ok(revision) => done(serde_json::json!({"revision": revision})),
+                    Err(error) => failed(id, error),
                 }
-                data.settings.insert(key, value);
-                data.revision += 1;
-                done(serde_json::json!({"revision": data.revision}))
             }
             Op::RunTask { label, steps } => {
                 if !need(Scope::Tasks) {
@@ -387,21 +705,11 @@ impl Service {
                         },
                     );
                 }
-                for _ in 0..steps {
-                    if *cancelled.borrow() {
-                        return ServerFrame::Cancelled { id };
-                    }
-                    tokio::time::sleep(TASK_STEP).await;
+                match backend.run_task(profile, label, steps, cancelled).await {
+                    Ok(Some(result)) => done(result),
+                    Ok(None) => ServerFrame::Cancelled { id },
+                    Err(error) => failed(id, error),
                 }
-                let mut state = self.lock();
-                // Final check under the commit lock: cancel and commit
-                // cannot both happen.
-                if *cancelled.borrow() {
-                    return ServerFrame::Cancelled { id };
-                }
-                let data = state.profiles.entry(profile).or_default();
-                data.tasks_completed += 1;
-                done(serde_json::json!({"label": label, "completed": data.tasks_completed}))
             }
             Op::StepUpChallenge { digest } => {
                 if !need(Scope::Sensitive) {
@@ -419,6 +727,7 @@ impl Service {
                     Ok(nonce) => done(serde_json::json!({"nonce": crate::b64::encode(&nonce)})),
                     Err(LinkError::Busy) => failed(id, OpError::Busy),
                     Err(LinkError::StepUpWithdrawn(reason)) => {
+                        let _ = state.persist();
                         failed(id, OpError::AttestationRejected { reason })
                     }
                     Err(_) => failed(id, OpError::Forbidden),
@@ -444,9 +753,16 @@ impl Service {
                 let outcome = tokio::task::spawn_blocking(move || {
                     let mut guard = service.lock();
                     let state = &mut *guard;
-                    state
-                        .step_up
-                        .enroll(phone, &nonce, &evidence, &state.policy, now)
+                    let outcome =
+                        state
+                            .step_up
+                            .enroll(phone, &nonce, &evidence, &state.policy, now);
+                    if matches!(outcome, Ok(Ok(_))) && state.persist().is_err() {
+                        // Not saved, so not enrolled.
+                        state.step_up.forget(phone);
+                        return Err(LinkError::Io("not saved".into()));
+                    }
+                    outcome
                 })
                 .await;
                 match outcome {
@@ -461,6 +777,7 @@ impl Service {
                         },
                     ),
                     Ok(Err(LinkError::StepUpExpired)) => failed(id, OpError::StepUpExpired),
+                    Ok(Err(LinkError::Io(_))) => failed(id, unsaved()),
                     Ok(Err(_)) => failed(id, OpError::StepUpRejected),
                     Err(_) => failed(
                         id,
@@ -494,49 +811,46 @@ impl Service {
                 let Some(proof) = step_up else {
                     return failed(id, OpError::NeedsStepUp);
                 };
-                let mut guard = self.lock();
-                let state = &mut *guard;
-                // Fail closed: any verification error refuses the action.
-                // Verification (including a recheck of the enrolment against
-                // the current policy and revocation list) and the effect
-                // happen under one lock, so a proof is spent exactly when the
-                // action commits.
-                if let Err(error) = state.step_up.verify(
-                    device.device,
-                    &proof.nonce,
-                    &op_digest(&op),
-                    &proof,
-                    &state.policy,
-                    now,
-                ) {
-                    return failed(
-                        id,
-                        match error {
-                            LinkError::StepUpExpired => OpError::StepUpExpired,
-                            LinkError::Forbidden => OpError::Forbidden,
-                            LinkError::StepUpWithdrawn(reason) => {
-                                OpError::AttestationRejected { reason }
-                            }
-                            _ => OpError::StepUpRejected,
-                        },
-                    );
+                {
+                    let mut guard = self.lock();
+                    let state = &mut *guard;
+                    // Fail closed: any verification error refuses the action.
+                    // Verification (including a recheck of the enrolment
+                    // against the current policy and revocation list) spends
+                    // the challenge; the advanced App Attest counter is saved
+                    // before anything changes.
+                    if let Err(error) = state.step_up.verify(
+                        device.device,
+                        &proof.nonce,
+                        &op_digest(&op),
+                        &proof,
+                        &state.policy,
+                        now,
+                    ) {
+                        let _ = state.persist();
+                        return failed(
+                            id,
+                            match error {
+                                LinkError::StepUpExpired => OpError::StepUpExpired,
+                                LinkError::Forbidden => OpError::Forbidden,
+                                LinkError::StepUpWithdrawn(reason) => {
+                                    OpError::AttestationRejected { reason }
+                                }
+                                _ => OpError::StepUpRejected,
+                            },
+                        );
+                    }
+                    if state.persist().is_err() {
+                        return failed(id, unsaved());
+                    }
                 }
-                let data = state.profiles.entry(profile).or_default();
-                let removed = data.memories.len();
-                data.memories.clear();
-                done(serde_json::json!({"removed": removed}))
+                // The proof is spent; the effect runs once, outside the lock.
+                match backend.reset_memory(profile).await {
+                    Ok(removed) => done(serde_json::json!({"removed": removed})),
+                    Err(error) => failed(id, error),
+                }
             }
         }
-    }
-
-    /// Test and desktop helper: add a memory to a profile.
-    pub fn remember(&self, profile: &str, memory: &str) {
-        self.lock()
-            .profiles
-            .entry(profile.to_owned())
-            .or_default()
-            .memories
-            .push(memory.to_owned());
     }
 }
 
