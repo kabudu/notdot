@@ -21,6 +21,7 @@ path = "src/lib.rs"
 [features]
 default = []
 wake = ["notdot-mobile-core/wake"]
+whisper = ["wake", "notdot-mobile-core/whisper"]
 
 [dependencies]
 notdot-mobile-core = { path = "../../crates/notdot-mobile-core", default-features = false }

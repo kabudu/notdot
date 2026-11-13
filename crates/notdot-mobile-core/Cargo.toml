@@ -9,9 +9,12 @@ license.workspace = true
 crate-type = ["lib"]
 name = "notdot_mobile_core"
 [features]
-default = ["wake"]
+default = ["wake", "whisper"]
 # On-device keyword spotting (sherpa-onnx native libraries).
 wake = ["dep:notdot-wake-kws"]
+# The desktop's Whisper backup decoder (whisper.cpp, CPU only) on top of the
+# keyword spotter. Adds the 32 MB ggml-tiny.en-q5_1 model to the app bundle.
+whisper = ["wake", "dep:notdot-wake-runtime", "dep:whisper-rs"]
 # Generator for the Swift/Kotlin bindings (development only).
 bindgen = ["uniffi/cli"]
 [dependencies]
@@ -19,6 +22,8 @@ uniffi = { version = "0.32", features = ["tokio"] }
 notdot-orb = { path = "../notdot-orb", default-features = false }
 notdot-link = { path = "../notdot-link" }
 notdot-wake-kws = { path = "../notdot-wake-kws", optional = true }
+notdot-wake-runtime = { path = "../notdot-wake-runtime", optional = true }
+whisper-rs = { version = "=0.16.0", default-features = false, optional = true }
 tokio = { workspace = true }
 thiserror = "2"
 [build-dependencies]

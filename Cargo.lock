@@ -4263,9 +4263,11 @@ dependencies = [
  "notdot-orb",
  "notdot-orb-gen",
  "notdot-wake-kws",
+ "notdot-wake-runtime",
  "thiserror 2.0.21",
  "tokio",
  "uniffi",
+ "whisper-rs",
 ]
 
 [[package]]

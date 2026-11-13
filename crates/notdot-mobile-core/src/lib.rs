@@ -4,10 +4,15 @@
 //!
 //! - [`orb`]: the canonical orb contract and generated shaders.
 //! - [`session`]: the hands-free session lifecycle.
-//! - [`wake`]: the desktop's on-device keyword spotter.
+//! - [`wake`]: the desktop's on-device wake detector (keyword spotter, plus
+//!   the Whisper backup with the `whisper` feature).
 //! - [`link`]: pairing and the encrypted link to the desktop.
 uniffi::setup_scaffolding!();
 
+#[cfg(feature = "whisper")]
+mod backup;
+#[cfg(feature = "wake")]
+mod backup_types;
 pub mod link;
 pub mod orb;
 pub mod session;
