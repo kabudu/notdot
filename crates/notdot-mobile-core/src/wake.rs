@@ -334,30 +334,59 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Reset and drop cancel a decode in progress rather than waiting for it.
+    /// A reset discards a decode in progress, even one that would have
+    /// woken, and dropping the engine never waits longer than one decode's
+    /// budget. (How fast the abort lands depends on the CPU and load, so
+    /// the bound is the budget, not a wall-clock guess.)
     #[cfg(feature = "whisper")]
     #[test]
-    fn reset_and_drop_cancel_a_running_decode() {
+    fn reset_discards_a_running_decode_and_drop_is_bounded() {
         let engine = WakeEngine::new(models(), "Ava".into(), false).unwrap();
         assert_eq!(ready(&engine), BackupState::Ready);
-        let (speech, rate) = clip("negative.wav");
+        // Quiet "Hey Ava": the spotter misses it; the backup alone wakes.
+        let (speech, rate) = clip("hey-ava.wav");
         let packet = rate as usize / 50;
         let mut audio: Vec<f32> = vec![0.; rate as usize];
-        audio.extend(speech.iter().map(|s| s * 0.35));
-        audio.extend(std::iter::repeat_n(0., rate as usize / 2));
+        audio.extend(speech.iter().map(|s| s * 0.05));
+        audio.extend(std::iter::repeat_n(0., rate as usize));
+        let mut started = false;
+        for chunk in audio.chunks(packet) {
+            assert!(
+                !engine.accept(chunk.to_vec(), rate),
+                "woke before the backup decoded"
+            );
+            if engine.backup_busy() {
+                started = true;
+                break;
+            }
+        }
+        assert!(started, "a decode should be running");
+        engine.reset();
+        // Silence until the cancelled decode has reported: it must not wake.
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while engine.backup_busy() && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            assert!(
+                !engine.accept(vec![0.; packet], rate),
+                "a reset decode woke"
+            );
+        }
+        assert!(!engine.backup_busy());
+        assert_eq!(engine.backup_stats().wakes, 0);
+
+        // Drop during another decode of the same phrase.
         for chunk in audio.chunks(packet) {
             engine.accept(chunk.to_vec(), rate);
             if engine.backup_busy() {
                 break;
             }
         }
-        assert!(engine.backup_busy(), "a decode should be running");
-        let started = std::time::Instant::now();
-        engine.reset();
+        assert!(engine.backup_busy(), "a second decode should be running");
+        let dropping = std::time::Instant::now();
         drop(engine);
-        let took = started.elapsed();
-        eprintln!("reset + drop during a decode took {took:?}");
-        assert!(took < std::time::Duration::from_secs(1), "{took:?}");
+        let took = dropping.elapsed();
+        eprintln!("drop during a decode took {took:?}");
+        assert!(took < crate::backup::BUDGET, "{took:?}");
     }
 
     #[cfg(feature = "whisper")]

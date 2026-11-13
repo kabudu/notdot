@@ -33,7 +33,7 @@ use whisper_rs::{WhisperContext, WhisperContextParameters};
 /// File name of the backup model, as bundled for the desktop.
 pub const MODEL: &str = "ggml-tiny.en-q5_1.bin";
 
-const BUDGET: Duration = Duration::from_secs(3);
+pub const BUDGET: Duration = Duration::from_secs(3);
 
 struct Job {
     epoch: u64,
