@@ -66,12 +66,16 @@ To include the end-to-end link tests, run `cargo run -p notdot-link --features t
 | Relay behind nginx (TLS + HTTP Upgrade), negative config, outage/reconnect | Local containers on loopback | Pass (see `deploy/relay/README.md`) |
 | Wake spotter on the desktop's synthetic corpus | Offline audio files: Rust (macOS arm64 and x86_64 CI), Android JVM, iOS simulator with the embedded sherpa framework | No false accepts; recall 3/3 on arm64 and the iOS simulator, lower on x86_64 (see W1) |
 | Silent test mode never starts audio | iOS simulator, Android emulator | Pass |
+| Wake through the air (synthetic macOS voices, Mac speakers to built-in mic) | **Mac acoustic**, not a phone: desktop native mic path, one clip at a time | Full desktop detector 4/6 voices; spotter alone 0/6; no false accepts (10 negatives) |
+| Wake on the same synthetic clips without air | Offline | Full desktop detector 6/6; spotter alone 1/6; no false accepts |
 
-None of this is evidence of behaviour on a physical phone. Nothing here was heard through a speaker or captured by a microphone.
+None of this is evidence of behaviour on a physical phone. The only acoustic evidence is from a Mac's own speakers and microphone.
+
+App microphone capture could not be exercised on this Mac. With Xcode 27, the iOS simulator's host audio input is never authorised: no Simulator app or helper declares microphone use, so macOS shows no prompt, and the app's audio unit aborts with an RPC timeout. The Android emulator hung when host audio was enabled. App microphone evidence must come from devices; debug builds include an unattended auto-start hook for that (`-NotdotAutoStart YES` on iOS; the `notdotAutoStart` intent extra on Android).
 
 ## Still open (hypotheses and hardware-only gates)
 
-- **W1, wake on device:** spotter-only recall is CPU-sensitive. arm64 caught all three corpus clips at conversational level; the x86_64 CI runner missed the UK clip. Quiet speech is missed without the desktop's Whisper fallback. Accuracy, false accepts per hour and CPU must be measured on real phones with real rooms. On iOS the library is embedded as `SherpaOnnxC.framework`, the form sherpa-onnx ships; App Store packaging of it is untested.
+- **W1, wake on device:** the phones need the desktop's Whisper fallback as well as the spotter: on synthetic voices the full detector woke 6/6 offline and 4/6 through the air, against 1/6 and 0/6 for the spotter alone. Next step: build `notdot-wake-runtime`'s Whisper path for iOS and Android and measure size, CPU and latency on devices. Spotter-only recall is also CPU-sensitive. arm64 caught all three corpus clips at conversational level; the x86_64 CI runner missed the UK clip. Quiet speech is missed without the desktop's Whisper fallback. Accuracy, false accepts per hour and CPU must be measured on real phones with real rooms. On iOS the library is embedded as `SherpaOnnxC.framework`, the form sherpa-onnx ships; App Store packaging of it is untested.
 - **W2 / W2-A, long hands-free sessions:** behaviour through lock, Doze and OEM battery managers on real devices; battery drain per hour; App Review and Play review of a long user-started session.
 - **W3–W5:** starting from an Action button, Control, Siri, widget or tile while suspended or after a force-quit; pre-emption by calls and assistants on hardware.
 - **Keys:** the prototype keeps the phone's identity key in memory. Next is a this-device-only Keychain/Keystore key, created only from a user action so no prompt appears while the user is away.
