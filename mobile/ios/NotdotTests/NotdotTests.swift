@@ -202,10 +202,10 @@ final class StepUpKeyStoreTests: XCTestCase {
         defer { try? store.delete() }
         #if targetEnvironment(simulator)
         XCTAssertFalse(StepUpKeyStore.hardwareAvailable)
-        XCTAssertThrowsError(try store.key()) { error in
+        XCTAssertThrowsError(try store.publicKey()) { error in
             guard case StepUpKeyStore.Failure.noSecureHardware = error else { return XCTFail("\(error)") }
         }
-        XCTAssertThrowsError(try store.key(), "still nothing on a second try")
+        XCTAssertThrowsError(try store.publicKey(), "still nothing on a second try")
         #else
         throw XCTSkip("device run: covered by the manual Secure Enclave check in mobile/README.md")
         #endif
@@ -213,8 +213,7 @@ final class StepUpKeyStoreTests: XCTestCase {
 
     /// The adapter's key encoding and signature format, with a throwaway
     /// software key (not stored, never used by the app): the public key it
-    /// exports is accepted by the core, and the core refuses the same key
-    /// when it is honestly labelled as software.
+    /// exports is the 65-byte SEC1 point the core binds into App Attest.
     func testKeyAndSignatureFormatsMatchTheCore() throws {
         let attributes: [String: Any] = [kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
                                          kSecAttrKeySizeInBits as String: 256]
@@ -223,8 +222,9 @@ final class StepUpKeyStoreTests: XCTestCase {
         let publicKey = try StepUpKeyStore.publicKey(of: key)
         XCTAssertEqual(publicKey.count, 65)
         XCTAssertEqual(publicKey.first, 0x04)
-        try checkStepUpKey(key: StepUpKey(publicKey: publicKey, protection: .secureEnclave))
-        XCTAssertThrowsError(try checkStepUpKey(key: StepUpKey(publicKey: publicKey, protection: .software)))
+        let request = AttestRequest(androidChallenge: Data(count: 32), desktop: Data(repeating: 1, count: 32),
+                                    phone: Data(repeating: 2, count: 32), nonce: Data(repeating: 3, count: 32))
+        XCTAssertEqual(try appAttestClientDataHash(request: request, stepUpKey: publicKey).count, 32)
         let signature = try StepUpKeyStore.sign(Data("synthetic".utf8), with: key)
         XCTAssertEqual(signature.first, 0x30, "DER sequence")
         XCTAssertTrue(SecKeyVerifySignature(SecKeyCopyPublicKey(key)!, .ecdsaSignatureMessageX962SHA256,
@@ -241,7 +241,7 @@ final class LinkEndToEndTests: XCTestCase {
         }
         let qr = try String(contentsOfFile: path, encoding: .utf8)
         let link = PhoneLink()
-        let code = try await link.pair(qr: qr, name: "Simulator phone", stepUp: nil)
+        let code = try await link.pair(qr: qr, name: "Simulator phone")
         XCTAssertEqual(code.count, 7)
         guard case .approved = try await link.awaitApproval() else { return XCTFail("not approved") }
         let direct = try await link.connect(relayOnly: false)
@@ -254,5 +254,109 @@ final class LinkEndToEndTests: XCTestCase {
         XCTAssertEqual(first, retried, "the retry returns the recorded outcome")
         let notes = try await link.listNotes()
         XCTAssertEqual(notes.filter { $0 == "Synthetic note" }.count, 1)
+
+        // The real refusal path on the Simulator: no Secure Enclave and no
+        // App Attest, so setting up fails here, before anything is sent,
+        // and the real desktop has no key for this phone.
+        let status = try await link.stepUpStatus()
+        XCTAssertFalse(status.enrolled)
+        do {
+            _ = try await link.setUpStepUp(attester: AppleAttester())
+            XCTFail("the Simulator must not set up step-up")
+        } catch MobileError.Unavailable {}
+        let after = try await link.stepUpStatus()
+        XCTAssertFalse(after.enrolled)
+        do {
+            _ = try await link.resetMemory(requestId: newRequestId(), signer: AppleSigner(reason: "test"))
+            XCTFail("no key, no action")
+        } catch MobileError.Unavailable {}
+    }
+}
+
+/// The sensitive-actions screen model against the debug-only scripted
+/// backend (test adapter; never genuine hardware evidence).
+@MainActor
+final class SensitiveActionsModelTests: XCTestCase {
+    private func model(_ scenario: String) -> (SensitiveActionsModel, ScriptedSensitiveActions, () -> String?) {
+        let backend = ScriptedSensitiveActions(scenario: scenario)
+        var unpaired: String?
+        let model = SensitiveActionsModel(backend: backend) { unpaired = $0 }
+        return (model, backend, { unpaired })
+    }
+
+    func testSetUpThenEraseOnceAndOutcomesInPlainWords() async {
+        let (model, backend, _) = model("setup")
+        await model.refresh()
+        XCTAssertFalse(model.canAct)
+        XCTAssertTrue(model.statusText.hasPrefix("Not set up"))
+        await model.setUp()
+        XCTAssertEqual(model.outcome, .done("Set up. \(describeProtection(protection: .appleAppAttested))"))
+        XCTAssertTrue(model.canAct)
+        XCTAssertTrue(model.statusText.contains("test key, not real hardware"))
+        // Two taps at once: one request, one effect.
+        async let first: Void = model.eraseMemories()
+        async let second: Void = model.eraseMemories()
+        _ = await (first, second)
+        let effects = await backend.effects
+        XCTAssertEqual(effects, 1)
+        XCTAssertEqual(model.outcome, .done("Erased 3 memories."))
+        XCTAssertNil(model.pendingResetId)
+    }
+
+    func testEveryRefusalIsReportedAndNothingIsRetriedSilently() async {
+        let cases: [(String, (SensitiveOutcome?) -> Bool)] = [
+            ("cancelled", { $0 == .cancelled }),
+            ("denied", { if case .denied = $0 { true } else { false } }),
+            ("expired", { $0 == .expired }),
+            ("offline", { if case .offline = $0 { true } else { false } }),
+            ("unavailable", { if case .unavailable = $0 { true } else { false } }),
+        ]
+        for (scenario, expected) in cases {
+            let (model, backend, _) = model(scenario)
+            await model.refresh()
+            if scenario == "unavailable" {
+                await model.setUp()
+            } else {
+                await model.eraseMemories()
+            }
+            XCTAssertTrue(expected(model.outcome), "\(scenario): \(String(describing: model.outcome))")
+            XCTAssertTrue(model.outcome?.isProblem ?? false)
+            XCTAssertFalse(model.busy)
+            let effects = await backend.effects
+            XCTAssertEqual(effects, 0, scenario)
+            // Only a dropped connection keeps the request id for a retry.
+            XCTAssertEqual(model.pendingResetId != nil, scenario == "offline", scenario)
+        }
+    }
+
+    func testRevokedForgetsThePairing() async {
+        let (model, _, unpaired) = model("revoked")
+        await model.refresh()
+        await model.eraseMemories()
+        guard case .revoked = model.outcome else { return XCTFail("\(String(describing: model.outcome))") }
+        XCTAssertNotNil(unpaired())
+        XCTAssertNil(model.status)
+        XCTAssertFalse(model.canAct)
+    }
+
+    func testNotGrantedCannotAct() async {
+        let (model, _, _) = model("notgranted")
+        await model.refresh()
+        XCTAssertFalse(model.canAct)
+        XCTAssertTrue(model.statusText.contains("Allow sensitive actions"))
+    }
+
+    func testTheRealAttesterRefusesTheSimulator() throws {
+        #if targetEnvironment(simulator)
+        let request = AttestRequest(androidChallenge: Data(count: 32), desktop: Data(count: 32),
+                                    phone: Data(count: 32), nonce: Data(count: 32))
+        XCTAssertFalse(AppAttest.supported)
+        XCTAssertThrowsError(try AppleAttester().attest(request: request)) { error in
+            guard case MobileError.Unavailable = error else { return XCTFail("\(error)") }
+        }
+        XCTAssertThrowsError(try AppAttest.standard.assertion(clientDataHash: Data(count: 32)))
+        #else
+        throw XCTSkip("device run: App Attest needs an enrolled team's entitlement")
+        #endif
     }
 }

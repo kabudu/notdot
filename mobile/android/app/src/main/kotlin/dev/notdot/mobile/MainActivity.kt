@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -47,8 +49,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Debug-only: a scripted sensitive-actions backend for UI tests.
+        val scenario = if (BuildConfig.DEBUG) intent.getStringExtra("notdotSensitiveScenario") else null
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) { Home(::startHandsFree) }
+            MaterialTheme(colorScheme = darkColorScheme()) { Home(::startHandsFree, scenario) }
         }
     }
 
@@ -82,17 +86,18 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun Home(start: () -> Unit) {
+private fun Home(start: () -> Unit, scenario: String?) {
     val effects by NotdotState.effects.collectAsState()
     val status by NotdotState.status.collectAsState()
     val orb by NotdotState.orb.collectAsState()
-    var linking by remember { mutableStateOf(false) }
+    var linking by remember { mutableStateOf(scenario != null) }
     Column(
-        Modifier.fillMaxSize().background(Color(0xFF050A14)).padding(24.dp),
+        Modifier.fillMaxSize().background(Color(0xFF050A14)).padding(24.dp)
+            .then(if (linking) Modifier.verticalScroll(rememberScrollState()) else Modifier),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Orb(orb, Modifier.weight(1f).fillMaxWidth())
+        if (!linking) Orb(orb, Modifier.weight(1f).fillMaxWidth())
         Text(status, color = Color.White, style = MaterialTheme.typography.titleMedium)
         val context = androidx.compose.ui.platform.LocalContext.current
         if (effects.surface) {
@@ -101,12 +106,12 @@ private fun Home(start: () -> Unit) {
             Button(start, Modifier.heightIn(min = 48.dp)) { Text("Start hands-free") }
         }
         OutlinedButton({ linking = !linking }, Modifier.heightIn(min = 48.dp)) { Text("Linked computer") }
-        if (linking) Pairing()
+        if (linking) Pairing(scenario)
     }
 }
 
 @Composable
-private fun Pairing() {
+private fun Pairing(scenario: String?) {
     val scope = rememberCoroutineScope()
     val context = androidx.compose.ui.platform.LocalContext.current
     // Identity and paired computer survive restarts (Keystore-sealed).
@@ -114,7 +119,20 @@ private fun Pairing() {
     var link by remember { mutableStateOf(runCatching { store.restoreLink() }.getOrElse { PhoneLink() }) }
     var qr by remember { mutableStateOf("") }
     var message by remember { mutableStateOf("Not linked") }
-    var stepUp by remember { mutableStateOf("Sensitive actions: not set up") }
+    var showSensitive by remember { mutableStateOf(scenario != null) }
+    val sensitive = remember {
+        val backend: SensitiveActionsBackend = scenario?.let(::ScriptedSensitiveActions)
+            ?: CoreSensitiveActions(context as android.app.Activity) { link }
+        SensitiveActionsModel(backend) { detail ->
+            // Removed at the computer: forget everything on this phone.
+            withContext(Dispatchers.IO) {
+                store.clear()
+                StepUpKeys.clear(context)
+            }
+            link = PhoneLink()
+            message = detail
+        }
+    }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(qr, { qr = it }, label = { Text("Pairing code from the computer") }, singleLine = true)
         Button({
@@ -122,17 +140,7 @@ private fun Pairing() {
                 message = try {
                     // The identity is created (once) by this user action.
                     if (store.identity() == null) link = PhoneLink.restore(store.identityCreatingIfNeeded(), null)
-                    // A hardware key, or none: never a software substitute.
-                    // Key generation (StrongBox especially) is slow: off the main thread.
-                    val key = try {
-                        withContext(Dispatchers.IO) { StepUpKeyStore().key() }.also {
-                            stepUp = "Sensitive actions: confirmed with a fingerprint or face (${it.protection})"
-                        }
-                    } catch (e: StepUpKeyStore.NoSecureHardware) {
-                        stepUp = "Sensitive actions are unavailable on this phone: ${e.message}"
-                        null
-                    }
-                    val code = link.pair(qr.trim(), "Android phone", key)
+                    val code = link.pair(qr.trim(), "Android phone")
                     message = "Check the computer shows $code, then choose Allow there."
                     when (val result = link.awaitApproval()) {
                         is PairResult.Approved -> {
@@ -146,10 +154,9 @@ private fun Pairing() {
                     // Removed at the computer: forget everything on this phone.
                     withContext(Dispatchers.IO) {
                         store.clear()
-                        StepUpKeyStore().delete()
+                        StepUpKeys.clear(context)
                     }
                     link = PhoneLink()
-                    stepUp = "Sensitive actions: not set up"
                     e.detail
                 } catch (e: Exception) {
                     e.message ?: "Could not link"
@@ -157,6 +164,7 @@ private fun Pairing() {
             }
         }, Modifier.heightIn(min = 48.dp), enabled = qr.isNotBlank()) { Text("Link") }
         Text(message, color = Color.White)
-        Text(stepUp, color = Color.White)
+        OutlinedButton({ showSensitive = !showSensitive }, Modifier.heightIn(min = 48.dp)) { Text("Sensitive actions") }
+        if (showSensitive) SensitiveActionsScreen(sensitive)
     }
 }

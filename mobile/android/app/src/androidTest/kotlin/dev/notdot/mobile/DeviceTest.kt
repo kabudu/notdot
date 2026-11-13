@@ -18,9 +18,10 @@ import org.junit.runner.RunWith
 import uniffi.notdot_mobile_core.BackupState
 import uniffi.notdot_mobile_core.LinkRoute
 import uniffi.notdot_mobile_core.PairResult
-import uniffi.notdot_mobile_core.KeyProtection
+import uniffi.notdot_mobile_core.AttestRequest
+import uniffi.notdot_mobile_core.MobileException
 import uniffi.notdot_mobile_core.PhoneLink
-import uniffi.notdot_mobile_core.checkStepUpKey
+import uniffi.notdot_mobile_core.StepUpEvidence
 import uniffi.notdot_mobile_core.newRequestId
 import java.io.File
 import java.nio.ByteBuffer
@@ -120,11 +121,11 @@ class DeviceTest {
      * runner passes `-e notdotQr <pairing code>`.
      */
     @Test
-    fun pairDirectThenRelayOnlyRetryCommitsOnce() = runBlocking {
+    fun pairDirectThenRelayOnlyRetryCommitsOnce() = runBlocking<Unit> {
         val qr = InstrumentationRegistry.getArguments().getString("notdotQr")
         assumeTrue("no desktop simulator code", qr != null)
         val link = PhoneLink()
-        assertEquals(7, link.pair(qr!!, "Emulator phone", null).length)
+        assertEquals(7, link.pair(qr!!, "Emulator phone").length)
         assertTrue(link.awaitApproval() is PairResult.Approved)
         val first = link.connect(false)
         assertNotEquals(LinkRoute.DISCONNECTED, first)
@@ -134,6 +135,31 @@ class DeviceTest {
         assertEquals(note, link.addNote(id, "Synthetic note"))
         assertEquals(1, link.listNotes().count { it == "Synthetic note" })
         println("emulator link: first route $first, then relay; retry committed once")
+
+        // The real refusal path: the emulator's key evidence goes to the
+        // desktop simulator, whose verifier checks it against Google's
+        // roots and refuses it. Nothing is enrolled.
+        assertFalse(link.stepUpStatus().enrolled)
+        val attester = AndroidAttester(context)
+        val refusal = try {
+            link.setUpStepUp(attester)
+            null
+        } catch (e: MobileException) {
+            e
+        } finally {
+            attester.finish(MobileException.Denied("test: never kept"))
+        }
+        android.util.Log.i("notdot.test", "emulator step-up set-up refused: ${refusal?.javaClass?.simpleName}: ${refusal?.message}")
+        // Denied: the desktop refused the chain. Unavailable or Offline: the
+        // emulator could not make an attested key (no lock or biometric,
+        // or no provisioned attestation keys), so nothing was sent.
+        assertTrue("$refusal", refusal is MobileException.Denied || refusal is MobileException.Unavailable ||
+            refusal is MobileException.Offline)
+        assertFalse(link.stepUpStatus().enrolled)
+        attester.created?.let { alias ->
+            val keystore = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            assertFalse("a refused key is deleted", keystore.containsAlias(alias))
+        }
     }
 
     /** 16 kHz mono 16-bit PCM WAV from the test assets, data chunk only. */
@@ -237,35 +263,44 @@ class DeviceTest {
         assertNull(IdentityStore(dir, "notdot-test-$tag").identity())
     }
 
-    /** Step-up adapter on this device or emulator: a key is either in
-     *  secure hardware, as the Keystore itself reports, or refused and
-     *  removed. Never a software key. (An emulator has no StrongBox and no
-     *  enrolled biometric, so it shows the refusal; a phone shows which
-     *  hardware it used.) */
+    private val attestationOid = "1.3.6.1.4.1.11129.2.1.17"
+
+    /** The attester on this device or emulator: the key is created with
+     *  the computer's challenge, and its chain carries Google's key
+     *  attestation extension with that challenge. Whether the chain is
+     *  trusted is the computer's decision (see the desktop verifier); here
+     *  only its shape is checked. Without a screen lock and biometric the
+     *  key can't be created, which is reported as unavailable. */
     @Test
-    fun stepUpKeyIsHardwareAsReportedOrRefused() {
-        val alias = "notdot-test-step-up-${System.nanoTime()}"
-        val store = StepUpKeyStore(alias)
-        val keystore = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+    fun attesterBindsTheChallengeIntoTheKeysChain() {
+        val challenge = ByteArray(32) { (it * 7 + 1).toByte() }
+        val attester = AndroidAttester(context)
         try {
-            val key = store.key()
-            val entry = keystore.getEntry(alias, null) as java.security.KeyStore.PrivateKeyEntry
-            assertEquals(StepUpKeyStore.protectionOf(entry.privateKey), key.protection)
-            assertNotEquals(KeyProtection.SOFTWARE, key.protection)
-            checkStepUpKey(key)
-            android.util.Log.i("notdot.test", "step-up key protection: ${key.protection}")
-        } catch (e: StepUpKeyStore.NoSecureHardware) {
-            assertFalse("a refused key is removed", keystore.containsAlias(alias))
-            android.util.Log.i("notdot.test", "step-up refused: ${e.message}")
+            val evidence = attester.attest(AttestRequest(challenge, ByteArray(32), ByteArray(32), ByteArray(32)))
+            val chain = (evidence as StepUpEvidence.AndroidKeystore).chain
+            assertTrue(chain.size >= 2)
+            val factory = java.security.cert.CertificateFactory.getInstance("X.509")
+            val leaf = factory.generateCertificate(chain[0].inputStream()) as java.security.cert.X509Certificate
+            val extension = leaf.getExtensionValue(attestationOid)
+            assertTrue("leaf carries key attestation", extension != null)
+            assertTrue("the challenge is attested", extension!!.toList().windowed(32).any { it == challenge.toList() })
+            android.util.Log.i("notdot.test", "attested chain: ${chain.size} certificates, root ${
+                (factory.generateCertificate(chain.last().inputStream()) as java.security.cert.X509Certificate).subjectX500Principal}")
+        } catch (e: MobileException.Unavailable) {
+            android.util.Log.i("notdot.test", "step-up unavailable here: ${e.detail}")
         } finally {
-            store.delete()
+            attester.finish(MobileException.Denied("test: never kept"))
+        }
+        attester.created?.let { alias ->
+            val keystore = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            assertFalse("a key the computer didn't accept is deleted", keystore.containsAlias(alias))
         }
     }
 
-    /** Keystore signatures and the reported protection level, with a
-     *  test key that needs no biometric (never the app's key). */
+    /** Keystore signature format with a test key that needs no biometric
+     *  (never the app's key): DER ECDSA that verifies with the SEC1 key. */
     @Test
-    fun keystoreSignaturesAndProtectionAreReadBack() {
+    fun keystoreSignaturesUseTheCoresFormats() {
         val alias = "notdot-test-sign-${System.nanoTime()}"
         val keystore = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         try {
@@ -279,11 +314,8 @@ class DeviceTest {
                 generateKeyPair()
             }
             val entry = keystore.getEntry(alias, null) as java.security.KeyStore.PrivateKeyEntry
-            val protection = StepUpKeyStore.protectionOf(entry.privateKey)
-            android.util.Log.i("notdot.test", "keystore test key protection: $protection")
             val public = entry.certificate.publicKey as java.security.interfaces.ECPublicKey
-            val sec1 = StepUpKeyStore.sec1(public)
-            checkStepUpKey(uniffi.notdot_mobile_core.StepUpKey(sec1, KeyProtection.TRUSTED_ENVIRONMENT))
+            assertEquals(65, StepUpKeys.sec1(public).size)
             val message = "synthetic".toByteArray()
             val signature = java.security.Signature.getInstance("SHA256withECDSA").run {
                 initSign(entry.privateKey); update(message); sign()
@@ -295,6 +327,32 @@ class DeviceTest {
         } finally {
             keystore.deleteEntry(alias)
         }
+    }
+
+    /** A key whose set-up reply was lost is kept only if the computer
+     *  turns out to hold it. Needs a screen lock, a fingerprint and
+     *  attestation keys; skipped where the key can't be made. */
+    @Test
+    fun aPendingKeyIsKeptOnlyIfTheComputerHoldsIt() {
+        val keystore = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        for (computerHasIt in listOf(true, false)) {
+            val attester = AndroidAttester(context)
+            try {
+                attester.attest(AttestRequest(ByteArray(32), ByteArray(32), ByteArray(32), ByteArray(32)))
+            } catch (e: MobileException) {
+                assumeTrue("no attested key here: ${e.message}", false)
+            }
+            val alias = attester.created!!
+            attester.finish(MobileException.Offline("reply lost"))
+            assertTrue("parked, not deleted", keystore.containsAlias(alias))
+            val public = StepUpKeys.sec1(keystore.getCertificate(alias).publicKey as java.security.interfaces.ECPublicKey)
+            val held = if (computerHasIt) uniffi.notdot_mobile_core.stepUpKeySha256(public) else ByteArray(32)
+            StepUpKeys.reconcile(context, held)
+            assertEquals(computerHasIt, keystore.containsAlias(alias))
+            assertEquals(if (computerHasIt) alias else null, StepUpKeys.activeAlias(context).takeIf { it == alias })
+        }
+        StepUpKeys.clear(context)
+        assertNull(StepUpKeys.activeAlias(context))
     }
 
 }

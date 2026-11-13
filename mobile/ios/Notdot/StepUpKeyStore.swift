@@ -12,12 +12,20 @@ import Security
 ///
 /// There is no fallback: without a Secure Enclave (the Simulator, or a
 /// phone without enrolled biometrics) this reports `noSecureHardware` and
-/// the phone pairs without step-up, so sensitive actions stay unavailable.
+/// sensitive actions stay unavailable.
+///
+/// Apple offers no attestation for such a key. The computer learns about
+/// it through App Attest instead (see `SensitiveActions.swift`): Apple
+/// vouches for the app, and the app vouches for this key.
 struct StepUpKeyStore {
     /// Keychain application tag; tests use a disposable one.
     let tag: Data
 
-    static let standard = StepUpKeyStore(tag: Data("dev.notdot.mobile.step-up".utf8))
+    /// A store for a fresh tag, so a new key never replaces the current
+    /// one until the computer has accepted it.
+    static func fresh() -> StepUpKeyStore {
+        StepUpKeyStore(tag: Data("dev.notdot.mobile.step-up.\(UUID().uuidString)".utf8))
+    }
 
     enum Failure: Error, Equatable, CustomStringConvertible {
         /// No Secure Enclave, or no biometrics enrolled.
@@ -43,14 +51,21 @@ struct StepUpKeyStore {
         #endif
     }
 
-    /// The existing key, or a new one. Never prompts.
-    func key() throws -> StepUpKey {
-        let privateKey = try existing() ?? create()
-        return StepUpKey(publicKey: try Self.publicKey(of: privateKey), protection: .secureEnclave)
+    /// The existing key's public half, or a new key's. Never prompts.
+    func publicKey() throws -> Data {
+        try Self.publicKey(of: try existing() ?? create())
     }
 
-    /// Signs challenges with this key; each signature asks for biometrics.
-    func signer(reason: String) -> StepUpSigner { Signer(store: self, reason: reason) }
+    /// Sign with this key: the system asks for Face ID or Touch ID first.
+    /// Blocks until the owner answers; call off the main thread.
+    func sign(_ message: Data, reason: String) throws -> Data {
+        let context = LAContext()
+        context.localizedReason = reason
+        guard let key = try existing(context: context) else {
+            throw MobileError.Unavailable(detail: "Sensitive actions aren't set up on this phone.")
+        }
+        return try Self.sign(message, with: key)
+    }
 
     func delete() throws {
         let status = SecItemDelete(lookup() as CFDictionary)
@@ -72,8 +87,16 @@ struct StepUpKeyStore {
         var error: Unmanaged<CFError>?
         guard let signature = SecKeyCreateSignature(privateKey, .ecdsaSignatureMessageX962SHA256,
                                                     message as CFData, &error) as Data? else {
-            let detail = error?.takeRetainedValue().localizedDescription ?? "signing failed"
-            throw MobileError.Invalid(detail: "Not confirmed: \(detail)")
+            let failure = error?.takeRetainedValue()
+            // The owner dismissed Face ID / Touch ID, or chose Cancel.
+            if let failure, CFErrorGetCode(failure) == Int(errSecUserCanceled)
+                || CFErrorGetCode(failure) == LAError.userCancel.rawValue
+                || CFErrorGetCode(failure) == LAError.appCancel.rawValue
+                || CFErrorGetCode(failure) == LAError.systemCancel.rawValue {
+                throw MobileError.Cancelled(detail: "Not confirmed; nothing changed.")
+            }
+            let detail = failure.map { CFErrorCopyDescription($0) as String } ?? "signing failed"
+            throw MobileError.Denied(detail: "Not confirmed: \(detail)")
         }
         return signature
     }
@@ -121,22 +144,5 @@ struct StepUpKeyStore {
             throw Failure.noSecureHardware("The Secure Enclave key could not be created: \(detail)")
         }
         return key
-    }
-
-    private final class Signer: StepUpSigner, @unchecked Sendable {
-        let store: StepUpKeyStore
-        let reason: String
-        init(store: StepUpKeyStore, reason: String) { self.store = store; self.reason = reason }
-
-        /// Called off the main thread by the core; the system shows the
-        /// biometric prompt and this blocks until the owner answers.
-        func sign(message: Data) throws -> Data {
-            let context = LAContext()
-            context.localizedReason = reason
-            guard let key = try? store.existing(context: context) else {
-                throw MobileError.Invalid(detail: "This phone has no step-up key; link it again.")
-            }
-            return try StepUpKeyStore.sign(message, with: key)
-        }
     }
 }

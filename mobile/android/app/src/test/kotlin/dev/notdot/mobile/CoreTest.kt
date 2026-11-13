@@ -18,10 +18,7 @@ import uniffi.notdot_mobile_core.StartSource
 import uniffi.notdot_mobile_core.VoiceSession
 import uniffi.notdot_mobile_core.BackupState
 import uniffi.notdot_mobile_core.WakeEngine
-import uniffi.notdot_mobile_core.KeyProtection
 import uniffi.notdot_mobile_core.MobileException
-import uniffi.notdot_mobile_core.StepUpKey
-import uniffi.notdot_mobile_core.checkStepUpKey
 import uniffi.notdot_mobile_core.defaultSessionPolicy
 import uniffi.notdot_mobile_core.orbDefaultHue
 import uniffi.notdot_mobile_core.orbFragmentGlsl
@@ -157,19 +154,59 @@ class CoreTest {
         error("no data chunk in $file")
     }
 
-    /** The adapter's public-key encoding is what the core accepts, with a
-     *  throwaway JVM key (format only; Keystore protection is checked on a
-     *  device). A key labelled software is refused. */
+    /** The adapter's public-key encoding, with a throwaway JVM key. */
     @Test
-    fun stepUpKeyEncodingMatchesTheCoreAndSoftwareIsRefused() {
-        assertArrayEquals(ByteArray(31) + byteArrayOf(5), StepUpKeyStore.fixed(BigInteger.valueOf(5)))
+    fun stepUpKeyEncodingIsSec1() {
+        assertArrayEquals(ByteArray(31) + byteArrayOf(5), StepUpKeys.fixed(BigInteger.valueOf(5)))
         val high = BigInteger.ONE.shiftLeft(255)
-        assertEquals(32, StepUpKeyStore.fixed(high).size)
+        assertEquals(32, StepUpKeys.fixed(high).size)
         val pair = KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec("secp256r1")) }.generateKeyPair()
-        val sec1 = StepUpKeyStore.sec1(pair.public as ECPublicKey)
+        val sec1 = StepUpKeys.sec1(pair.public as ECPublicKey)
         assertEquals(65, sec1.size)
-        checkStepUpKey(StepUpKey(sec1, KeyProtection.TRUSTED_ENVIRONMENT))
-        assertThrows(MobileException::class.java) { checkStepUpKey(StepUpKey(sec1, KeyProtection.SOFTWARE)) }
+        assertEquals(4.toByte(), sec1[0])
+    }
+
+    /** The sensitive-actions screen model against the debug-only scripted
+     *  backend (a test adapter; never genuine hardware evidence). */
+    @Test
+    fun sensitiveActionsModelSetsUpErasesOnceAndReportsEveryRefusal() = kotlinx.coroutines.runBlocking {
+        var unpaired: String? = null
+        val backend = ScriptedSensitiveActions("setup")
+        val model = SensitiveActionsModel(backend) { unpaired = it }
+        model.refresh()
+        assertFalse(model.canAct(model.status.value))
+        assertTrue(model.statusText(model.status.value).startsWith("Not set up"))
+        model.setUp()
+        assertTrue(model.canAct(model.status.value))
+        assertTrue(model.statusText(model.status.value).contains("test key, not real hardware"))
+        model.eraseMemories()
+        assertEquals("Erased 3 memories.", model.outcome.value?.text)
+        assertEquals(1, backend.effects)
+        assertNull(model.pendingResetId)
+
+        for (scenario in listOf("cancelled", "denied", "expired", "offline", "revoked", "unavailable")) {
+            val scripted = ScriptedSensitiveActions(scenario)
+            val m = SensitiveActionsModel(scripted) { unpaired = it }
+            m.refresh()
+            if (scenario == "unavailable") m.setUp() else m.eraseMemories()
+            val outcome = m.outcome.value
+            assertTrue("$scenario: $outcome", outcome != null && outcome.problem)
+            assertFalse(m.busy)
+            assertEquals(scenario, 0, scripted.effects)
+            assertEquals(scenario, scenario == "offline", m.pendingResetId != null)
+            when (scenario) {
+                "cancelled" -> assertEquals(SensitiveOutcome.Cancelled, outcome)
+                "expired" -> assertEquals(SensitiveOutcome.Expired, outcome)
+                "revoked" -> { assertTrue(outcome is SensitiveOutcome.Revoked); assertTrue(unpaired != null); assertNull(m.status.value) }
+                "offline" -> assertTrue(outcome is SensitiveOutcome.Offline)
+                "denied" -> assertTrue(outcome is SensitiveOutcome.Denied)
+                "unavailable" -> assertTrue(outcome is SensitiveOutcome.Unavailable)
+            }
+        }
+        // Not allowed at the computer: the action stays disabled.
+        val notGranted = SensitiveActionsModel(ScriptedSensitiveActions("notgranted")) {}
+        notGranted.refresh()
+        assertFalse(notGranted.canAct(notGranted.status.value))
     }
 
 }

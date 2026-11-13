@@ -9,15 +9,13 @@ final class LinkModel: ObservableObject {
     @Published private(set) var message = "Not linked"
     @Published private(set) var route: LinkRoute = .disconnected
     @Published private(set) var notes: [String] = []
-    /// Whether this phone can confirm sensitive actions, and why not.
-    @Published private(set) var stepUp = "Sensitive actions: not set up"
+    /// Sensitive actions (set up, confirm, results); created once.
+    private(set) var sensitive: SensitiveActionsModel!
     private let store: IdentityStore
-    private let stepUpStore: StepUpKeyStore
     private var link: PhoneLink
 
-    init(store: IdentityStore = .standard, stepUpStore: StepUpKeyStore = .standard) {
+    init(store: IdentityStore = .standard) {
         self.store = store
-        self.stepUpStore = stepUpStore
         // Restoring reads the Keychain only; nothing is created until the
         // user starts pairing. If it cannot be read, start unpaired.
         if let identity = try? store.identity(),
@@ -27,6 +25,11 @@ final class LinkModel: ObservableObject {
         } else {
             link = PhoneLink()
         }
+        var backend: SensitiveActionsBackend = CoreSensitiveActions(link: { [unowned self] in self.link })
+        #if DEBUG
+        if let scripted = ScriptedSensitiveActions.fromLaunchArguments() { backend = scripted }
+        #endif
+        sensitive = SensitiveActionsModel(backend: backend) { [unowned self] detail in self.forget(detail) }
     }
 
     func pair(qr: String, name: String) async {
@@ -35,16 +38,7 @@ final class LinkModel: ObservableObject {
             if try store.identity() == nil {
                 link = try PhoneLink.restore(identity: try store.identityCreatingIfNeeded(), paired: nil)
             }
-            // A Secure Enclave key, or none: never a software substitute.
-            let key: StepUpKey?
-            do {
-                key = try stepUpStore.key()
-                stepUp = "Sensitive actions: confirmed with Face ID or Touch ID (Secure Enclave)"
-            } catch {
-                key = nil
-                stepUp = "Sensitive actions are unavailable on this phone: \(error)"
-            }
-            code = try await link.pair(qr: qr, name: name, stepUp: key)
+            code = try await link.pair(qr: qr, name: name)
             message = "Check the computer shows the same code, then choose Allow there."
             switch try await link.awaitApproval() {
             case .approved:
@@ -68,13 +62,17 @@ final class LinkModel: ObservableObject {
             message = "\(error)"
             return
         }
+        forget(detail)
+    }
+
+    /// Delete the identity, paired record and step-up keys.
+    private func forget(_ detail: String) {
         try? store.clear()
-        try? stepUpStore.delete()
+        ActiveStepUpKey.clear()
         link = PhoneLink()
         code = nil
         route = .disconnected
         notes = []
-        stepUp = "Sensitive actions: not set up"
         message = detail
     }
 

@@ -55,6 +55,12 @@
 ";
 			alwaysOutOfDate = "1";
 		};
+		1C86A7F0B60182EBBDFC43DB = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Notdot/SensitiveActionsView.swift;
+			sourceTree = "<group>";
+		};
 		1E4AFA8650E48298CE9F04EF = {
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
@@ -172,6 +178,10 @@
 				);
 			};
 		};
+		4B6D035A9DD7144007843650 = {
+			isa = PBXBuildFile;
+			fileRef = "1C86A7F0B60182EBBDFC43DB";
+		};
 		4D5F697D8AE6E0FD5DE50542 = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -244,6 +254,12 @@
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
 			path = Notdot/IdentityStore.swift;
+			sourceTree = "<group>";
+		};
+		56030A522E2313D0590B0AB6 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Notdot/SensitiveActions.swift;
 			sourceTree = "<group>";
 		};
 		577B2E971B047CFEA9E155AD = {
@@ -330,6 +346,7 @@
 		66ADC382DA4DC6DC7D4A96AB = {
 			isa = PBXGroup;
 			children = (
+				"9F14436C013D5496523FD7D8",
 				"0219F477F9B32FB07F19941B",
 				A72DD61519D69947DC99A873,
 				FC02B6EAD518CDB4CBBA27D2,
@@ -340,6 +357,8 @@
 				D60735A49F41FC2FBB72E799,
 				"8FF85A8516627E740F74A2C8",
 				"4F4074DAD65C6F9D3BA0482F",
+				"56030A522E2313D0590B0AB6",
+				"1C86A7F0B60182EBBDFC43DB",
 				"2F490D45043662B45427798D",
 				"3B040D781D2C520785CD636A",
 				CCB33F6B06E79FCCE29E7A2E,
@@ -439,6 +458,10 @@
 			isa = PBXBuildFile;
 			fileRef = "4F4074DAD65C6F9D3BA0482F";
 		};
+		95DA144CE8E7D5D373232B72 = {
+			isa = PBXBuildFile;
+			fileRef = "56030A522E2313D0590B0AB6";
+		};
 		98F54143AB4E86B28C3AFEE0 = {
 			isa = PBXProject;
 			attributes = {
@@ -463,11 +486,21 @@
 				BFF8D4F05E66371D929D09EC,
 			);
 		};
+		9F14436C013D5496523FD7D8 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Notdot/AppAttest.swift;
+			sourceTree = "<group>";
+		};
 		A0409E8EFFFDD9F75A3B85DF = {
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
 			path = Notdot/LinkModel.swift;
 			sourceTree = "<group>";
+		};
+		A0F5328A118E562121500F74 = {
+			isa = PBXBuildFile;
+			fileRef = "9F14436C013D5496523FD7D8";
 		};
 		A39EADAC204209AD3987956C = {
 			isa = PBXBuildFile;
@@ -593,6 +626,9 @@
 				"00411A92D374C52B3489F430",
 				"6023058347F28E299420B8DE",
 				"37014A893511D2C901CC0CD8",
+				A0F5328A118E562121500F74,
+				"95DA144CE8E7D5D373232B72",
+				"4B6D035A9DD7144007843650",
 				"5FA8E011D222575765E48AFF",
 				ACBF2248890D7DBF3328D0A6,
 				"3446C34BD12AE41001D720D9",

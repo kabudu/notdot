@@ -4,7 +4,13 @@ import SwiftUI
 /// conversation text field; text appears only in setup (pairing).
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var showingLink = false
+    @State private var showingLink = Self.openSensitive
+    #if DEBUG
+    /// Debug-only: open the sensitive-actions screen at launch (UI tests).
+    static let openSensitive = ProcessInfo.processInfo.arguments.contains("-NotdotSensitiveScenario")
+    #else
+    static let openSensitive = false
+    #endif
 
     var body: some View {
         ZStack {
@@ -37,6 +43,7 @@ struct ContentView: View {
 
 struct PairingView: View {
     @ObservedObject var link: LinkModel
+    @State private var path: [String] = ContentView.openSensitive ? ["sensitive"] : []
     @State private var qr = ""
     @State private var name = "My phone"
     #if DEBUG
@@ -44,7 +51,7 @@ struct PairingView: View {
     #endif
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Form {
                 Section("Link to your computer") {
                     TextField("Pairing code from the computer", text: $qr)
@@ -61,8 +68,11 @@ struct PairingView: View {
                 }
                 Section("Status") {
                     Text(link.message)
-                    Text(link.stepUp).font(.footnote)
                     Text(routeText).accessibilityIdentifier("route")
+                }
+                Section {
+                    NavigationLink("Sensitive actions", value: "sensitive")
+                        .accessibilityHint("Set up Face ID or Touch ID confirmation, and erase memories.")
                 }
                 #if DEBUG
                 Section("Debug") {
@@ -73,6 +83,9 @@ struct PairingView: View {
                 #endif
             }
             .navigationTitle("Linked computer")
+            .navigationDestination(for: String.self) { _ in
+                SensitiveActionsView(model: link.sensitive)
+            }
         }
     }
 
