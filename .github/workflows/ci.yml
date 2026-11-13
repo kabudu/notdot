@@ -121,6 +121,9 @@ jobs:
         with:
           toolchain: 1.97.0
           targets: ${{ matrix.target }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
       # mobile/rust pins libc for iOS; this proves its lockfile builds and
       # stays in step with the desktop lock (see mobile/README.md).
       - run: python3 scripts/check_mobile_lock.py
