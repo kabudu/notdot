@@ -60,7 +60,7 @@ async fn paired_over_relay(url: &str) -> (Desktop, Phone) {
         )
         .unwrap();
     let addr = relay_only(&desktop_addr(&qr).unwrap());
-    let pairing = phone.pair(&qr, addr, "Synthetic phone", &[]).await.unwrap();
+    let pairing = phone.pair(&qr, addr, "Synthetic phone").await.unwrap();
     let pending = desktop.pending();
     assert_eq!(pending[0].sas, pairing.sas);
     desktop.approve(&pending[0]).unwrap();

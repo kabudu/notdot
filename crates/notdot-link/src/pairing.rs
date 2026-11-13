@@ -188,10 +188,6 @@ pub struct PairRequest {
     #[serde(with = "crate::b64")]
     pub offer: Vec<u8>,
     pub name: String,
-    /// SEC1 P-256 public key held by the phone's secure hardware, used only
-    /// for owner step-up. Empty if the phone has none.
-    #[serde(with = "crate::b64")]
-    pub step_up_key: Vec<u8>,
     #[serde(with = "crate::b64")]
     pub proof: Vec<u8>,
 }
@@ -211,7 +207,6 @@ fn proof_mac(
     desktop: DeviceId,
     phone: DeviceId,
     name: &str,
-    step_up_key: &[u8],
 ) -> Hmac<Sha256> {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any key length");
     mac.update(PROOF_LABEL);
@@ -221,8 +216,6 @@ fn proof_mac(
     // Length-prefix variable fields so boundaries cannot shift.
     mac.update(&(name.len() as u32).to_be_bytes());
     mac.update(name.as_bytes());
-    mac.update(&(step_up_key.len() as u32).to_be_bytes());
-    mac.update(step_up_key);
     mac
 }
 
@@ -247,13 +240,8 @@ fn is_format(c: char) -> bool {
 
 /// Phone side: build the request for a scanned QR and the code to display.
 /// `phone` must be the key the phone's transport will authenticate with.
-pub fn phone_request(
-    qr: &QrPayload,
-    phone: DeviceId,
-    name: &str,
-    step_up_key: &[u8],
-) -> (PairRequest, Sas) {
-    let proof = proof_mac(&qr.secret, &qr.offer, qr.desktop, phone, name, step_up_key)
+pub fn phone_request(qr: &QrPayload, phone: DeviceId, name: &str) -> (PairRequest, Sas) {
+    let proof = proof_mac(&qr.secret, &qr.offer, qr.desktop, phone, name)
         .finalize()
         .into_bytes()
         .to_vec();
@@ -261,7 +249,6 @@ pub fn phone_request(
         PairRequest {
             offer: qr.offer.clone(),
             name: name.to_owned(),
-            step_up_key: step_up_key.to_vec(),
             proof,
         },
         sas(&qr.secret, &qr.offer, qr.desktop, phone),
@@ -276,20 +263,15 @@ pub struct DeviceRecord {
     pub profile: ProfileRef,
     pub device_profile: DeviceProfile,
     pub scopes: BTreeSet<Scope>,
-    #[serde(with = "crate::b64")]
-    pub step_up_key: Vec<u8>,
-    /// Owner-granted sensitive access, until this time.
-    pub sensitive_until_ms: Option<u64>,
     pub paired_ms: u64,
 }
 impl DeviceRecord {
-    pub fn allows(&self, scope: Scope, now_ms: u64) -> bool {
+    pub fn allows(&self, scope: Scope) -> bool {
         match scope {
-            Scope::Sensitive => {
-                self.device_profile == DeviceProfile::Owner
-                    && self.sensitive_until_ms.is_some_and(|until| now_ms < until)
-                    && !self.step_up_key.is_empty()
-            }
+            // Only an owner phone may ask; each action still needs an
+            // attested step-up key, a live owner grant and a fresh step-up,
+            // which the service checks.
+            Scope::Sensitive => self.device_profile == DeviceProfile::Owner,
             scope => self.scopes.contains(&scope),
         }
     }
@@ -346,19 +328,6 @@ impl DeviceRegistry {
         self.revoked.insert(device);
         self.devices.remove(&device).is_some()
     }
-    /// Owner action on the desktop: allow sensitive requests (each still
-    /// needing a step-up) from an owner phone until `until_ms`.
-    pub fn grant_sensitive(&mut self, device: DeviceId, until_ms: u64) -> Result<(), LinkError> {
-        let record = self
-            .devices
-            .get_mut(&device)
-            .ok_or(LinkError::Refused(Refusal::Unknown))?;
-        if record.device_profile != DeviceProfile::Owner || record.step_up_key.is_empty() {
-            return Err(LinkError::Forbidden);
-        }
-        record.sensitive_until_ms = Some(until_ms);
-        Ok(())
-    }
     pub fn get(&self, device: &DeviceId) -> Option<&DeviceRecord> {
         self.devices.get(device)
     }
@@ -395,7 +364,6 @@ struct Offer {
     device_profile: DeviceProfile,
     failures: u8,
     state: OfferState,
-    step_up_key: Vec<u8>,
 }
 
 /// Desktop pairing state: open offers and decisions.
@@ -441,7 +409,6 @@ impl PairingDesk {
                 device_profile,
                 failures: 0,
                 state: OfferState::Open,
-                step_up_key: Vec::new(),
             },
         );
         Ok(QrPayload {
@@ -482,17 +449,7 @@ impl PairingDesk {
         {
             return Err(LinkError::BadRequest("phone name"));
         }
-        if !request.step_up_key.is_empty() && !crate::stepup::valid_key(&request.step_up_key) {
-            return Err(LinkError::BadRequest("step-up key"));
-        }
-        let mac = proof_mac(
-            &offer.secret,
-            &request.offer,
-            desktop,
-            peer,
-            &request.name,
-            &request.step_up_key,
-        );
+        let mac = proof_mac(&offer.secret, &request.offer, desktop, peer, &request.name);
         if mac.verify_slice(&request.proof).is_err() {
             offer.failures += 1;
             if offer.failures >= MAX_PROOF_FAILURES {
@@ -506,7 +463,6 @@ impl PairingDesk {
             name: request.name.clone(),
             sas: sas(&offer.secret, &request.offer, desktop, peer),
         };
-        offer.step_up_key = request.step_up_key.clone();
         offer.state = OfferState::AwaitingApproval(pending.clone());
         Ok(pending)
     }
@@ -532,8 +488,6 @@ impl PairingDesk {
             profile: offer.profile.clone(),
             device_profile: offer.device_profile,
             scopes: offer.device_profile.scopes(),
-            step_up_key: offer.step_up_key.clone(),
-            sensitive_until_ms: None,
             paired_ms: now_ms,
         };
         registry.insert(record.clone())?;
@@ -606,10 +560,6 @@ mod tests {
     const PHONE: DeviceId = DeviceId([2; 32]);
     const THIEF: DeviceId = DeviceId([3; 32]);
 
-    fn step_up_key() -> Vec<u8> {
-        crate::stepup::tests::public(&crate::stepup::tests::key())
-    }
-
     fn owner() -> ProfileRef {
         ProfileRef {
             id: "owner".into(),
@@ -644,14 +594,16 @@ mod tests {
     #[test]
     fn approved_pairing_registers_profile_scopes_and_matching_codes() {
         let (mut desk, qr) = desk_with_offer(0);
-        let (request, phone_sas) = phone_request(&qr, PHONE, "Ama's phone", &step_up_key());
+        let (request, phone_sas) = phone_request(&qr, PHONE, "Ama's phone");
         let pending = desk.submit(PHONE, &request, 10).unwrap();
         assert_eq!(pending.sas, phone_sas);
         assert_eq!(phone_sas.to_string().len(), 7);
         let mut registry = DeviceRegistry::default();
         let record = desk.approve(&pending.offer, &mut registry, 20).unwrap();
         assert_eq!(record.scopes, DeviceProfile::Owner.scopes());
-        assert!(!record.allows(Scope::Sensitive, 20));
+        // An owner phone may ask; the service still needs an attested key,
+        // a grant and a step-up for every sensitive action.
+        assert!(record.allows(Scope::Sensitive));
         assert_eq!(
             registry.authorize(PHONE, |_| Some(1)).unwrap().name,
             "Ama's phone"
@@ -661,7 +613,7 @@ mod tests {
     #[test]
     fn a_copied_request_is_useless_from_another_key() {
         let (mut desk, qr) = desk_with_offer(0);
-        let (request, _) = phone_request(&qr, PHONE, "phone", &[]);
+        let (request, _) = phone_request(&qr, PHONE, "phone");
         assert!(matches!(
             desk.submit(THIEF, &request, 1),
             Err(LinkError::BadProof)
@@ -673,13 +625,13 @@ mod tests {
     #[test]
     fn a_photographed_qr_yields_a_different_code_for_the_thief() {
         let (mut desk, qr) = desk_with_offer(0);
-        let (thief_request, thief_sas) = phone_request(&qr, THIEF, "phone", &[]);
+        let (thief_request, thief_sas) = phone_request(&qr, THIEF, "phone");
         let shown_on_desktop = desk.submit(THIEF, &thief_request, 1).unwrap().sas;
         assert_eq!(shown_on_desktop, thief_sas);
-        let (_, owner_sees) = phone_request(&qr, PHONE, "phone", &[]);
+        let (_, owner_sees) = phone_request(&qr, PHONE, "phone");
         assert_ne!(shown_on_desktop, owner_sees, "owner must see a mismatch");
         // And the owner's own phone is now refused: one phone per code.
-        let (request, _) = phone_request(&qr, PHONE, "phone", &[]);
+        let (request, _) = phone_request(&qr, PHONE, "phone");
         assert!(matches!(
             desk.submit(PHONE, &request, 2),
             Err(LinkError::OfferUsed)
@@ -689,7 +641,7 @@ mod tests {
     #[test]
     fn offers_are_single_use_expire_and_burn_after_bad_proofs() {
         let (mut desk, qr) = desk_with_offer(0);
-        let (request, _) = phone_request(&qr, PHONE, "phone", &[]);
+        let (request, _) = phone_request(&qr, PHONE, "phone");
         let pending = desk.submit(PHONE, &request, 1).unwrap();
         let mut registry = DeviceRegistry::default();
         desk.approve(&pending.offer, &mut registry, 2).unwrap();
@@ -703,14 +655,14 @@ mod tests {
         ));
 
         let (mut desk, qr) = desk_with_offer(0);
-        let (request, _) = phone_request(&qr, PHONE, "phone", &[]);
+        let (request, _) = phone_request(&qr, PHONE, "phone");
         assert!(matches!(
             desk.submit(PHONE, &request, OFFER_TTL_MS),
             Err(LinkError::OfferUnavailable)
         ));
 
         let (mut desk, qr) = desk_with_offer(0);
-        let (mut request, _) = phone_request(&qr, PHONE, "phone", &[]);
+        let (mut request, _) = phone_request(&qr, PHONE, "phone");
         let good = request.proof.clone();
         request.proof[0] ^= 1;
         for _ in 0..MAX_PROOF_FAILURES {
@@ -732,7 +684,7 @@ mod tests {
         let offer = qr.offer_id();
         let mut registry = DeviceRegistry::default();
         assert!(desk.approve(&offer, &mut registry, 1).is_err());
-        let (request, _) = phone_request(&qr, PHONE, "phone", &[]);
+        let (request, _) = phone_request(&qr, PHONE, "phone");
         desk.submit(PHONE, &request, 1).unwrap();
         desk.deny(&offer);
         assert!(desk.approve(&offer, &mut registry, 2).is_err());
@@ -754,7 +706,7 @@ mod tests {
         desk.create_offer(owner(), DeviceProfile::Member, OFFER_TTL_MS, OFFER_TTL_MS)
             .unwrap();
         let (mut desk, qr) = desk_with_offer(0);
-        let (request, _) = phone_request(&qr, PHONE, &"x".repeat(MAX_NAME_BYTES + 1), &[]);
+        let (request, _) = phone_request(&qr, PHONE, &"x".repeat(MAX_NAME_BYTES + 1));
         assert!(desk.submit(PHONE, &request, 1).is_err());
         for name in [
             "bad\u{7}name",
@@ -762,20 +714,15 @@ mod tests {
             "zero\u{200B}width",
             "   ",
         ] {
-            let (request, _) = phone_request(&qr, PHONE, name, &[]);
+            let (request, _) = phone_request(&qr, PHONE, name);
             assert!(desk.submit(PHONE, &request, 1).is_err(), "{name:?}");
         }
-        let (request, _) = phone_request(&qr, PHONE, "phone", &[4; 65]);
-        assert!(matches!(
-            desk.submit(PHONE, &request, 1),
-            Err(LinkError::BadRequest("step-up key"))
-        ));
     }
 
     #[test]
     fn revocation_and_profile_epochs_refuse_connections() {
         let (mut desk, qr) = desk_with_offer(0);
-        let (request, _) = phone_request(&qr, PHONE, "phone", &[]);
+        let (request, _) = phone_request(&qr, PHONE, "phone");
         let pending = desk.submit(PHONE, &request, 1).unwrap();
         let mut registry = DeviceRegistry::default();
         desk.approve(&pending.offer, &mut registry, 2).unwrap();
@@ -799,30 +746,23 @@ mod tests {
     }
 
     #[test]
-    fn sensitive_scope_needs_owner_profile_step_up_key_and_live_grant() {
+    fn only_owner_phones_may_ask_for_sensitive_actions() {
         let mut registry = DeviceRegistry::default();
-        for (device, profile, key) in [
-            (PHONE, DeviceProfile::Owner, step_up_key()),
-            (THIEF, DeviceProfile::Member, step_up_key()),
+        for (device, profile) in [
+            (PHONE, DeviceProfile::Owner),
+            (THIEF, DeviceProfile::Member),
         ] {
             let (mut desk, _) = desk_with_offer(0);
             let qr = desk
                 .create_offer(owner(), profile, 0, OFFER_TTL_MS)
                 .unwrap();
-            let (request, _) = phone_request(&qr, device, "phone", &key);
+            let (request, _) = phone_request(&qr, device, "phone");
             let pending = desk.submit(device, &request, 1).unwrap();
             desk.approve(&pending.offer, &mut registry, 1).unwrap();
         }
-        assert!(registry.grant_sensitive(THIEF, 100).is_err());
-        registry.grant_sensitive(PHONE, 100).unwrap();
-        let record = registry.get(&PHONE).unwrap();
-        assert!(record.allows(Scope::Sensitive, 99));
-        assert!(!record.allows(Scope::Sensitive, 100));
-        assert!(
-            !registry
-                .get(&THIEF)
-                .unwrap()
-                .allows(Scope::StageSettings, 1)
-        );
+        assert!(registry.get(&PHONE).unwrap().allows(Scope::Sensitive));
+        let member = registry.get(&THIEF).unwrap();
+        assert!(!member.allows(Scope::Sensitive));
+        assert!(!member.allows(Scope::StageSettings));
     }
 }

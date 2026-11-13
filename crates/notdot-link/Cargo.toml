@@ -19,9 +19,12 @@ getrandom = "0.3"
 base64 = "0.22"
 thiserror = "2"
 rustls-pki-types = "1"
+ring = "0.17"
 [features]
 # Accept the self-signed certificate of iroh's local test relay. Tests only.
 test-relay = ["iroh/test-utils"]
+# Synthetic attestation roots for tests. Never enable in a shipped build.
+test-attestation = []
 [[example]]
 name = "desktop_sim"
 required-features = ["test-relay"]

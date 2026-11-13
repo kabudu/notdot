@@ -52,7 +52,7 @@ async fn paired(relays: &RelayMap, profile: DeviceProfile) -> (Desktop, Phone) {
         .unwrap();
     let qr = notdot_link::pairing::QrPayload::decode(&qr.encode()).unwrap();
     let pairing = phone
-        .pair(&qr, desktop_addr(&qr).unwrap(), "Synthetic phone", &[])
+        .pair(&qr, desktop_addr(&qr).unwrap(), "Synthetic phone")
         .await
         .unwrap();
     let pending = desktop.pending();
@@ -250,17 +250,14 @@ async fn a_qr_cannot_be_reused_or_redirected() {
         let other = Phone::bind(None, &net(&relays, true)).await.unwrap();
         let mut wrong = desktop_addr(&qr).unwrap();
         wrong.id = iroh::SecretKey::generate().public();
-        assert!(other.pair(&qr, wrong, "x", &[]).await.is_err());
+        assert!(other.pair(&qr, wrong, "x").await.is_err());
         // First phone uses it; a second phone is refused.
         let first = Phone::bind(None, &net(&relays, true)).await.unwrap();
         let pairing = first
-            .pair(&qr, desktop_addr(&qr).unwrap(), "first", &[])
+            .pair(&qr, desktop_addr(&qr).unwrap(), "first")
             .await
             .unwrap();
-        match other
-            .pair(&qr, desktop_addr(&qr).unwrap(), "second", &[])
-            .await
-        {
+        match other.pair(&qr, desktop_addr(&qr).unwrap(), "second").await {
             Err(LinkError::Connection(reason)) => assert!(reason.contains("already used")),
             Err(e) => panic!("{e}"),
             Ok(_) => panic!("second phone accepted"),

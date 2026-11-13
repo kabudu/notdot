@@ -36,4 +36,22 @@ pub enum MobileError {
     Unpaired { detail: String },
     #[error("{detail}")]
     Wake { detail: String },
+    /// The owner cancelled on the phone; nothing was sent or changed.
+    #[error("{detail}")]
+    Cancelled { detail: String },
+    /// The computer refused: not allowed, or the confirmation or evidence
+    /// did not verify. Nothing changed.
+    #[error("{detail}")]
+    Denied { detail: String },
+    /// The confirmation took too long; nothing changed. Start again.
+    #[error("{detail}")]
+    Expired { detail: String },
+    /// Not connected to the computer. Retrying with the same request id
+    /// after reconnecting never repeats an action.
+    #[error("{detail}")]
+    Offline { detail: String },
+    /// This phone cannot do this (no secure hardware, no attestation
+    /// service, or not set up yet).
+    #[error("{detail}")]
+    Unavailable { detail: String },
 }

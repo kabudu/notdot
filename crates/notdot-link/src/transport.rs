@@ -236,6 +236,9 @@ impl Desktop {
     /// Owner approves after comparing codes.
     pub fn approve(&self, pending: &PendingApproval) -> Result<DeviceRecord, LinkError> {
         let now = now_ms(&self.state.clock);
+        // A new pairing starts without a step-up key or grant: forget them
+        // before the new record exists, so the two never coexist.
+        self.state.service.forget_step_up(pending.device);
         let record = {
             let mut desk = self.state.desk.lock().expect("desk lock");
             let mut registry = self.state.registry.lock().expect("registry lock");
@@ -265,6 +268,7 @@ impl Desktop {
             .lock()
             .expect("registry lock")
             .revoke(device);
+        self.state.service.forget_step_up(device);
         let connections = live.remove(&device).unwrap_or_default();
         drop(live);
         for connection in connections {
@@ -272,12 +276,28 @@ impl Desktop {
         }
     }
 
+    /// Owner action: allow an owner phone with an attested step-up key to
+    /// make sensitive requests until `until_ms`, each still needing a fresh
+    /// step-up. Refused for member phones and phones without a key.
     pub fn grant_sensitive(&self, device: DeviceId, until_ms: u64) -> Result<(), LinkError> {
-        self.state
-            .registry
-            .lock()
-            .expect("registry lock")
-            .grant_sensitive(device, until_ms)
+        let registry = self.state.registry.lock().expect("registry lock");
+        let record = registry
+            .get(&device)
+            .ok_or(LinkError::Refused(Refusal::Unknown))?;
+        if record.device_profile != DeviceProfile::Owner {
+            return Err(LinkError::Forbidden);
+        }
+        self.state.service.grant_sensitive(device, until_ms)
+    }
+
+    /// Which platform evidence this desktop accepts for step-up keys.
+    pub fn set_attestation_policy(&self, policy: crate::attest::AttestationPolicy) {
+        self.state.service.set_attestation_policy(policy);
+    }
+
+    /// A phone's verified step-up protection and grant, for the owner.
+    pub fn step_up_state(&self, device: DeviceId) -> Option<crate::stepup::StepUpState> {
+        self.state.service.step_up_state(device)
     }
 
     pub async fn close(self) {
@@ -555,12 +575,11 @@ impl Phone {
         qr: &QrPayload,
         addr: EndpointAddr,
         name: &str,
-        step_up_key: &[u8],
     ) -> Result<Pairing, LinkError> {
         if device_id(addr.id) != qr.desktop {
             return Err(LinkError::BadQr("address is not the QR's desktop"));
         }
-        let (request, sas) = crate::pairing::phone_request(qr, self.id(), name, step_up_key);
+        let (request, sas) = crate::pairing::phone_request(qr, self.id(), name);
         let connection = self
             .endpoint
             .connect(addr, PAIR_ALPN)

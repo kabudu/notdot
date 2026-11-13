@@ -10,6 +10,7 @@
 //!
 //! The desktop never opens a listener for its existing runtime commands; the
 //! only inbound surface is this allowlisted protocol, after pairing.
+pub mod attest;
 pub mod pairing;
 pub mod protocol;
 pub mod service;
@@ -53,6 +54,12 @@ pub enum LinkError {
     Busy,
     #[error("step-up rejected")]
     StepUpRejected,
+    #[error("step-up challenge expired")]
+    StepUpExpired,
+    /// An enrolled key no longer passes the desktop's policy (revoked
+    /// certificate, app no longer allowed); it has been forgotten.
+    #[error("step-up key withdrawn: {0}")]
+    StepUpWithdrawn(String),
     #[error("frame too large")]
     FrameTooLarge,
     #[error("refused: {0}")]
@@ -75,6 +82,11 @@ pub(crate) fn random_bytes<const N: usize>() -> [u8; N] {
     let mut bytes = [0; N];
     getrandom::fill(&mut bytes).expect("the OS random source is available");
     bytes
+}
+
+/// Decode the link's base64url (no padding) text.
+pub fn b64_decode(text: &str) -> Option<Vec<u8>> {
+    b64::decode(text)
 }
 
 pub(crate) mod b64 {

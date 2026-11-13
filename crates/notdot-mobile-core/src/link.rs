@@ -8,7 +8,9 @@
 //! without pairing again. This API never returns the identity key; native
 //! code creates it ([`new_identity`]) and stores it before first use.
 use crate::MobileError;
-use crate::stepup::{StepUpKey, StepUpSigner, check_step_up_key};
+use crate::stepup::{
+    StepUpAttester, StepUpProtection, StepUpSigner, StepUpStatus, attest_request, sign_request,
+};
 use notdot_link::{
     pairing::{PairedDesktop, QrPayload},
     protocol::{Op, OpError, PairFrame, RequestId, ServerFrame, StepUpProof},
@@ -145,19 +147,9 @@ impl PhoneLink {
     /// Start pairing from a scanned (or typed) QR code. Returns the
     /// six-digit code to show; the desktop shows the same code. Nothing
     /// changes for an existing pairing unless the owner approves this one.
-    /// `step_up` is this phone's hardware step-up key, if it has one; it
-    /// must be hardware-backed ([`check_step_up_key`]). Without one, the
-    /// phone pairs but cannot perform sensitive actions.
-    pub async fn pair(
-        &self,
-        qr: String,
-        name: String,
-        step_up: Option<StepUpKey>,
-    ) -> Result<String, MobileError> {
-        if let Some(key) = &step_up {
-            check_step_up_key(key.clone())?;
-        }
-        let step_up_key = step_up.map(|key| key.public_key).unwrap_or_default();
+    /// Sensitive actions need a separate, attested step-up key
+    /// ([`Self::set_up_step_up`]).
+    pub async fn pair(&self, qr: String, name: String) -> Result<String, MobileError> {
         let qr = QrPayload::decode(qr.trim()).map_err(link_error)?;
         let net = net_for(&PairedDesktop::from_qr(&qr), true)?;
         let secret = self.state.lock().await.secret.clone();
@@ -171,7 +163,6 @@ impl PhoneLink {
                 &qr,
                 paired_addr(&PairedDesktop::from_qr(&qr)).map_err(link_error)?,
                 &name,
-                &step_up_key,
             )
             .await
         {
@@ -326,10 +317,70 @@ impl PhoneLink {
         }
     }
 
-    /// Clear this profile's memories on the desktop: a sensitive action.
-    /// Needs a step-up key registered at pairing and an owner grant made at
-    /// the desktop. `signer` asks the owner to authenticate on the phone
-    /// once, for this one action. Returns how many memories were removed.
+    /// This phone's step-up state on the computer.
+    pub async fn step_up_status(&self) -> Result<StepUpStatus, MobileError> {
+        match self.call(RequestId::random(), Op::StepUpStatus {}).await? {
+            ServerFrame::Done { result, .. } => Ok(StepUpStatus {
+                enrolled: result["enrolled"].as_bool().unwrap_or(false),
+                protection: StepUpProtection::from_wire(&result["protection"]),
+                granted: result["granted"].as_bool().unwrap_or(false),
+                test_only: result["test_only"].as_bool().unwrap_or(false),
+                development: result["development"].as_bool().unwrap_or(false),
+                key_sha256: result["key_sha256"]
+                    .as_str()
+                    .and_then(notdot_link::b64_decode)
+                    .filter(|d| d.len() == 32),
+            }),
+            other => Err(refused(other)),
+        }
+    }
+
+    /// Set up (or replace) this phone's step-up key. `attester` creates the
+    /// key and its platform evidence; the computer verifies the evidence
+    /// and returns the protection it confirmed. A new key ends any earlier
+    /// grant: the owner allows sensitive actions again at the computer.
+    ///
+    /// Native code keeps the previous key until this succeeds. If it fails
+    /// with [`MobileError::Offline`], the computer may or may not have the
+    /// new key: keep both, and settle it later from
+    /// [`StepUpStatus::key_sha256`] (see [`crate::stepup::step_up_key_sha256`]).
+    pub async fn set_up_step_up(
+        &self,
+        attester: Arc<dyn StepUpAttester>,
+    ) -> Result<StepUpProtection, MobileError> {
+        let (desktop, phone) = self.ids().await?;
+        let nonce = match self
+            .call(RequestId::random(), Op::StepUpEnrollChallenge {})
+            .await?
+        {
+            ServerFrame::Done { result, .. } => notdot_link::stepup::challenge_nonce(&result)
+                .ok_or_else(|| link_error("the computer sent a malformed challenge"))?,
+            other => return Err(refused(other)),
+        };
+        let request = attest_request(desktop, phone, nonce);
+        // Key generation and App Attest can take a while; keep the runtime free.
+        let evidence = tokio::task::spawn_blocking(move || attester.attest(request))
+            .await
+            .map_err(|_| link_error("setting up the key stopped"))??
+            .into_wire()?;
+        match self
+            .call(RequestId::random(), Op::StepUpEnroll { nonce, evidence })
+            .await?
+        {
+            ServerFrame::Done { result, .. } => StepUpProtection::from_wire(&result["protection"])
+                .ok_or_else(|| link_error("the computer sent a malformed reply")),
+            other => Err(refused(other)),
+        }
+    }
+
+    /// Clear this profile's memories on the computer: a sensitive action.
+    /// Needs an attested step-up key and the owner's grant at the computer.
+    /// `signer` asks the owner to authenticate on the phone once, for this
+    /// one action. Returns how many memories were removed.
+    ///
+    /// Call again with the same `request_id` after a dropped connection: if
+    /// the computer already did it, the recorded result comes back without
+    /// a second prompt or a second effect.
     pub async fn reset_memory(
         &self,
         request_id: String,
@@ -337,11 +388,20 @@ impl PhoneLink {
     ) -> Result<u64, MobileError> {
         let id = parse_id(&request_id)?;
         let op = Op::ResetMemory {};
-        let proof = self.step_up(&op, signer).await?;
-        match self.call_with(id, op, Some(proof)).await? {
+        let removed = |frame: ServerFrame| match frame {
             ServerFrame::Done { result, .. } => Ok(result["removed"].as_u64().unwrap_or(0)),
             other => Err(refused(other)),
+        };
+        // Already done under this id? Then no prompt is needed.
+        match self.call(id, op.clone()).await? {
+            ServerFrame::Failed {
+                error: OpError::NeedsStepUp,
+                ..
+            } => {}
+            other => return removed(other),
         }
+        let proof = self.step_up(&op, signer).await?;
+        removed(self.call_with(id, op, Some(proof)).await?)
     }
 
     pub async fn disconnect(&self) {
@@ -375,13 +435,7 @@ impl PhoneLink {
         op: Op,
         step_up: Option<StepUpProof>,
     ) -> Result<ServerFrame, MobileError> {
-        let link = self
-            .state
-            .lock()
-            .await
-            .link
-            .clone()
-            .ok_or_else(|| link_error("not connected"))?;
+        let link = self.state.lock().await.link.clone().ok_or_else(offline)?;
         match link.call(id, op, step_up).await {
             Ok(frame) => Ok(frame),
             Err(error) => Err(self.failed(error).await),
@@ -392,8 +446,15 @@ impl PhoneLink {
     /// desktop, or a stale profile) ends this pairing: the core forgets it
     /// and says so, so native code can wipe its stored keys.
     async fn failed(&self, error: notdot_link::LinkError) -> MobileError {
-        let notdot_link::LinkError::Refused(refusal) = error else {
-            return link_error(error);
+        let refusal = match error {
+            notdot_link::LinkError::Refused(refusal) => refusal,
+            notdot_link::LinkError::Connection(_) | notdot_link::LinkError::Io(_) => {
+                return MobileError::Offline {
+                    detail: "Lost the connection to the computer. Nothing was lost; try again."
+                        .into(),
+                };
+            }
+            other => return link_error(other),
         };
         self.unpair().await;
         MobileError::Unpaired {
@@ -403,6 +464,13 @@ impl PhoneLink {
         }
     }
 
+    async fn ids(&self) -> Result<(notdot_link::DeviceId, notdot_link::DeviceId), MobileError> {
+        let state = self.state.lock().await;
+        let desktop = state.paired.as_ref().map(|p| p.desktop);
+        let phone = state.phone.as_ref().map(|(phone, _)| phone.id());
+        desktop.zip(phone).ok_or_else(offline)
+    }
+
     /// Fetch a single-use challenge for `op` and have the owner sign it.
     async fn step_up(
         &self,
@@ -410,28 +478,33 @@ impl PhoneLink {
         signer: Arc<dyn StepUpSigner>,
     ) -> Result<StepUpProof, MobileError> {
         let digest = notdot_link::stepup::op_digest(op);
-        let (desktop, phone) = {
-            let state = self.state.lock().await;
-            let desktop = state.paired.as_ref().map(|p| p.desktop);
-            let phone = state.phone.as_ref().map(|(phone, _)| phone.id());
-            desktop
-                .zip(phone)
-                .ok_or_else(|| link_error("not connected"))?
-        };
+        let (desktop, phone) = self.ids().await?;
         let nonce = match self
             .call(RequestId::random(), Op::StepUpChallenge { digest })
             .await?
         {
             ServerFrame::Done { result, .. } => notdot_link::stepup::challenge_nonce(&result)
-                .ok_or_else(|| link_error("the desktop sent a malformed challenge"))?,
+                .ok_or_else(|| link_error("the computer sent a malformed challenge"))?,
             other => return Err(refused(other)),
         };
-        let message = notdot_link::stepup::message(desktop, phone, &nonce, &digest);
+        let request = sign_request(notdot_link::stepup::message(
+            desktop, phone, &nonce, &digest,
+        ));
         // The owner may take a while to authenticate; keep the runtime free.
-        let signature = tokio::task::spawn_blocking(move || signer.sign(message))
+        let signed = tokio::task::spawn_blocking(move || signer.sign(request))
             .await
             .map_err(|_| link_error("step-up signing stopped"))??;
-        Ok(StepUpProof { nonce, signature })
+        Ok(StepUpProof {
+            nonce,
+            signature: signed.signature,
+            assertion: signed.assertion,
+        })
+    }
+}
+
+fn offline() -> MobileError {
+    MobileError::Offline {
+        detail: "Not connected to the computer.".into(),
     }
 }
 
@@ -462,23 +535,36 @@ fn parse_id(text: &str) -> Result<RequestId, MobileError> {
         })
 }
 
-/// A plain-language error for a call the desktop did not commit.
+/// A plain-language error for a call the computer did not commit.
 fn refused(frame: ServerFrame) -> MobileError {
-    link_error(match frame {
+    let denied = |detail: &str| MobileError::Denied {
+        detail: detail.into(),
+    };
+    match frame {
         ServerFrame::Failed { error, .. } => match error {
-            OpError::Forbidden => {
-                "This phone is not allowed to do that. The owner can grant it at the desktop."
-                    .into()
-            }
+            OpError::Forbidden => denied(
+                "This phone isn't allowed to do that right now. Allow sensitive actions for it on your computer, then try again.",
+            ),
             OpError::NeedsStepUp | OpError::StepUpRejected => {
-                "The desktop did not accept this phone's confirmation. Try again.".into()
+                denied("Your computer didn't accept this phone's confirmation. Nothing changed.")
             }
-            OpError::Busy => "The desktop is busy. Try again.".into(),
-            other => format!("The desktop refused: {other:?}"),
+            OpError::StepUpExpired => MobileError::Expired {
+                detail: "The confirmation took too long. Nothing changed; start again.".into(),
+            },
+            OpError::StepUpNotEnrolled => MobileError::Unavailable {
+                detail: "Set up sensitive actions on this phone first.".into(),
+            },
+            OpError::AttestationRejected { reason } => MobileError::Denied {
+                detail: format!("Your computer couldn't verify this phone: {reason}."),
+            },
+            OpError::Busy => link_error("Your computer is busy. Try again in a moment."),
+            other => link_error(format!("Your computer refused: {other:?}")),
         },
-        ServerFrame::Cancelled { .. } => "Cancelled; nothing changed.".into(),
-        other => format!("Unexpected reply: {other:?}"),
-    })
+        ServerFrame::Cancelled { .. } => MobileError::Cancelled {
+            detail: "Cancelled; nothing changed.".into(),
+        },
+        other => link_error(format!("Unexpected reply: {other:?}")),
+    }
 }
 
 fn route(link: &Link) -> LinkRoute {
@@ -517,15 +603,6 @@ mod tests {
     /// Pair `phone` into `profile`, approving on the desktop as the owner
     /// would after comparing codes. Returns the phone's device id.
     async fn pair(desktop: &Desktop, phone: &PhoneLink, profile: &str) -> notdot_link::DeviceId {
-        pair_with(desktop, phone, profile, None).await
-    }
-
-    async fn pair_with(
-        desktop: &Desktop,
-        phone: &PhoneLink,
-        profile: &str,
-        step_up: Option<StepUpKey>,
-    ) -> notdot_link::DeviceId {
         let kind = if profile == "owner" {
             DeviceProfile::Owner
         } else {
@@ -542,7 +619,7 @@ mod tests {
             )
             .unwrap();
         let sas = phone
-            .pair(qr.encode(), "Synthetic phone".into(), step_up)
+            .pair(qr.encode(), "Synthetic phone".into())
             .await
             .unwrap();
         let pending = desktop.pending();
@@ -679,145 +756,369 @@ mod tests {
     /// A stand-in for the native hardware signer, for loopback tests only:
     /// a software P-256 key that claims a hardware protection level. Real
     /// Secure Enclave / StrongBox behaviour needs a physical phone.
-    struct MockSigner {
-        key: p256::ecdsa::SigningKey,
-        fail: bool,
-        signed: std::sync::Mutex<Vec<Vec<u8>>>,
+    use crate::stepup::{
+        AttestRequest, SignRequest, StepUpEvidence, StepUpSignature, app_attest_client_data_hash,
+    };
+    use notdot_link::attest::testing::{AppAttestDevice, KeySpec, TestRoots, point, random_key};
+    use p256::ecdsa::{Signature, SigningKey, signature::Signer as _};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    /// Test-only native adapters: synthetic keys and evidence from a test
+    /// CA. The desktop marks what they enrol `test_only`; they never stand
+    /// in for real hardware.
+    struct TestKeys {
+        roots: TestRoots,
+        apple: bool,
+        key: std::sync::Mutex<Option<SigningKey>>,
+        device: std::sync::Mutex<AppAttestDevice>,
+        signed: AtomicUsize,
+        cancel: std::sync::atomic::AtomicBool,
+        /// Called inside `sign`, as if the owner took a while.
+        during_sign: std::sync::Mutex<Option<Box<dyn Fn() + Send>>>,
     }
-    impl MockSigner {
-        fn new(seed: u8) -> Arc<Self> {
+    impl TestKeys {
+        fn new(roots: &TestRoots, apple: bool) -> Arc<Self> {
             Arc::new(Self {
-                key: p256::ecdsa::SigningKey::from_slice(&[seed; 32]).unwrap(),
-                fail: false,
-                signed: Default::default(),
+                device: std::sync::Mutex::new(roots.app_attest_device()),
+                roots: roots.clone(),
+                apple,
+                key: std::sync::Mutex::new(None),
+                signed: AtomicUsize::new(0),
+                cancel: false.into(),
+                during_sign: std::sync::Mutex::new(None),
             })
         }
-        fn public(&self) -> StepUpKey {
-            StepUpKey {
-                public_key: self
-                    .key
-                    .verifying_key()
-                    .to_encoded_point(false)
-                    .as_bytes()
-                    .to_vec(),
-                protection: crate::stepup::KeyProtection::TrustedEnvironment,
-            }
+    }
+    impl StepUpAttester for TestKeys {
+        fn attest(&self, request: AttestRequest) -> Result<StepUpEvidence, MobileError> {
+            let key = random_key();
+            let evidence = if self.apple {
+                let hash: [u8; 32] = app_attest_client_data_hash(request, point(&key))?
+                    .try_into()
+                    .unwrap();
+                let device = self.device.lock().unwrap();
+                StepUpEvidence::AppleAppAttest {
+                    step_up_key: point(&key),
+                    key_id: device.key_id.to_vec(),
+                    attestation: device.attest(&hash),
+                }
+            } else {
+                let challenge: [u8; 32] = request.android_challenge.try_into().unwrap();
+                StepUpEvidence::AndroidKeystore {
+                    chain: self
+                        .roots
+                        .android_chain(&key, &KeySpec::good(challenge, &self.roots.android_app)),
+                }
+            };
+            *self.key.lock().unwrap() = Some(key);
+            Ok(evidence)
         }
     }
-    impl StepUpSigner for MockSigner {
-        fn sign(&self, message: Vec<u8>) -> Result<Vec<u8>, MobileError> {
-            use p256::ecdsa::signature::Signer;
-            self.signed.lock().unwrap().push(message.clone());
-            if self.fail {
-                return Err(MobileError::Invalid {
-                    detail: "The owner cancelled.".into(),
+    impl StepUpSigner for TestKeys {
+        fn sign(&self, request: SignRequest) -> Result<StepUpSignature, MobileError> {
+            if let Some(hook) = self.during_sign.lock().unwrap().as_ref() {
+                hook();
+            }
+            if self.cancel.load(Ordering::SeqCst) {
+                return Err(MobileError::Cancelled {
+                    detail: "cancelled".into(),
                 });
             }
-            let signature: p256::ecdsa::Signature = self.key.sign(&message);
-            Ok(signature.to_der().as_bytes().to_vec())
+            self.signed.fetch_add(1, Ordering::SeqCst);
+            let key = self
+                .key
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or(MobileError::Unavailable {
+                    detail: "no key".into(),
+                })?;
+            let signature: Signature = key.sign(&request.message);
+            let assertion = self.apple.then(|| {
+                let data = notdot_link::attest::assertion_client_data(&request.message);
+                assert_eq!(
+                    request.app_attest_client_data_hash,
+                    <sha2::Sha256 as sha2::Digest>::digest(&data).to_vec()
+                );
+                self.device.lock().unwrap().assert(&data)
+            });
+            Ok(StepUpSignature {
+                signature: signature.to_der().as_bytes().to_vec(),
+                assertion,
+            })
         }
     }
 
-    /// The phone's step-up path end to end over loopback QUIC: refused
-    /// without the desktop's grant, refused when signed by another key,
-    /// refused when the owner cancels, accepted once with the registered
-    /// key, and each attempt asks the owner exactly once.
+    /// A desktop on a controllable clock that trusts `roots`.
+    async fn attesting_desktop(roots: &TestRoots, clock: Arc<AtomicU64>) -> Desktop {
+        let net = NetConfig {
+            relays: None,
+            direct: true,
+            insecure_test_relay: false,
+            relay_roots: Vec::new(),
+        };
+        let desktop = Desktop::bind(None, &net, Arc::new(move || clock.load(Ordering::SeqCst)))
+            .await
+            .unwrap();
+        desktop.set_profile_epoch("owner", 1);
+        desktop.set_profile_epoch("member", 1);
+        desktop.set_attestation_policy(roots.policy(now()));
+        desktop
+    }
+
+    fn now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+    }
+
+    async fn connected(
+        desktop: &Desktop,
+        profile: &str,
+    ) -> (Arc<PhoneLink>, notdot_link::DeviceId, Vec<u8>) {
+        let identity = new_identity();
+        let phone = PhoneLink::restore(identity.clone(), None).unwrap();
+        let device = pair(desktop, &phone, profile).await;
+        phone.connect(false).await.unwrap();
+        (phone, device, identity)
+    }
+
+    async fn flow(apple: bool) {
+        let clock = Arc::new(AtomicU64::new(now()));
+        let roots = TestRoots::new(now());
+        let desktop = attesting_desktop(&roots, clock.clone()).await;
+        let (phone, device, _) = connected(&desktop, "owner").await;
+        let keys = TestKeys::new(&roots, apple);
+        desktop.service().remember("owner", "likes tea");
+
+        // Before set-up: nothing to confirm with.
+        let status = phone.step_up_status().await.unwrap();
+        assert!(!status.enrolled && !status.granted);
+        let error = phone
+            .reset_memory(new_request_id(), keys.clone())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, MobileError::Unavailable { .. }),
+            "{error:?}"
+        );
+        assert!(
+            desktop.grant_sensitive(device, now() + 600_000).is_err(),
+            "no key, no grant"
+        );
+
+        let protection = phone.set_up_step_up(keys.clone()).await.unwrap();
+        let expected = if apple {
+            StepUpProtection::AppleAppAttested
+        } else {
+            StepUpProtection::AndroidTrustedEnvironment
+        };
+        assert_eq!(protection, expected);
+        let status = phone.step_up_status().await.unwrap();
+        assert_eq!(status.protection, Some(expected));
+        assert!(status.enrolled && status.test_only && !status.granted);
+        assert!(!status.development);
+        let held = point(keys.key.lock().unwrap().as_ref().unwrap());
+        assert_eq!(
+            status.key_sha256,
+            Some(crate::stepup::step_up_key_sha256(held))
+        );
+
+        // Set up but not allowed at the computer: denied, no prompt.
+        let error = phone
+            .reset_memory(new_request_id(), keys.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, MobileError::Denied { .. }), "{error:?}");
+        assert_eq!(keys.signed.load(Ordering::SeqCst), 0);
+
+        desktop.grant_sensitive(device, now() + 600_000).unwrap();
+        assert!(phone.step_up_status().await.unwrap().granted);
+
+        // The owner cancels the prompt: nothing changes.
+        keys.cancel.store(true, Ordering::SeqCst);
+        let error = phone
+            .reset_memory(new_request_id(), keys.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, MobileError::Cancelled { .. }), "{error:?}");
+        assert_eq!(desktop.service().profile("owner").memories.len(), 1);
+        keys.cancel.store(false, Ordering::SeqCst);
+
+        // Confirmed once: done once.
+        let id = new_request_id();
+        assert_eq!(
+            phone.reset_memory(id.clone(), keys.clone()).await.unwrap(),
+            1
+        );
+        assert_eq!(keys.signed.load(Ordering::SeqCst), 1);
+        assert!(desktop.service().profile("owner").memories.is_empty());
+        // A retry with the same id (say after a dropped reply) returns the
+        // recorded result: no second prompt, no second effect.
+        desktop.service().remember("owner", "likes coffee");
+        assert_eq!(phone.reset_memory(id, keys.clone()).await.unwrap(), 1);
+        assert_eq!(keys.signed.load(Ordering::SeqCst), 1);
+        assert_eq!(desktop.service().profile("owner").memories.len(), 1);
+
+        // Too slow to confirm: expired, nothing changed.
+        {
+            let clock = clock.clone();
+            *keys.during_sign.lock().unwrap() = Some(Box::new(move || {
+                clock.fetch_add(notdot_link::stepup::CHALLENGE_TTL_MS, Ordering::SeqCst);
+            }));
+        }
+        let error = phone
+            .reset_memory(new_request_id(), keys.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, MobileError::Expired { .. }), "{error:?}");
+        assert_eq!(desktop.service().profile("owner").memories.len(), 1);
+        *keys.during_sign.lock().unwrap() = None;
+
+        // Setting up a new key ends the grant.
+        phone.set_up_step_up(keys.clone()).await.unwrap();
+        assert!(!phone.step_up_status().await.unwrap().granted);
+        let error = phone
+            .reset_memory(new_request_id(), keys.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, MobileError::Denied { .. }), "{error:?}");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
-    async fn sensitive_actions_need_the_grant_and_the_registered_hardware_key() {
+    async fn android_attested_set_up_grant_and_one_confirmed_action() {
+        within(flow(false)).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn iphone_app_attested_set_up_grant_and_one_confirmed_action() {
+        within(flow(true)).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn evidence_from_untrusted_roots_is_refused_by_a_real_policy() {
         within(async {
-            let desktop = desktop().await;
-            let signer = MockSigner::new(7);
-            let phone = PhoneLink::new();
-            let device = pair_with(&desktop, &phone, "owner", Some(signer.public())).await;
-            phone.connect(false).await.unwrap();
-
-            // No owner grant yet: refused before the owner is asked.
-            assert!(
-                phone
-                    .reset_memory(new_request_id(), signer.clone())
-                    .await
-                    .is_err()
-            );
-            assert!(signer.signed.lock().unwrap().is_empty());
-
-            desktop.grant_sensitive(device, u64::MAX).unwrap();
-            // Another key (say, a different phone's) is refused.
-            let other = MockSigner::new(9);
-            assert!(
-                phone
-                    .reset_memory(new_request_id(), other.clone())
-                    .await
-                    .is_err()
-            );
-            assert_eq!(other.signed.lock().unwrap().len(), 1);
-            // The owner cancels: nothing is sent.
-            let cancelled = Arc::new(MockSigner {
-                key: p256::ecdsa::SigningKey::from_slice(&[7; 32]).unwrap(),
-                fail: true,
-                signed: Default::default(),
-            });
-            assert!(
-                phone
-                    .reset_memory(new_request_id(), cancelled)
-                    .await
-                    .is_err()
-            );
-            // The registered key: accepted, asking once.
-            assert_eq!(
-                phone
-                    .reset_memory(new_request_id(), signer.clone())
-                    .await
+            let roots = TestRoots::new(now());
+            let desktop = attesting_desktop(&roots, Arc::new(AtomicU64::new(now()))).await;
+            // The genuine policy: Google and Apple roots, apps configured.
+            let mut real = notdot_link::attest::AttestationPolicy::default();
+            real.android_apps = vec![roots.android_app.clone()];
+            real.apple = roots.policy(now()).apple;
+            real.set_status_list(
+                notdot_link::attest::android::StatusList::parse(br#"{"entries":{}}"#, now())
                     .unwrap(),
-                0
             );
-            let signed = signer.signed.lock().unwrap().clone();
-            assert_eq!(signed.len(), 1);
-            // Bound to this desktop and this phone (see notdot_link::stepup).
-            assert_eq!(&signed[0][17..49], &desktop.id().0);
-            assert_eq!(&signed[0][49..81], &device.0);
+            desktop.set_attestation_policy(real);
+            let (phone, device, _) = connected(&desktop, "owner").await;
+            for apple in [false, true] {
+                let error = phone
+                    .set_up_step_up(TestKeys::new(&roots, apple))
+                    .await
+                    .unwrap_err();
+                assert!(
+                    matches!(&error, MobileError::Denied { detail } if detail.contains("couldn't verify")),
+                    "{error:?}"
+                );
+            }
+            assert!(!phone.step_up_status().await.unwrap().enrolled);
+            assert!(desktop.grant_sensitive(device, now() + 600_000).is_err());
+            // An unconfigured desktop accepts nothing.
+            desktop.set_attestation_policy(Default::default());
+            let error = phone
+                .set_up_step_up(TestKeys::new(&roots, false))
+                .await
+                .unwrap_err();
+            assert!(matches!(error, MobileError::Denied { .. }), "{error:?}");
         })
         .await;
     }
 
-    /// A software key is never registered, and a phone paired without a
-    /// hardware key cannot be granted sensitive actions.
     #[tokio::test(flavor = "multi_thread")]
-    async fn no_silent_downgrade_to_a_software_step_up_key() {
+    async fn members_cannot_set_up_or_use_the_owners_access() {
         within(async {
-            let desktop = desktop().await;
-            let signer = MockSigner::new(7);
-            let phone = PhoneLink::new();
-            let mut software = signer.public();
-            software.protection = crate::stepup::KeyProtection::Software;
-            let qr = desktop
-                .create_offer(
-                    ProfileRef {
-                        id: "owner".into(),
-                        epoch: 1,
-                    },
-                    DeviceProfile::Owner,
-                    OFFER_TTL_MS,
-                )
-                .unwrap();
-            assert!(
-                phone
-                    .pair(qr.encode(), "Synthetic phone".into(), Some(software))
-                    .await
-                    .is_err()
-            );
-            assert!(desktop.pending().is_empty(), "nothing reached the desktop");
+            let roots = TestRoots::new(now());
+            let desktop = attesting_desktop(&roots, Arc::new(AtomicU64::new(now()))).await;
+            let (owner, owner_id, _) = connected(&desktop, "owner").await;
+            let (member, member_id, _) = connected(&desktop, "member").await;
+            let keys = TestKeys::new(&roots, false);
+            owner.set_up_step_up(keys.clone()).await.unwrap();
+            desktop.grant_sensitive(owner_id, now() + 600_000).unwrap();
+            desktop.service().remember("member", "member memory");
+            let error = member
+                .set_up_step_up(TestKeys::new(&roots, false))
+                .await
+                .unwrap_err();
+            assert!(matches!(error, MobileError::Denied { .. }), "{error:?}");
+            assert!(desktop.grant_sensitive(member_id, now() + 600_000).is_err());
+            // Even holding the owner's key, a member is refused.
+            let error = member
+                .reset_memory(new_request_id(), keys.clone())
+                .await
+                .unwrap_err();
+            assert!(matches!(error, MobileError::Denied { .. }), "{error:?}");
+            assert_eq!(desktop.service().profile("member").memories.len(), 1);
+            // The owner's action touches only the owner's profile.
+            desktop.service().remember("owner", "owner memory");
+            assert_eq!(owner.reset_memory(new_request_id(), keys).await.unwrap(), 1);
+            assert_eq!(desktop.service().profile("member").memories.len(), 1);
+        })
+        .await;
+    }
 
-            let device = pair(&desktop, &phone, "owner").await;
-            // The desktop will not even grant sensitive access to it.
-            assert!(desktop.grant_sensitive(device, u64::MAX).is_err());
-            phone.connect(false).await.unwrap();
-            assert!(
-                phone
-                    .reset_memory(new_request_id(), signer.clone())
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_restarted_phone_keeps_its_key_and_removal_forgets_it() {
+        within(async {
+            let roots = TestRoots::new(now());
+            let desktop = attesting_desktop(&roots, Arc::new(AtomicU64::new(now()))).await;
+            let (phone, device, identity) = connected(&desktop, "owner").await;
+            let keys = TestKeys::new(&roots, false);
+            phone.set_up_step_up(keys.clone()).await.unwrap();
+            desktop.grant_sensitive(device, now() + 600_000).unwrap();
+            let record = phone.paired_record().await.unwrap();
+            phone.disconnect().await;
+            drop(phone);
+            // Restart: the stored identity reconnects; the key still works.
+            let restarted = PhoneLink::restore(identity.clone(), Some(record)).unwrap();
+            restarted.connect(false).await.unwrap();
+            desktop.service().remember("owner", "x");
+            assert_eq!(
+                restarted
+                    .reset_memory(new_request_id(), keys.clone())
                     .await
-                    .is_err()
+                    .unwrap(),
+                1
             );
-            assert!(signer.signed.lock().unwrap().is_empty());
+            // Removal forgets the key; pairing again starts from scratch.
+            desktop.revoke(device);
+            let error = restarted.step_up_status().await.unwrap_err();
+            assert!(matches!(error, MobileError::Unpaired { .. }), "{error:?}");
+            pair(&desktop, &restarted, "owner").await;
+            restarted.connect(false).await.unwrap();
+            assert!(!restarted.step_up_status().await.unwrap().enrolled);
+            assert!(desktop.grant_sensitive(device, now() + 600_000).is_err());
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn offline_is_reported_as_offline() {
+        within(async {
+            let roots = TestRoots::new(now());
+            let desktop = attesting_desktop(&roots, Arc::new(AtomicU64::new(now()))).await;
+            let (phone, _, _) = connected(&desktop, "owner").await;
+            phone.disconnect().await;
+            let keys = TestKeys::new(&roots, false);
+            for error in [
+                phone.step_up_status().await.unwrap_err(),
+                phone.set_up_step_up(keys.clone()).await.unwrap_err(),
+                phone
+                    .reset_memory(new_request_id(), keys)
+                    .await
+                    .unwrap_err(),
+            ] {
+                assert!(matches!(error, MobileError::Offline { .. }), "{error:?}");
+            }
         })
         .await;
     }

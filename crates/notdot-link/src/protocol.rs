@@ -70,6 +70,17 @@ pub enum Op {
         #[serde(with = "crate::b64_32")]
         digest: [u8; 32],
     },
+    /// Ask for a single-use challenge to enrol a step-up key.
+    StepUpEnrollChallenge {},
+    /// Enrol (or replace) this phone's step-up key with platform evidence
+    /// bound to an enrolment challenge. Replacing a key ends any grant.
+    StepUpEnroll {
+        #[serde(with = "crate::b64_32")]
+        nonce: [u8; 32],
+        evidence: crate::attest::Evidence,
+    },
+    /// Whether this phone has an enrolled key and a live owner grant.
+    StepUpStatus {},
 }
 
 /// Biometric step-up attached to a sensitive operation.
@@ -80,6 +91,13 @@ pub struct StepUpProof {
     pub nonce: [u8; 32],
     #[serde(with = "crate::b64")]
     pub signature: Vec<u8>,
+    /// An App Attest assertion over the same message, for iPhones.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::attest::b64_object_opt"
+    )]
+    pub assertion: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +130,14 @@ pub enum OpError {
     },
     NeedsStepUp,
     StepUpRejected,
+    /// The step-up challenge expired before the proof arrived.
+    StepUpExpired,
+    /// This phone has no enrolled step-up key.
+    StepUpNotEnrolled,
+    /// The enrolment evidence did not verify; `reason` is plain language.
+    AttestationRejected {
+        reason: String,
+    },
     BadRequest {
         reason: String,
     },
