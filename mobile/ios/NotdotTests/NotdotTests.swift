@@ -97,6 +97,42 @@ final class SilentModeTests: XCTestCase {
     }
 }
 
+/// The desktop's wake corpus, offline through the embedded sherpa library
+/// and the bundled models. No microphone, no playback.
+final class WakeCorpusTests: XCTestCase {
+    private func samples(_ name: String) throws -> [Float] {
+        let url = Bundle(for: Self.self).resourceURL!.appendingPathComponent("fixtures/\(name)")
+        let file = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)
+        XCTAssertEqual(file.processingFormat.sampleRate, 16_000)
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)))
+        try file.read(into: buffer)
+        return Array(UnsafeBufferPointer(start: buffer.floatChannelData![0], count: Int(buffer.frameLength)))
+    }
+
+    func testCorpusNeverFalseAcceptsAndTheSpotterWakes() throws {
+        let models = try XCTUnwrap(Bundle.main.resourceURL?.appendingPathComponent("wake").path)
+        let engine = try WakeEngine(models: models, name: "Ava", nameOnly: false)
+        let before = try samples("negative.wav").map { $0 * 0.3 }
+        func detects(_ clip: String, _ gain: Float) throws -> Bool {
+            let audio = before + [Float](repeating: 0, count: 3_200) + (try samples(clip)).map { $0 * gain } + [Float](repeating: 0, count: 12_800)
+            engine.reset()
+            var hit = false
+            for start in stride(from: 0, to: audio.count, by: 320) {
+                hit = engine.accept(samples: Array(audio[start..<min(start + 320, audio.count)]), rate: 16_000) || hit
+            }
+            return hit
+        }
+        let woke = try ["hey-ava.wav", "hey-ava-uk.wav", "hey-ava-us.wav"].filter { try detects($0, 0.35) }
+        print("iOS spotter-only recall at 0.35: \(woke)")
+        XCTAssertFalse(woke.isEmpty)
+        for clip in ["ava.wav", "negative.wav"] {
+            for gain: Float in [0.05, 0.35, 0.8] {
+                XCTAssertFalse(try detects(clip, gain), "\(clip)@\(gain)")
+            }
+        }
+    }
+}
+
 /// Pairs with a desktop simulator on the host (see mobile/README.md). Skipped
 /// unless the runner passes TEST_RUNNER_NOTDOT_TEST_QR_FILE.
 final class LinkEndToEndTests: XCTestCase {

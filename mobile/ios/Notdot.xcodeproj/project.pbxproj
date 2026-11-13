@@ -39,6 +39,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = "0";
 		};
+		1A460A6A76B11C4B211CAF1C = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = "2147483647";
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Embed wake library and models";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = "0";
+			shellPath = /bin/sh;
+			shellScript = "\"$SRCROOT/scripts/embed-native.sh\"
+";
+			alwaysOutOfDate = "1";
+		};
 		1E4AFA8650E48298CE9F04EF = {
 			isa = PBXFileReference;
 			lastKnownFileType = sourcecode.swift;
@@ -54,6 +70,7 @@
 				FE9802C233AB193FEC417DF7,
 				"70317B8AF73E0F9D3E89EEC8",
 				"090863D2EA454472E99FDDDA",
+				"1A460A6A76B11C4B211CAF1C",
 			);
 			buildRules = (
 			);
@@ -70,6 +87,7 @@
 			buildActionMask = "2147483647";
 			files = (
 				D6754F587A27222A0110CD35,
+				"3E863B157EFA6A044B54CD04",
 			);
 			runOnlyForDeploymentPostprocessing = "0";
 		};
@@ -89,6 +107,13 @@
 ";
 			alwaysOutOfDate = "1";
 		};
+		31188BE9CE6998210C4976A4 = {
+			isa = PBXFileReference;
+			lastKnownFileType = folder;
+			name = "wake-fixtures";
+			path = "../../src-tauri/tests/fixtures";
+			sourceTree = "<group>";
+		};
 		3446C34BD12AE41001D720D9 = {
 			isa = PBXBuildFile;
 			fileRef = "3B040D781D2C520785CD636A";
@@ -106,6 +131,10 @@
 			lastKnownFileType = sourcecode.swift;
 			path = NotdotShared/SessionActivity.swift;
 			sourceTree = "<group>";
+		};
+		3E863B157EFA6A044B54CD04 = {
+			isa = PBXBuildFile;
+			fileRef = "31188BE9CE6998210C4976A4";
 		};
 		43327175E3C0E96DAA29407D = {
 			isa = PBXGroup;
@@ -236,7 +265,9 @@
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				OTHER_LDFLAGS = "-lnotdot_mobile_core -framework SystemConfiguration -framework Security -framework Network";
+				OTHER_LDFLAGS = "-lnotdot_mobile_core -framework SherpaOnnxC -framework SystemConfiguration -framework Security -framework Network";
+				FRAMEWORK_SEARCH_PATHS = "$(SRCROOT)/build/lib/$(PLATFORM_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = NOTDOT_WAKE;
 				ASSETCATALOG_COMPILER_APPICON_NAME = "";
 			};
 			name = Release;
@@ -267,9 +298,10 @@
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				OTHER_LDFLAGS = "-lnotdot_mobile_core -framework SystemConfiguration -framework Security -framework Network";
+				OTHER_LDFLAGS = "-lnotdot_mobile_core -framework SherpaOnnxC -framework SystemConfiguration -framework Security -framework Network";
+				FRAMEWORK_SEARCH_PATHS = "$(SRCROOT)/build/lib/$(PLATFORM_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "NOTDOT_WAKE DEBUG";
 				ASSETCATALOG_COMPILER_APPICON_NAME = "";
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				DEBUG_INFORMATION_FORMAT = dwarf;
 			};
@@ -293,6 +325,7 @@
 				"1E4AFA8650E48298CE9F04EF",
 				"7EFA18806B75A734F8771AF6",
 				"532F439FCA5BAB50AB5DB0FD",
+				"31188BE9CE6998210C4976A4",
 				"43327175E3C0E96DAA29407D",
 			);
 			sourceTree = "<group>";

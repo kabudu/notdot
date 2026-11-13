@@ -24,7 +24,7 @@ APP_SOURCES = ['Notdot/NotdotApp.swift', 'Notdot/ContentView.swift', 'Notdot/Orb
                'NotdotShared/SessionActivity.swift', 'build/generated/notdot_mobile_core.swift']
 WIDGET_SOURCES = ['NotdotWidgets/NotdotWidgets.swift', 'NotdotShared/SessionActivity.swift']
 TEST_SOURCES = ['NotdotTests/NotdotTests.swift']
-TEST_RESOURCES = [('orb-golden', '../../crates/notdot-orb/fixtures/orb-golden')]
+TEST_RESOURCES = [('orb-golden', '../../crates/notdot-orb/fixtures/orb-golden'), ('wake-fixtures', '../../src-tauri/tests/fixtures')]
 OTHER_FILES = ['Notdot/Info.plist', 'NotdotWidgets/Info.plist']
 
 objects = []
@@ -124,7 +124,9 @@ app_settings = dict(core, **{
     'INFOPLIST_KEY_CFBundleDisplayName': 'notdot', 'INFOPLIST_KEY_UILaunchScreen_Generation': 'YES',
     'INFOPLIST_KEY_UISupportedInterfaceOrientations': 'UIInterfaceOrientationPortrait',
     'LD_RUNPATH_SEARCH_PATHS': '$(inherited) @executable_path/Frameworks',
-    'OTHER_LDFLAGS': '-lnotdot_mobile_core -framework SystemConfiguration -framework Security -framework Network',
+    'OTHER_LDFLAGS': '-lnotdot_mobile_core -framework SherpaOnnxC -framework SystemConfiguration -framework Security -framework Network',
+    'FRAMEWORK_SEARCH_PATHS': '$(SRCROOT)/build/lib/$(PLATFORM_NAME)',
+    'SWIFT_ACTIVE_COMPILATION_CONDITIONS': 'NOTDOT_WAKE',
     'ASSETCATALOG_COMPILER_APPICON_NAME': '',
 })
 widget_settings = {
@@ -157,6 +159,10 @@ obj(script, {'isa': 'PBXShellScriptBuildPhase', 'buildActionMask': '2147483647',
              'name': 'Build Rust core', 'outputPaths': [], 'runOnlyForDeploymentPostprocessing': '0',
              'shellPath': '/bin/sh', 'shellScript': '"$SRCROOT/scripts/build-core.sh" "$PLATFORM_NAME" "$CONFIGURATION"\n',
              'alwaysOutOfDate': '1'})
+embed_native = uid('phase', 'app', 'embed-native')
+obj(embed_native, {'isa': 'PBXShellScriptBuildPhase', 'buildActionMask': '2147483647', 'files': [], 'inputPaths': [],
+                   'name': 'Embed wake library and models', 'outputPaths': [], 'runOnlyForDeploymentPostprocessing': '0',
+                   'shellPath': '/bin/sh', 'shellScript': '"$SRCROOT/scripts/embed-native.sh"\n', 'alwaysOutOfDate': '1'})
 proxy = uid('proxy', 'widgets')
 dependency = uid('dependency', 'widgets')
 app = uid('target', 'app')
@@ -169,7 +175,8 @@ app_phases = [script,
               phase('app', 'PBXFrameworksBuildPhase', 'Frameworks', []),
               phase('app', 'PBXResourcesBuildPhase', 'Resources', []),
               phase('app', 'PBXCopyFilesBuildPhase', 'Embed Foundation Extensions', [embed],
-                    {'dstPath': '', 'dstSubfolderSpec': '13', 'name': 'Embed Foundation Extensions'})]
+                    {'dstPath': '', 'dstSubfolderSpec': '13', 'name': 'Embed Foundation Extensions'}),
+              embed_native]
 obj(app, {'isa': 'PBXNativeTarget', 'buildConfigurationList': config_list('app', settings(app_settings, True), settings(app_settings, False)),
           'buildPhases': app_phases, 'buildRules': [], 'dependencies': [dependency], 'name': 'Notdot',
           'productName': 'Notdot', 'productReference': product_refs['app'],

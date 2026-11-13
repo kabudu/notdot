@@ -23,7 +23,7 @@ final class AppModel: ObservableObject {
     private let clock = ContinuousClock()
     private let started = ContinuousClock.now
     #if NOTDOT_WAKE
-    private var wake: WakeEngine?
+    private nonisolated(unsafe) var wake: WakeEngine?
     #endif
 
     init() {
@@ -36,6 +36,15 @@ final class AppModel: ObservableObject {
         effects = Effects(state: .off, microphone: false, surface: false, endSurface: false, remainingMs: nil)
         orb = OrbState(mode: .idle, task: .none, hue: orbDefaultHue(), level: nil, reducedMotion: UIAccessibility.isReduceMotionEnabled,
                        quota: .normal, taskAvailable: false, microphoneMuted: false, wakeReady: false, offline: true)
+        #if NOTDOT_WAKE
+        if !silent, let models = Bundle.main.resourceURL?.appendingPathComponent("wake").path {
+            wake = try? WakeEngine(models: models, name: "Ava", nameOnly: false)
+        }
+        capture.onSamples = { [weak self] samples, rate in
+            guard let self, let wake = self.wake, wake.accept(samples: samples, rate: rate) else { return }
+            Task { @MainActor in self.wakeHeard() }
+        }
+        #endif
         capture.onInterruption = { [weak self] began, resume in
             Task { @MainActor in
                 self?.handle(began ? .interruptionBegan : .interruptionEnded(shouldResume: resume))
@@ -69,6 +78,12 @@ final class AppModel: ObservableObject {
             }
             handle(.start(source: source))
         }
+    }
+
+    /// A wake word: open listening. No cue is played in this prototype.
+    func wakeHeard() {
+        handle(.activity)
+        orb.mode = .listening
     }
 
     func handle(_ event: SessionEvent) {
