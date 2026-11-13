@@ -18,12 +18,60 @@ pub const CHALLENGE_TTL_MS: u64 = 60_000;
 /// Outstanding challenges per desktop.
 pub const MAX_CHALLENGES: usize = 32;
 
-/// SHA-256 of the operation as serde_json encodes it. Both sides use this
-/// Rust crate today, so the bytes agree. Before `link/1` is frozen, define
-/// the digest over explicitly canonical bytes so a non-Rust client could
-/// reproduce it (review finding, tracked in mobile/README.md).
+/// Domain separation for operation digests.
+const OP_LABEL: &[u8] = b"notdot/link/1/op";
+
+fn field(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    out.extend_from_slice(bytes);
+}
+
+/// The canonical byte encoding of an operation: a one-byte tag, then each
+/// field in declaration order; strings and byte strings are length-prefixed
+/// (u32, big-endian), integers are big-endian. Independent of JSON, so any
+/// client can reproduce it. Adding an operation is a compile error here
+/// until its encoding is defined; existing tags never change within link/1.
+pub fn op_bytes(op: &crate::protocol::Op) -> Vec<u8> {
+    use crate::protocol::Op;
+    let mut out = Vec::new();
+    match op {
+        Op::Ping {} => out.push(0),
+        Op::AddNote { text } => {
+            out.push(1);
+            field(&mut out, text.as_bytes());
+        }
+        Op::ListNotes {} => out.push(2),
+        Op::ReadSettings {} => out.push(3),
+        Op::StageSetting {
+            key,
+            value,
+            base_revision,
+        } => {
+            out.push(4);
+            field(&mut out, key.as_bytes());
+            field(&mut out, value.as_bytes());
+            out.extend_from_slice(&base_revision.to_be_bytes());
+        }
+        Op::RunTask { label, steps } => {
+            out.push(5);
+            field(&mut out, label.as_bytes());
+            out.extend_from_slice(&steps.to_be_bytes());
+        }
+        Op::ResetMemory {} => out.push(6),
+        Op::StepUpChallenge { digest } => {
+            out.push(7);
+            out.extend_from_slice(digest);
+        }
+    }
+    out
+}
+
+/// SHA-256 over the label and the canonical encoding of an operation.
 pub fn op_digest(op: &crate::protocol::Op) -> [u8; 32] {
-    Sha256::digest(serde_json::to_vec(op).expect("ops serialise")).into()
+    let mut hash = Sha256::new();
+    hash.update(OP_LABEL);
+    hash.update(op_bytes(op));
+    hash.finalize().into()
 }
 
 /// The bytes a phone signs.
@@ -113,6 +161,72 @@ pub(crate) mod tests {
             .to_encoded_point(false)
             .as_bytes()
             .to_vec()
+    }
+
+    #[test]
+    fn operation_digests_are_canonical_pinned_and_unambiguous() {
+        use crate::protocol::Op;
+        let hex = |d: [u8; 32]| d.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        // Pinned vectors: a change here breaks every signing client.
+        assert_eq!(op_bytes(&Op::ResetMemory {}), [6]);
+        // sha256("notdot/link/1/op" || 0x06), computed independently.
+        assert_eq!(
+            hex(op_digest(&Op::ResetMemory {})),
+            "2d3eeab6669b600456965f49c1113b8cac7374502959b66094a041e7b5a5b675"
+        );
+        let stage = Op::StageSetting {
+            key: "hue".into(),
+            value: "42".into(),
+            base_revision: 7,
+        };
+        assert_eq!(
+            op_bytes(&stage),
+            [
+                &[4u8][..],
+                &[0, 0, 0, 3],
+                b"hue",
+                &[0, 0, 0, 2],
+                b"42",
+                &7u64.to_be_bytes()
+            ]
+            .concat()
+        );
+        // Shifting a boundary between fields changes the encoding.
+        let shifted = Op::StageSetting {
+            key: "hue4".into(),
+            value: "2".into(),
+            base_revision: 7,
+        };
+        assert_ne!(op_digest(&stage), op_digest(&shifted));
+        // Every operation kind has a distinct encoding.
+        let all = [
+            Op::Ping {},
+            Op::AddNote {
+                text: String::new(),
+            },
+            Op::ListNotes {},
+            Op::ReadSettings {},
+            Op::StageSetting {
+                key: String::new(),
+                value: String::new(),
+                base_revision: 0,
+            },
+            Op::RunTask {
+                label: String::new(),
+                steps: 0,
+            },
+            Op::ResetMemory {},
+            Op::StepUpChallenge { digest: [0; 32] },
+        ];
+        let digests: std::collections::HashSet<_> = all.iter().map(op_digest).collect();
+        assert_eq!(digests.len(), all.len());
+        // Independent of JSON: the digest is not a hash of serde output.
+        assert_ne!(
+            op_digest(&Op::ResetMemory {}),
+            <[u8; 32]>::from(Sha256::digest(
+                serde_json::to_vec(&Op::ResetMemory {}).unwrap()
+            ))
+        );
     }
 
     #[test]
