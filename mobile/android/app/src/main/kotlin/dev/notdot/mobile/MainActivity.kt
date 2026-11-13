@@ -52,6 +52,12 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         NotdotState.handle(SessionEvent.AppVisible, permitted())
+        // Debug-only unattended test hook: start a session from the visible
+        // activity (RECORD_AUDIO must already be granted, e.g. `pm grant`).
+        if (BuildConfig.DEBUG && intent.getBooleanExtra("notdotAutoStart", false) && permitted()) {
+            intent.removeExtra("notdotAutoStart")
+            startHandsFree()
+        }
     }
 
     override fun onStop() {

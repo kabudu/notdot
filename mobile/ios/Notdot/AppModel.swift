@@ -1,4 +1,5 @@
 import ActivityKit
+import OSLog
 import Foundation
 import SwiftUI
 
@@ -7,6 +8,7 @@ import SwiftUI
 @MainActor
 final class AppModel: ObservableObject {
     static let shared = AppModel()
+    nonisolated static let log = Logger(subsystem: "dev.notdot.mobile.prototype", category: "voice")
 
     /// `-NotdotSilentTest YES` (or NOTDOT_SILENT=1): never request or open the
     /// microphone, never activate the audio session. For unattended runs.
@@ -36,12 +38,32 @@ final class AppModel: ObservableObject {
         effects = Effects(state: .off, microphone: false, surface: false, endSurface: false, remainingMs: nil)
         orb = OrbState(mode: .idle, task: .none, hue: orbDefaultHue(), level: nil, reducedMotion: UIAccessibility.isReduceMotionEnabled,
                        quota: .normal, taskAvailable: false, microphoneMuted: false, wakeReady: false, offline: true)
+        #if DEBUG
+        // Debug-only unattended test hook: start a session at launch
+        // (microphone permission must already be granted, e.g. simctl).
+        if !silent, UserDefaults.standard.bool(forKey: "NotdotAutoStart") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                self?.handle(.appVisible)
+                self?.start(source: .app)
+            }
+        }
+        #endif
         #if NOTDOT_WAKE
         if !silent, let models = Bundle.main.resourceURL?.appendingPathComponent("wake").path {
             wake = try? WakeEngine(models: models, name: "Ava", nameOnly: false)
         }
+        var meter = (sum: Float(0), count: 0, peak: Float(0))
         capture.onSamples = { [weak self] samples, rate in
-            guard let self, let wake = self.wake, wake.accept(samples: samples, rate: rate) else { return }
+            guard let self else { return }
+            // Level only (never audio) for diagnostics, once a second.
+            let rms = (samples.reduce(0) { $0 + $1 * $1 } / Float(max(samples.count, 1))).squareRoot()
+            meter = (meter.sum + rms, meter.count + 1, max(meter.peak, rms))
+            if meter.count * samples.count >= Int(rate) {
+                AppModel.log.info("capture rate=\(rate) mean_rms=\(meter.sum / Float(meter.count)) peak_rms=\(meter.peak)")
+                meter = (0, 0, 0)
+            }
+            guard let wake = self.wake, wake.accept(samples: samples, rate: rate) else { return }
+            AppModel.log.info("wake detected")
             Task { @MainActor in self.wakeHeard() }
         }
         #endif

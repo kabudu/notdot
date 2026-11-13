@@ -80,6 +80,9 @@ class VoiceSessionService : Service() {
         record.startRecording()
         thread(name = "notdot-capture") {
             val packet = FloatArray(rate / 50)
+            var meterSum = 0f
+            var meterCount = 0
+            var meterPeak = 0f
             val wake = WakeModels.engine(this)
             while (capturing) {
                 val read = record.read(packet, 0, packet.size, AudioRecord.READ_BLOCKING)
@@ -90,7 +93,17 @@ class VoiceSessionService : Service() {
                     NotdotState.handle(SessionEvent.Silenced(true))
                     continue
                 }
+                // Level only (never audio) for diagnostics, once a second.
+                var sum = 0.0
+                for (i in 0 until read) sum += packet[i] * packet[i]
+                val rms = kotlin.math.sqrt(sum / read).toFloat()
+                meterSum += rms; meterCount++; meterPeak = maxOf(meterPeak, rms)
+                if (meterCount * read >= rate) {
+                    android.util.Log.i("notdot.voice", "capture rate=$rate mean_rms=${meterSum / meterCount} peak_rms=$meterPeak wake=${wake != null}")
+                    meterSum = 0f; meterCount = 0; meterPeak = 0f
+                }
                 if (wake?.accept(packet.copyOf(read).toList(), rate.toUInt()) == true) {
+                    android.util.Log.i("notdot.voice", "wake detected")
                     NotdotState.handle(SessionEvent.Activity)
                 }
             }
