@@ -7,6 +7,7 @@ if ! "$NOTDOT_TEST_PYTHON" -c 'import tarfile; assert hasattr(tarfile, "data_fil
 fi
 "$NOTDOT_TEST_PYTHON" -c 'import tarfile; assert hasattr(tarfile, "data_filter"), "Python 3.12+ is required for release checks"'
 "$NOTDOT_TEST_PYTHON" scripts/distribution_notices.py
+"$NOTDOT_TEST_PYTHON" scripts/check_mobile_lock.py
 "$NOTDOT_TEST_PYTHON" scripts/check_voice_fixtures.py
 node scripts/test_interrupt_lifecycle.mjs
 cargo fmt --all --check

@@ -1,0 +1,30 @@
+# Builds the native library for the iOS and Android apps.
+#
+# A separate workspace so the app build can pin `libc` independently of the
+# desktop: libc 0.2.190+ stopped exposing net/route.h constants and
+# `in6_ifreq` on iOS, which iroh's netwatch/netdev still use there. This
+# lockfile pins libc 0.2.189 (see mobile/README.md); the desktop keeps its own.
+[workspace]
+
+[package]
+name = "notdot-mobile-ffi"
+version = "0.8.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+name = "notdot_mobile_core"
+crate-type = ["staticlib", "cdylib"]
+path = "src/lib.rs"
+
+[features]
+default = []
+wake = ["notdot-mobile-core/wake"]
+
+[dependencies]
+notdot-mobile-core = { path = "../../crates/notdot-mobile-core", default-features = false }
+
+[profile.release]
+strip = "none"
+lto = "thin"

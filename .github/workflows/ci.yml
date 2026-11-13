@@ -51,6 +51,7 @@ jobs:
       - run: python3 scripts/check_site.py
       - run: python3 scripts/check_content_links.py
       - run: python3 scripts/distribution_notices.py
+      - run: python3 scripts/check_mobile_lock.py
       - run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - run: node scripts/test_orb_input.mjs
       - run: node scripts/test_interrupt_lifecycle.mjs

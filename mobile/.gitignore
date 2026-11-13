@@ -1,0 +1,7 @@
+# Native build outputs; generated from the Rust sources, never committed.
+ios/build/
+ios/DerivedData/
+android/.gradle/
+android/**/build/
+android/local.properties
+rust/target/
