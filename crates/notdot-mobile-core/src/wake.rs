@@ -432,17 +432,19 @@ mod tests {
             .filter(|p| p.extension().is_some_and(|x| x == "wav"))
             .collect();
         clips.sort();
-        let before = rss_kib();
+        // Resident memory, measured before any test audio is loaded.
+        let base = rss_kib();
+        let spotter = WakeEngine::spotter_only(models(), "Ava".into(), false).unwrap();
+        let with_spotter = rss_kib();
         let full = WakeEngine::new(models(), "Ava".into(), false).unwrap();
         let loading = std::time::Instant::now();
         assert_eq!(ready(&full), BackupState::Ready);
         eprintln!(
-            "backup ready after {:?}; process RSS {} -> {} KiB",
+            "backup ready after {:?}; RSS: process {base} KiB, + spotter-only engine {} KiB, + full engine {} KiB",
             loading.elapsed(),
-            before,
-            rss_kib()
+            with_spotter - base,
+            rss_kib() - with_spotter
         );
-        let spotter = WakeEngine::spotter_only(models(), "Ava".into(), false).unwrap();
         for rate in [16_000u32, 48_000] {
             let (mut full_ok, mut spotter_ok, mut latencies) = (0, 0, Vec::new());
             for clip in &clips {
@@ -494,14 +496,14 @@ mod tests {
         full.reset();
         let base = full.backup_stats();
         let wakes = stream(&full, &speech, 48_000);
+        drop(speech);
         let stats = full.backup_stats();
         let decodes = stats.decodes - base.decodes;
         let ms = stats.decode_ms_total - base.decode_ms_total;
         eprintln!(
-            "continuous negatives: {minutes:.1} min; false wakes {wakes}; backup decodes {decodes}; decode time {ms} ms ({:.1} s per minute of speech; max {} ms); RSS {} KiB",
+            "continuous negatives: {minutes:.1} min; false wakes {wakes}; backup decodes {decodes}; decode time {ms} ms ({:.1} s per minute of speech; max {} ms)",
             ms as f64 / 1000. / minutes,
             stats.decode_ms_max,
-            rss_kib()
         );
     }
 
