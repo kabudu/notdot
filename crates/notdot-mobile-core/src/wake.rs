@@ -135,6 +135,22 @@ impl WakeEngine {
         hit
     }
 
+    /// Feed little-endian mono PCM16 without boxing every sample across JNI.
+    /// Reject malformed/rate-invalid or oversized buffers before allocating.
+    pub fn accept_pcm16(&self, pcm: Vec<u8>, rate: u32) -> bool {
+        if !(8_000..=192_000).contains(&rate)
+            || !pcm.len().is_multiple_of(2)
+            || pcm.len() > rate as usize * 4
+        {
+            return false;
+        }
+        let samples = pcm
+            .chunks_exact(2)
+            .map(|pair| f32::from(i16::from_le_bytes([pair[0], pair[1]])) / 32768.)
+            .collect();
+        self.accept(samples, rate)
+    }
+
     pub fn reset(&self) {
         self.lock().reset();
     }
@@ -270,6 +286,38 @@ mod tests {
             }
         }
         (false, None)
+    }
+
+    #[test]
+    fn pcm16_transport_preserves_wake_decisions_and_rejects_bad_buffers() {
+        let engine = WakeEngine::spotter_only(models(), "Ava".into(), false).unwrap();
+        for name in ["hey-ava.wav", "ava.wav", "negative.wav"] {
+            let (samples, rate) = clip(name);
+            engine.reset();
+            let (before, _) = clip("negative.wav");
+            let mut audio: Vec<f32> = before.iter().map(|sample| sample * 0.3).collect();
+            audio.extend(vec![0.; rate as usize / 5]);
+            audio.extend(samples.iter().map(|sample| sample * 0.35));
+            audio.extend(vec![0.; rate as usize]);
+            let hit = audio.chunks(320).any(|packet| {
+                // Encode signed 16-bit PCM, as AudioRecord does.
+                let pcm: Vec<u8> = packet
+                    .iter()
+                    .flat_map(|sample| {
+                        ((sample * 32768.).round().clamp(-32768., 32767.) as i16).to_le_bytes()
+                    })
+                    .collect();
+                engine.accept_pcm16(pcm, rate)
+            });
+            assert_eq!(hit, name == "hey-ava.wav", "{name}");
+        }
+        for (pcm, rate) in [
+            (vec![0], 16_000),
+            (vec![0; 64_002], 16_000),
+            (vec![0; 640], 0),
+        ] {
+            assert!(!engine.accept_pcm16(pcm, rate));
+        }
     }
 
     const POSITIVES: [&str; 3] = ["hey-ava.wav", "hey-ava-uk.wav", "hey-ava-us.wav"];
