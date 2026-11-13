@@ -33,7 +33,9 @@ async fn main() {
         insecure_test_relay: false,
         relay_roots: Vec::new(),
     };
-    let desktop = Desktop::bind(None, &net, system_clock()).await.expect("desktop");
+    let desktop = Desktop::bind(None, &net, system_clock())
+        .await
+        .expect("desktop");
     desktop.set_profile_epoch("synthetic", 1);
     desktop.online().await;
     let qr = desktop
