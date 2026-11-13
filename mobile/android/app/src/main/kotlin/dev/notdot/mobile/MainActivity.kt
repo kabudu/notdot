@@ -47,12 +47,19 @@ class MainActivity : ComponentActivity() {
         else NotdotState.setStatus("Microphone access is off. Turn it on in Settings to talk hands-free.")
     }
 
+    private val notification = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        VoiceSessionService.start(this)
+    }
+    private fun openPermissions() {
+        startActivity(android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            android.net.Uri.parse("package:$packageName")))
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Debug-only: a scripted sensitive-actions backend for UI tests.
         val scenario = if (BuildConfig.DEBUG) intent.getStringExtra("notdotSensitiveScenario") else null
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) { Home(::startHandsFree, scenario) }
+            MaterialTheme(colorScheme = darkColorScheme()) { Home(::startHandsFree, ::openPermissions, scenario) }
         }
     }
 
@@ -80,13 +87,16 @@ class MainActivity : ComponentActivity() {
             NotdotState.setStatus("Silent test mode: microphone stays off")
             return
         }
-        if (permitted()) VoiceSessionService.start(this)
-        else microphone.launch(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS))
+        if (permitted()) {
+            if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+                notification.launch(Manifest.permission.POST_NOTIFICATIONS)
+            else VoiceSessionService.start(this)
+        } else microphone.launch(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS))
     }
 }
 
 @Composable
-private fun Home(start: () -> Unit, scenario: String?) {
+private fun Home(start: () -> Unit, permissions: () -> Unit, scenario: String?) {
     val effects by NotdotState.effects.collectAsState()
     val status by NotdotState.status.collectAsState()
     val orb by NotdotState.orb.collectAsState()
@@ -106,7 +116,11 @@ private fun Home(start: () -> Unit, scenario: String?) {
             Button(start, Modifier.heightIn(min = 48.dp)) { Text("Start hands-free") }
         }
         OutlinedButton({ linking = !linking }, Modifier.heightIn(min = 48.dp)) { Text("Linked computer") }
-        if (linking) Pairing(scenario)
+        if (linking) {
+            OutlinedButton(permissions, Modifier.heightIn(min = 48.dp)) { Text("App permissions") }
+            Text("Choose While using the app for the microphone. Start hands-free to keep listening with a stoppable notification.", color = Color(0xFFB4C5D5), style = MaterialTheme.typography.bodyMedium)
+            Pairing(scenario)
+        }
     }
 }
 

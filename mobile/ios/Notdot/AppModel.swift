@@ -111,6 +111,7 @@ final class AppModel: ObservableObject {
     }
 
     func handle(_ event: SessionEvent) {
+        _ = session.handle(event: AudioCapture.permitted && !silent ? .permissionGranted : .permissionLost, nowMs: nowMs)
         let next = session.handle(event: event, nowMs: nowMs)
         apply(next)
     }

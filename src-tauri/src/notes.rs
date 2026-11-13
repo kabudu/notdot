@@ -176,7 +176,7 @@ impl Notes {
             .join(" ");
         next.notes.push(notes::Note {
             id: uuid::Uuid::new_v4().to_string(),
-            title: notes::clean_title(&title)?,
+            title: notes::clean_title(&title.chars().take(80).collect::<String>())?,
             kind: notes::Kind::Note,
             body: text.into(),
             items: vec![],

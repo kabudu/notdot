@@ -259,6 +259,12 @@ pub fn install() {
             invoke("phones_set_enabled", json!({"enabled":enabled}), g).await;
         });
     });
+    on(element("phones-retry").as_ref(), "click", |_| {
+        let g = notes_panel::generation();
+        spawn_local(async move {
+            invoke("phones_set_enabled", json!({"enabled":true}), g).await;
+        });
+    });
     on(element("phones-refresh").as_ref(), "click", |_| {
         spawn_local(refresh());
     });

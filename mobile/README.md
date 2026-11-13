@@ -151,3 +151,10 @@ The desktop's default build does not include the phone transport dependency grap
 ### Apple provisioning still needed
 
 The existing GitHub secrets configure desktop signing and notarisation; secret values cannot be read back. No iOS provisioning profile was found in the local profile directories. An existing Apple Developer membership can be reused. Device builds need the selected team, unique iOS app and widget IDs, an App Attest-capable app profile, and an iOS development signing identity; TestFlight later needs distribution signing and an App Store Connect app. Supply credentials through local Xcode or the intended CI secrets, never source control. No additional membership purchase is required if the existing team supports these capabilities. Physical iPhone assertions, biometric prompts and the build's actual App Attest validation category remain device checks.
+
+
+### Physical Android findings
+
+A retail Android 14 phone exposed two issues that simulator tests did not: granting microphone permission after first launch did not update the cached session policy, and a detected wake did not switch the Android orb to its listening animation. Permission restoration now has a shared Rust regression test for both platforms; Android applies the visual cue and shows when its detector is still preparing. App permissions can be reopened from Linked computer. Android uses the existing desktop logomark as its adaptive launcher icon.
+
+The same device's packaged-model corpus missed quiet speech with two or four decoder threads. Six bounded Android decoder threads accepted all six positive cases and rejected all six negative cases, but one unrelated-speech decode still exceeded the unchanged three-second budget. The zero-failure performance assertion remains failing on that phone; this is not a full wake-acceptance pass. Three subsequent live wake detections had no decoder errors, with 2.46-2.71 seconds of decode work each. Battery use, thermal behaviour, extended false-wake rates and lock/Doze behaviour still need device checks. Desktop and iOS decoder thread limits are unchanged.

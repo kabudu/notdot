@@ -83,22 +83,37 @@ class VoiceSessionService : Service() {
             var meterSum = 0f
             var meterCount = 0
             var meterPeak = 0f
+            NotdotState.setStatus("Preparing wake listening…")
             val wake = WakeModels.engine(this)
+            var announcedReady = false
+            var silenced = false
             while (capturing) {
                 val read = record.read(packet, 0, packet.size, AudioRecord.READ_BLOCKING)
                 if (read <= 0) continue
                 // Android gives silenced apps zeros while a call or assistant
                 // holds the microphone; the session shows "Paused".
-                if (record.activeRecordingConfiguration?.isClientSilenced == true) {
-                    NotdotState.handle(SessionEvent.Silenced(true))
-                    continue
+                val nowSilenced = record.activeRecordingConfiguration?.isClientSilenced == true
+                if (nowSilenced != silenced) {
+                    silenced = nowSilenced
+                    NotdotState.handle(SessionEvent.Silenced(silenced))
+                }
+                if (silenced) continue
+                if (!announcedReady && wake?.backupState() == uniffi.notdot_mobile_core.BackupState.READY) {
+                    announcedReady = true
+                    NotdotState.setStatus("Listening hands-free · Say Hey Ava")
                 }
                 // Level only (never audio) for diagnostics, once a second.
                 var sum = 0.0
                 for (i in 0 until read) sum += packet[i] * packet[i]
                 val rms = kotlin.math.sqrt(sum / read).toFloat()
+                if (announcedReady) NotdotState.wakeInput(rms, wake?.backupBusy() == true)
                 meterSum += rms; meterCount++; meterPeak = maxOf(meterPeak, rms)
                 if (meterCount * read >= rate) {
+                    val effects = NotdotState.handle(SessionEvent.Tick)
+                    if (effects.endSurface) {
+                        android.os.Handler(android.os.Looper.getMainLooper()).post { stop(SessionEvent.SystemStopped) }
+                        break
+                    }
                     // Backup decoder state and counters (no audio or text).
                     val backup = wake?.let { w ->
                         val s = w.backupStats()
@@ -109,7 +124,7 @@ class VoiceSessionService : Service() {
                 }
                 if (wake?.accept(packet.copyOf(read).toList(), rate.toUInt()) == true) {
                     android.util.Log.i("notdot.voice", "wake detected")
-                    NotdotState.handle(SessionEvent.Activity)
+                    NotdotState.wakeHeard()
                 }
             }
         }

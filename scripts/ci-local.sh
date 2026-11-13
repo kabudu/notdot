@@ -24,7 +24,7 @@ if cargo tree -p notdot-orb --no-default-features -e normal --locked | grep -E '
 cargo test -p notdot-orb-gen --locked
 cargo run -q -p notdot-orb-gen --locked -- lint
 cargo test -p notdot-link --features test-relay --locked
-cargo test -p notdot-mobile-core --locked
+cargo test -p notdot-mobile-core --locked -- --test-threads=1
 cargo clippy -p notdot-mobile-core --all-targets --locked -- -D warnings
 cargo clippy -p notdot-link -p notdot-orb-gen --all-targets --features notdot-link/test-relay --locked -- -D warnings
 "$NOTDOT_TEST_PYTHON" -c "from pathlib import Path; s=Path('index.html').read_text(); assert 'composer' not in s and '<textarea' not in s"

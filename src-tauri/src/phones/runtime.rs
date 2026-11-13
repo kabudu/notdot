@@ -119,11 +119,16 @@ impl Phones {
     pub async fn start_if_enabled(&self, state: &Arc<AppState>) {
         let _transition = self.transitions.lock().await;
         let enabled = self.inner.lock().await.settings.enabled;
-        if enabled && let Err(e) = self.start(state, None).await {
+        if enabled && let Err(e) = self.start(state, None, false).await {
             self.inner.lock().await.error = Some(e);
         }
     }
-    async fn start(&self, state: &Arc<AppState>, secret: Option<SecretKey>) -> Result<(), String> {
+    async fn start(
+        &self,
+        state: &Arc<AppState>,
+        secret: Option<SecretKey>,
+        interactive: bool,
+    ) -> Result<(), String> {
         let mut inner = self.inner.lock().await;
         if inner.desktop.is_some() {
             return Ok(());
@@ -132,7 +137,7 @@ impl Phones {
             Some(key) => key,
             None => {
                 let dir = self.dir.clone();
-                tokio::task::spawn_blocking(move || identity(&dir))
+                tokio::task::spawn_blocking(move || identity(&dir, interactive))
                     .await
                     .map_err(|e| e.to_string())??
             }
@@ -201,16 +206,27 @@ impl Phones {
         }
     }
     pub async fn set_enabled(&self, state: &Arc<AppState>, enabled: bool) -> Result<(), String> {
+        let _transition = self.transitions.lock().await;
         let mut settings = self.inner.lock().await.settings.clone();
         settings.enabled = enabled;
-        self.set_settings(state, settings).await
+        self.apply_settings(state, settings, enabled).await
     }
     pub async fn set_settings(
         &self,
         state: &Arc<AppState>,
-        settings: PhoneSettings,
+        mut settings: PhoneSettings,
     ) -> Result<(), String> {
         let _transition = self.transitions.lock().await;
+        // Trust edits must not resurrect an earlier connection toggle.
+        settings.enabled = self.inner.lock().await.settings.enabled;
+        self.apply_settings(state, settings, false).await
+    }
+    async fn apply_settings(
+        &self,
+        state: &Arc<AppState>,
+        settings: PhoneSettings,
+        interactive: bool,
+    ) -> Result<(), String> {
         settings.validate()?;
         {
             let mut inner = self.inner.lock().await;
@@ -227,7 +243,7 @@ impl Phones {
         }
         let enabled = self.inner.lock().await.settings.enabled;
         if enabled {
-            let result = self.start(state, None).await;
+            let result = self.start(state, None, interactive).await;
             if let Err(error) = &result {
                 self.inner.lock().await.error = Some(error.clone());
             }
@@ -353,13 +369,17 @@ impl Phones {
 
 /// Separate OS item, never a voice provider entry. Background restoration
 /// cannot show Keychain UI; failure is visible in Phones, never a new identity.
-fn identity(dir: &Path) -> Result<SecretKey, String> {
+fn identity(dir: &Path, interactive: bool) -> Result<SecretKey, String> {
     use base64::Engine;
     let _serial = crate::credentials::OPERATIONS
         .lock()
         .map_err(|_| "Credential store is busy")?;
     #[cfg(target_os = "macos")]
-    let _no_ui = crate::credentials::non_interactive_keychain()?;
+    let _no_ui = if interactive {
+        None
+    } else {
+        crate::credentials::non_interactive_keychain()?
+    };
     let account =
         hex(ring::digest::digest(&ring::digest::SHA256, dir.to_string_lossy().as_bytes()).as_ref());
     let entry = keyring::Entry::new("dev.notdot.phone-link", &account)
@@ -529,7 +549,11 @@ impl Backend for AppBackend {
                 ));
             }
             context.learning.cancel();
-            context.memory.clear_all().await.map_err(unavailable)
+            context
+                .memory
+                .clear_all()
+                .await
+                .map_err(|_| OpError::Interrupted)
         })
     }
 }
@@ -555,7 +579,7 @@ mod tests {
             .restore(status_list::now_ms());
         state
             .phones
-            .start(state, Some(SecretKey::from_bytes(&key)))
+            .start(state, Some(SecretKey::from_bytes(&key)), false)
             .await
             .unwrap();
     }
@@ -725,6 +749,19 @@ mod tests {
                 .settings,
             settings
         );
+        let mut stale = settings.clone();
+        stale.enabled = true;
+        state.phones.set_settings(&state, stale).await.unwrap();
+        assert!(
+            !Phones::open(dir.path())
+                .unwrap()
+                .inner
+                .lock()
+                .await
+                .settings
+                .enabled,
+            "a stale policy form must never re-enable phone connections"
+        );
         let path = dir.path().join("phone-link/policy.json");
         let original = std::fs::read(&path).unwrap();
         let mut invalid = settings;
@@ -890,5 +927,33 @@ mod tests {
         })
         .await
         .expect("bounded sensitive-action lifecycle");
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "explicit silent OS-vault smoke test with a disposable identity"]
+    fn silent_os_identity_round_trip_never_uses_voice_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let account = hex(ring::digest::digest(
+            &ring::digest::SHA256,
+            dir.path().to_string_lossy().as_bytes(),
+        )
+        .as_ref());
+        struct Cleanup(String);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _serial = crate::credentials::OPERATIONS.lock().unwrap();
+                let _quiet = crate::credentials::non_interactive_keychain().unwrap();
+                let _ = keyring::Entry::new("dev.notdot.phone-link", &self.0)
+                    .unwrap()
+                    .delete_credential();
+            }
+        }
+        let _cleanup = Cleanup(account);
+        let first = identity(dir.path(), false).expect("silent disposable identity creation");
+        let second = identity(dir.path(), false).expect("silent identity restoration");
+        assert!(
+            first.to_bytes() == second.to_bytes(),
+            "identity changed across reads"
+        );
     }
 }

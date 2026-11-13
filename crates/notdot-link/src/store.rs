@@ -167,6 +167,11 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// Create (if needed) a directory only the current user can read.
 pub fn private_dir(dir: &Path) -> std::io::Result<()> {
+    if std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(std::io::Error::other(
+            "phone state directory is a symbolic link",
+        ));
+    }
     std::fs::create_dir_all(dir)?;
     #[cfg(unix)]
     {

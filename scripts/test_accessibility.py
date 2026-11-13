@@ -62,9 +62,9 @@ class Accessibility(unittest.TestCase):
 
     def test_settings_are_native_disclosures_and_intelligence_has_no_visible_selects(self):
         sections=[a for t,a in self.markup.tags if t=='details' and 'settings-section' in a.get('class','').split()]
-        self.assertEqual(len(sections),13)
+        self.assertEqual(len(sections),14)
         ids={a.get('id') for a in sections}
-        self.assertTrue({'voice-notes-section','backup-section'}<=ids)
+        self.assertTrue({'voice-notes-section','backup-section','phones-section'}<=ids)
         self.assertTrue(any(a.get("id")=="session-section" for a in sections))
         self.assertTrue(all('open' not in a for a in sections))
         for ident in ('model','effort'):

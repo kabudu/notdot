@@ -17,6 +17,8 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import uniffi.notdot_mobile_core.BackupState
 import uniffi.notdot_mobile_core.LinkRoute
+import uniffi.notdot_mobile_core.SessionEvent
+import uniffi.notdot_mobile_core.StartSource
 import uniffi.notdot_mobile_core.PairResult
 import uniffi.notdot_mobile_core.AttestRequest
 import uniffi.notdot_mobile_core.MobileException
@@ -108,12 +110,13 @@ class DeviceTest {
     @Test
     fun silentModeNeverStartsTheMicrophoneService() {
         NotdotState.silent = true
-        val target = InstrumentationRegistry.getInstrumentation().targetContext
-        assertEquals(
-            android.content.pm.PackageManager.PERMISSION_DENIED,
-            target.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO),
-        )
-        assertTrue(!NotdotState.effects.value.microphone)
+        try {
+            val effects = NotdotState.handle(SessionEvent.Start(StartSource.APP), microphonePermitted = true)
+            assertTrue(!effects.microphone)
+        } finally {
+            NotdotState.silent = false
+            NotdotState.handle(SessionEvent.Stop)
+        }
     }
 
     /**
@@ -210,14 +213,15 @@ class DeviceTest {
             return false
         }
         for (gain in listOf(0.35f, 0.05f)) for (clip in listOf("hey-ava.wav", "hey-ava-uk.wav", "hey-ava-us.wav")) {
-            assertTrue("$clip@$gain", detects(clip, gain))
+            val woke = detects(clip, gain)
+            assertTrue("$clip@$gain backup=${engine.backupState()} stats=${engine.backupStats()}", woke)
         }
         for (clip in listOf("ava.wav", "negative.wav")) for (gain in listOf(0.05f, 0.35f, 0.8f)) {
             assertFalse("$clip@$gain", detects(clip, gain))
         }
         val stats = engine.backupStats()
         println("emulator backup stats: $stats")
-        assertEquals(0uL, stats.failures)
+        assertEquals("backup stats: $stats", 0uL, stats.failures)
     }
 
     /** Keystore-sealed identity with a disposable key alias and folder. */

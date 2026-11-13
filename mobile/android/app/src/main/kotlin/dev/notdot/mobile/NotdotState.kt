@@ -49,12 +49,39 @@ object NotdotState {
         ).also { session = it }
 
     @Synchronized
-    fun handle(event: SessionEvent, microphonePermitted: Boolean = false): Effects {
-        val next = session(microphonePermitted).handle(event, SystemClock.elapsedRealtime().toULong())
+    fun handle(event: SessionEvent, microphonePermitted: Boolean? = null): Effects {
+        val now = SystemClock.elapsedRealtime().toULong()
+        val current = session(microphonePermitted == true)
+        if (microphonePermitted != null) {
+            current.handle(if (microphonePermitted && !silent) SessionEvent.PermissionGranted else SessionEvent.PermissionLost, now)
+        }
+        val next = current.handle(event, now)
         _effects.value = next
-        _status.value = describe(next.state)
-        orb.value = orb.value.copy(wakeReady = next.microphone)
+        if (event != SessionEvent.Tick || orb.value.mode != OrbMode.LISTENING) _status.value = describe(next.state)
+        orb.value = orb.value.copy(wakeReady = next.microphone, mode = if (next.microphone) orb.value.mode else OrbMode.IDLE)
         return next
+    }
+
+    private val wakeFeedback = java.util.concurrent.atomic.AtomicLong(0)
+    fun wakeInput(level: Float, checking: Boolean) {
+        if (!effects.value.microphone || orb.value.mode == OrbMode.LISTENING) return
+        val hearing = level > 0.006f || checking
+        val mode = if (hearing) OrbMode.THINKING else OrbMode.IDLE
+        orb.value = orb.value.copy(mode = mode, level = (level * 12f).coerceIn(0f, 1f).toDouble())
+        if (hearing) setStatus("Checking wake phrase locally…")
+        else setStatus("Listening hands-free · Say Hey Ava")
+    }
+    fun wakeHeard() {
+        handle(SessionEvent.Activity)
+        val generation = wakeFeedback.incrementAndGet()
+        orb.value = orb.value.copy(mode = OrbMode.LISTENING)
+        setStatus("Heard you. Desktop voice replies are not connected in this prototype.")
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            if (wakeFeedback.get() == generation && effects.value.microphone) {
+                orb.value = orb.value.copy(mode = OrbMode.IDLE)
+                setStatus("Listening hands-free · Say Hey Ava")
+            }
+        }, 2500)
     }
 
     fun setStatus(text: String) {

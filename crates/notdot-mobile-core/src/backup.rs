@@ -105,7 +105,7 @@ pub(crate) fn whisper(models: &Path, phrase: &str) -> Load {
     let phrase = phrase.to_owned();
     let threads = std::thread::available_parallelism()
         .map_or(1, |n| n.get())
-        .clamp(1, 2) as i32;
+        .clamp(1, if cfg!(target_os = "android") { 6 } else { 2 }) as i32;
     Box::new(move |epoch| {
         let context = load(&model, &phrase, epoch, threads)?;
         let limits = DecodeLimits {

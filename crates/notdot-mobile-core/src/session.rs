@@ -106,6 +106,9 @@ pub enum SessionEvent {
         silenced: bool,
     },
     SurfaceEnded,
+    /// OS permission was granted after this session was created. Does not
+    /// start hands-free listening; that still needs an explicit Start.
+    PermissionGranted,
     PermissionLost,
     SystemStopped,
     /// Periodic tick so timeouts apply without other events.
@@ -318,6 +321,9 @@ impl Session {
                 self.settle_pause();
             }
             SessionEvent::SurfaceEnded if self.in_session() => self.end(EndReason::SurfaceEnded),
+            SessionEvent::PermissionGranted => {
+                self.policy.microphone_permitted = true;
+            }
             SessionEvent::PermissionLost => {
                 self.policy.microphone_permitted = false;
                 if self.in_session() {
@@ -668,5 +674,49 @@ mod tests {
             default_session_policy(Platform::Ios).idle_timeout_ms,
             10 * MIN
         );
+    }
+    #[test]
+    fn permission_granted_after_initial_denial_allows_explicit_start_without_restart() {
+        for platform in [Platform::Android, Platform::Ios] {
+            let mut s = Session::new(SessionPolicy {
+                microphone_permitted: false,
+                ..default_session_policy(platform)
+            });
+            s.handle(SessionEvent::AppVisible, 0);
+            assert!(
+                !s.handle(
+                    SessionEvent::Start {
+                        source: StartSource::App
+                    },
+                    1
+                )
+                .surface
+            );
+            let permitted = s.handle(SessionEvent::PermissionGranted, 2);
+            assert!(
+                !permitted.surface,
+                "permission alone must not start a background session"
+            );
+            assert!(
+                s.handle(
+                    SessionEvent::Start {
+                        source: StartSource::App
+                    },
+                    3
+                )
+                .microphone
+            );
+            assert!(!s.handle(SessionEvent::PermissionLost, 4).microphone);
+            s.handle(SessionEvent::PermissionGranted, 5);
+            assert!(
+                s.handle(
+                    SessionEvent::Start {
+                        source: StartSource::App
+                    },
+                    6
+                )
+                .microphone
+            );
+        }
     }
 }

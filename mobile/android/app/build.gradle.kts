@@ -29,7 +29,14 @@ val copyWakeFixtures by tasks.registering(Copy::class) {
     }
     into(wakeFixtures.map { it.dir("fixtures") })
 }
-tasks.named("preBuild") { dependsOn(copyWakeModels, copyWakeFixtures) }
+// Generate the launcher asset from the canonical desktop icon, so a
+// future brand update cannot silently leave mobile behind.
+val iconResources = layout.buildDirectory.dir("generated/icon-resources")
+val copyNotdotIcon by tasks.registering(Copy::class) {
+    from(repo.file("src-tauri/icons/icon.png")) { rename { "notdot_mark.png" } }
+    into(iconResources.map { it.dir("drawable-nodpi") })
+}
+tasks.named("preBuild") { dependsOn(copyWakeModels, copyWakeFixtures, copyNotdotIcon) }
 
 android {
     namespace = "dev.notdot.mobile"
@@ -65,6 +72,7 @@ android {
             java.srcDir(core.dir("kotlin"))
             jniLibs.srcDir(core.dir("jniLibs"))
             assets.srcDir(wakeAssets)
+            res.srcDir(iconResources)
         }
         getByName("androidTest") {
             // Golden orb frames shared with iOS and the desktop contract.

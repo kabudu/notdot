@@ -290,8 +290,9 @@ pub enum Refusal {
     StaleProfile,
 }
 
-/// The desktop's set of paired phones. Persistence (encrypted, desktop
-/// only) is out of scope for this prototype.
+/// The desktop's set of paired phones. The desktop transport persists
+/// public identities and scopes in its private state directory; private
+/// identity keys are held separately in the OS credential store.
 #[derive(Debug, Default)]
 pub struct DeviceRegistry {
     devices: HashMap<DeviceId, DeviceRecord>,
