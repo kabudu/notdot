@@ -74,7 +74,7 @@ async fn bind(
     net: &NetConfig,
     alpns: Vec<Vec<u8>>,
 ) -> Result<Endpoint, LinkError> {
-    bind_on(secret, net, alpns, None).await
+    bind_on(secret, net, alpns, None, None).await
 }
 
 /// Bind, on `port` (all interfaces, IPv4 and IPv6) if given.
@@ -83,6 +83,7 @@ async fn bind_on(
     net: &NetConfig,
     alpns: Vec<Vec<u8>>,
     port: Option<u16>,
+    ipv6_port: Option<u16>,
 ) -> Result<Endpoint, LinkError> {
     let transport = QuicTransportConfig::builder()
         .max_concurrent_bidi_streams(VarInt::from_u32(MAX_STREAMS))
@@ -110,7 +111,7 @@ async fn bind_on(
             .map_err(bad)?
             .bind_addr(std::net::SocketAddr::from((
                 std::net::Ipv6Addr::UNSPECIFIED,
-                port,
+                ipv6_port.unwrap_or(port),
             )))
             .map_err(bad)?;
     }
@@ -165,6 +166,7 @@ struct DesktopState {
     registry: Mutex<DeviceRegistry>,
     registry_file: Option<crate::store::JsonFile>,
     port: Option<u16>,
+    ipv6_port: Option<u16>,
     epochs: Mutex<HashMap<String, u64>>,
     epoch_source: Option<EpochSource>,
     live: Mutex<HashMap<DeviceId, Vec<Connection>>>,
@@ -200,6 +202,7 @@ impl DesktopState {
             Some(file) => file
                 .save(&crate::store::RegistrySnapshot {
                     port: self.port,
+                    ipv6_port: self.ipv6_port,
                     ..registry.snapshot()
                 })
                 .map_err(|e| LinkError::Io(e.to_string())),
@@ -235,6 +238,7 @@ impl Desktop {
     ) -> Result<Self, LinkError> {
         // Read saved state before touching the network.
         let mut registry_port = None;
+        let mut registry_ipv6_port = None;
         let (registry, registry_file, saved_service) = match &options.state_dir {
             Some(dir) => {
                 crate::store::private_dir(dir).map_err(|e| LinkError::Io(e.to_string()))?;
@@ -251,6 +255,7 @@ impl Desktop {
                 .map_err(|e| LinkError::Io(e.to_string()))?;
                 let saved = saved.unwrap_or_default();
                 registry_port = saved.port;
+                registry_ipv6_port = saved.ipv6_port;
                 (
                     DeviceRegistry::restore(saved),
                     Some(file),
@@ -263,13 +268,27 @@ impl Desktop {
         // Reuse the saved port when possible; another app may have taken it.
         let saved_port = registry_port;
         let endpoint = match saved_port {
-            Some(port) => match bind_on(secret.clone(), net, alpns.clone(), Some(port)).await {
+            Some(port) => match bind_on(
+                secret.clone(),
+                net,
+                alpns.clone(),
+                Some(port),
+                registry_ipv6_port,
+            )
+            .await
+            {
                 Ok(endpoint) => endpoint,
                 Err(_) => bind(secret, net, alpns).await?,
             },
             None => bind(secret, net, alpns).await?,
         };
-        let port = endpoint.bound_sockets().first().map(|a| a.port());
+        let sockets = endpoint.bound_sockets();
+        let port = sockets
+            .iter()
+            .find(|a| a.is_ipv4())
+            .or_else(|| sockets.first())
+            .map(|a| a.port());
+        let ipv6_port = sockets.iter().find(|a| a.is_ipv6()).map(|a| a.port());
         let id = device_id(endpoint.id());
         let service = match options.backend {
             Some(backend) => Service::with_backend(id, clock.clone(), backend),
@@ -287,6 +306,7 @@ impl Desktop {
             registry: Mutex::new(registry),
             registry_file,
             port,
+            ipv6_port,
             epochs: Mutex::new(HashMap::new()),
             epoch_source: options.epochs,
             live: Mutex::new(HashMap::new()),
@@ -295,7 +315,9 @@ impl Desktop {
             service,
             clock,
         });
-        if state.registry_file.is_some() && port != registry_port {
+        if state.registry_file.is_some()
+            && (port != registry_port || ipv6_port != registry_ipv6_port)
+        {
             let saved = {
                 let registry = state.registry.lock().expect("registry lock");
                 state.save_registry(&registry)
@@ -471,11 +493,14 @@ impl Desktop {
     pub async fn close(self) {
         self.accept.abort();
         self.state.service.shutdown();
-        self.state
-            .tasks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .abort_all();
+        // Wait for the accepting task's endpoint clone to be dropped before
+        // a replacement binds. Aborting alone only schedules cancellation.
+        let _ = self.accept.await;
+        let mut tasks = {
+            let mut owned = self.state.tasks.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *owned)
+        };
+        tasks.shutdown().await;
         self.endpoint.close().await;
     }
 }
@@ -873,5 +898,114 @@ impl Link {
 
     pub fn close(&self) {
         self.connection.close(VarInt::from_u32(CLOSE_OK), b"bye");
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_closed_desktop_reuses_the_address_port_immediately() {
+        let dir = std::env::temp_dir().join(format!(
+            "notdot-port-{}",
+            crate::protocol::RequestId::random().0
+        ));
+        let net = NetConfig {
+            relays: None,
+            direct: true,
+            insecure_test_relay: false,
+            relay_roots: vec![],
+        };
+        let key = SecretKey::generate();
+        let mut expected = None;
+        let phone = Phone::bind(None, &net).await.unwrap();
+        let mut paired_addr = None;
+        for _round in 0..12 {
+            let desktop = Desktop::bind_with(
+                Some(key.clone()),
+                &net,
+                crate::service::system_clock(),
+                DesktopOptions {
+                    state_dir: Some(dir.clone()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            let sockets = desktop.endpoint.bound_sockets();
+            let mut ports: Vec<_> = sockets.iter().map(|s| (s.is_ipv4(), s.port())).collect();
+            ports.sort();
+            if let Some(expected) = &expected {
+                assert_eq!(
+                    &ports, expected,
+                    "every advertised address must still reach the desktop after close returns"
+                );
+            }
+            expected = Some(ports);
+            desktop.set_profile_epoch("fixture", 1);
+            if paired_addr.is_none() {
+                let mut qr = desktop
+                    .create_offer(
+                        crate::pairing::ProfileRef {
+                            id: "fixture".into(),
+                            epoch: 1,
+                        },
+                        crate::pairing::DeviceProfile::Owner,
+                        crate::pairing::OFFER_TTL_MS,
+                    )
+                    .unwrap();
+                // Prefer IPv6 loopback: the old code changed precisely this
+                // advertised port after the first close/rebind.
+                qr.direct = vec![
+                    sockets
+                        .iter()
+                        .find(|s| s.is_ipv6())
+                        .map(|s| {
+                            std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, s.port()))
+                        })
+                        .unwrap_or_else(|| {
+                            std::net::SocketAddr::from((
+                                std::net::Ipv4Addr::LOCALHOST,
+                                sockets[0].port(),
+                            ))
+                        }),
+                ];
+                let addr = desktop_addr(&qr).unwrap();
+                let pairing = phone
+                    .pair(&qr, addr.clone(), "Synthetic phone")
+                    .await
+                    .unwrap();
+                desktop.approve(&desktop.pending()[0]).unwrap();
+                assert!(matches!(
+                    pairing.outcome().await.unwrap(),
+                    crate::protocol::PairFrame::Approved { .. }
+                ));
+                paired_addr = Some(addr);
+            }
+            let link = tokio::time::timeout(
+                Duration::from_secs(5),
+                phone.connect(paired_addr.clone().unwrap()),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(matches!(
+                link.call(
+                    crate::protocol::RequestId::random(),
+                    crate::protocol::Op::Ping {},
+                    None
+                )
+                .await
+                .unwrap(),
+                crate::protocol::ServerFrame::Done { .. }
+            ));
+            link.close();
+            tokio::time::timeout(Duration::from_secs(5), desktop.close())
+                .await
+                .unwrap();
+        }
+        phone.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

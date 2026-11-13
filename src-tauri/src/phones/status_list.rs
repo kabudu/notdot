@@ -276,12 +276,19 @@ mod tests {
         assert_eq!(cached.fetched_ms(), fetched);
 
         // Every bad answer is refused and leaves the cache as it was.
-        let big = vec![b' '; MAX_BYTES + 1];
+        // Advertise an excessive body without sending it: the client must
+        // refuse at the headers, not depend on how an OS closes a socket
+        // whose multi-megabyte response the client deliberately abandons.
+        let too_large = format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            MAX_BYTES + 1
+        )
+        .into_bytes();
         for (response, why) in [
             (http("500 Internal Server Error", b"{}"), "Google answered 500"),
             (http("200 OK", b"not json"), "format"),
             (http("200 OK", br#"{"entries":{"0x":{"status":"FINE"}}}"#), "format"),
-            (http("200 OK", &big), "large"),
+            (too_large, "large"),
             (
                 b"HTTP/1.1 302 Found\r\nlocation: https://example.com/\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_vec(),
                 "302",

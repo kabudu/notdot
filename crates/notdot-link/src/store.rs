@@ -191,6 +191,10 @@ pub struct RegistrySnapshot {
     /// phones on the same network find it at the address they know.
     #[serde(default)]
     pub port: Option<u16>,
+    /// Iroh may allocate a different IPv6 port on the first bind. Keep it
+    /// too: phones can remember only the IPv6 address on some networks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ipv6_port: Option<u16>,
 }
 
 #[cfg(test)]

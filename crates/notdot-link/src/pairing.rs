@@ -348,6 +348,7 @@ impl DeviceRegistry {
             devices,
             revoked,
             port: None,
+            ipv6_port: None,
         }
     }
 
