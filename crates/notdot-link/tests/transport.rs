@@ -18,6 +18,7 @@ fn net(relays: &RelayMap, direct: bool) -> NetConfig {
         relays: Some(relays.clone()),
         direct,
         insecure_test_relay: true,
+        relay_roots: Vec::new(),
     }
 }
 

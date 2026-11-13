@@ -64,6 +64,9 @@ pub struct NetConfig {
     pub direct: bool,
     /// Accept the local test relay's self-signed certificate. Tests only.
     pub insecure_test_relay: bool,
+    /// Trust only these DER root certificates for relay TLS (a private CA
+    /// or a local proxy). Empty: the embedded public web roots.
+    pub relay_roots: Vec<Vec<u8>>,
 }
 
 async fn bind(
@@ -87,6 +90,13 @@ async fn bind(
     }
     if !net.direct {
         builder = builder.clear_ip_transports();
+    }
+    if !net.relay_roots.is_empty() {
+        builder = builder.ca_tls_config(iroh::tls::CaTlsConfig::custom_roots(
+            net.relay_roots
+                .iter()
+                .map(|der| rustls_pki_types::CertificateDer::from(der.clone())),
+        ));
     }
     if net.insecure_test_relay {
         #[cfg(feature = "test-relay")]

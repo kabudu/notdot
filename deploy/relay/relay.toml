@@ -1,0 +1,12 @@
+# iroh-relay behind a TLS-terminating reverse proxy. The relay itself serves
+# plain HTTP on the private container network only; the proxy owns 443.
+enable_relay = true
+http_bind_addr = "0.0.0.0:3340"
+enable_quic_addr_discovery = false
+enable_metrics = true
+metrics_bind_addr = "0.0.0.0:9090"
+
+# Per-client receive limit (bytes/s). Voice is a few KiB/s per direction.
+[limits.client.rx]
+bytes_per_second = 262144
+max_burst_bytes = 1048576

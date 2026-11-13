@@ -68,6 +68,7 @@ impl PhoneLink {
             relays,
             direct,
             insecure_test_relay: false,
+            relay_roots: Vec::new(),
         })
     }
 }
