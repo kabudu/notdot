@@ -100,6 +100,43 @@ jobs:
             echo 'notdot-orb without the web feature must not depend on web crates' >&2
             exit 1
           fi
+  mobile-app-library:
+    name: Mobile app library (${{ matrix.target }})
+    needs: changes
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-ios-sim
+          - os: ubuntu-22.04
+            target: aarch64-linux-android
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.97.0
+          targets: ${{ matrix.target }}
+      # mobile/rust pins libc for iOS; this proves its lockfile builds and
+      # stays in step with the desktop lock (see mobile/README.md).
+      - run: python3 scripts/check_mobile_lock.py
+      - name: Build the app library without native wake libraries
+        working-directory: mobile/rust
+        shell: bash
+        run: |
+          if [ "${{ matrix.target }}" = aarch64-linux-android ]; then
+            bin="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+            export CC_aarch64_linux_android="$bin/aarch64-linux-android29-clang"
+            export AR_aarch64_linux_android="$bin/llvm-ar"
+            export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$bin/aarch64-linux-android29-clang"
+            cargo rustc --locked --lib --crate-type cdylib --target ${{ matrix.target }}
+          else
+            IPHONEOS_DEPLOYMENT_TARGET=18.0 cargo rustc --locked --lib --crate-type staticlib --target ${{ matrix.target }}
+          fi
   release-tools:
     needs: changes
     if: github.event.repository.private == false && needs.changes.outputs.full == 'true'
