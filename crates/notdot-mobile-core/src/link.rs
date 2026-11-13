@@ -1,14 +1,17 @@
 //! The phone side of pairing and the encrypted link, for native shells.
 //!
-//! The phone's identity key is created here and never leaves the process
-//! through this API. (Persisting it in the Keychain / Android Keystore with
-//! a this-device-only policy is the next step; the prototype keeps it in
-//! memory, so a restart means pairing again.)
+//! Identity: [`PhoneLink::new`] creates an in-memory identity (a restart
+//! means pairing again). [`PhoneLink::restore`] takes a 32-byte identity
+//! that native code keeps in this-device-only secure storage (Keychain on
+//! iOS; a Keystore-wrapped file on Android), plus the [`PairedDesktop`]
+//! record from [`PhoneLink::paired_record`], so a restarted app reconnects
+//! without pairing again. This API never returns the identity key; native
+//! code creates it ([`new_identity`]) and stores it before first use.
 use crate::MobileError;
 use notdot_link::{
-    pairing::QrPayload,
+    pairing::{PairedDesktop, QrPayload},
     protocol::{Op, PairFrame, RequestId, ServerFrame},
-    transport::{Link, NetConfig, Pairing, Phone, Route, desktop_addr},
+    transport::{Link, NetConfig, Pairing, Phone, Route, SecretKey, paired_addr},
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -39,7 +42,7 @@ fn link_error(error: impl std::fmt::Display) -> MobileError {
 struct State {
     secret: Option<iroh_key::Secret>,
     /// The desktop this phone is paired with; set only after approval.
-    paired: Option<QrPayload>,
+    paired: Option<PairedDesktop>,
     /// A pairing waiting for the owner, with its endpoint.
     pending: Option<(QrPayload, Pairing, Arc<Phone>)>,
     /// The endpoint used for the link, and whether it is relay-only.
@@ -60,10 +63,10 @@ async fn retire(phone: Arc<Phone>) {
     }
 }
 
-/// Network configuration for a desktop's QR. Debug builds also accept a
+/// Network configuration for a desktop. Debug builds also accept a
 /// plain-HTTP local development relay; release builds require https.
-fn net_for(qr: &QrPayload, direct: bool) -> Result<NetConfig, MobileError> {
-    let relays = match qr.relay.as_ref() {
+fn net_for(desktop: &PairedDesktop, direct: bool) -> Result<NetConfig, MobileError> {
+    let relays = match desktop.relay.as_ref() {
         Some(url) => Some(
             notdot_link::transport::relay_map(url, cfg!(debug_assertions)).map_err(link_error)?,
         ),
@@ -86,17 +89,56 @@ pub struct PhoneLink {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl PhoneLink {
+    /// A phone with a new in-memory identity (lost when the app exits).
     #[uniffi::constructor]
     pub fn new() -> Arc<Self> {
-        Arc::new(Self {
-            state: Arc::new(Mutex::new(State {
-                secret: None,
-                paired: None,
-                pending: None,
-                phone: None,
-                link: None,
-            })),
-        })
+        Self::with(None, None)
+    }
+
+    /// A phone with a stored identity (32 bytes from [`new_identity`]) and,
+    /// if it was paired, the record from [`PhoneLink::paired_record`]. A
+    /// revoked phone restored this way is refused by the desktop on
+    /// connect and must pair again.
+    #[uniffi::constructor]
+    pub fn restore(identity: Vec<u8>, paired: Option<String>) -> Result<Arc<Self>, MobileError> {
+        let bytes: [u8; 32] = identity
+            .as_slice()
+            .try_into()
+            .map_err(|_| MobileError::Invalid {
+                detail: "identity must be 32 bytes".into(),
+            })?;
+        let paired = paired
+            .map(|text| PairedDesktop::decode(text.trim()).map_err(link_error))
+            .transpose()?;
+        Ok(Self::with(
+            Some(iroh_key::Secret(SecretKey::from_bytes(&bytes))),
+            paired,
+        ))
+    }
+
+    /// The record to store after approval (no secrets), or none if unpaired.
+    pub async fn paired_record(&self) -> Option<String> {
+        self.state
+            .lock()
+            .await
+            .paired
+            .as_ref()
+            .map(PairedDesktop::encode)
+    }
+
+    /// Forget the pairing on this phone (the desktop must also revoke it).
+    pub async fn unpair(&self) {
+        let (link, phone) = {
+            let mut state = self.state.lock().await;
+            state.paired = None;
+            (state.link.take(), state.phone.take())
+        };
+        if let Some(link) = link {
+            link.close();
+        }
+        if let Some((phone, _)) = phone {
+            retire(phone).await;
+        }
     }
 
     /// Start pairing from a scanned (or typed) QR code. Returns the
@@ -104,7 +146,7 @@ impl PhoneLink {
     /// changes for an existing pairing unless the owner approves this one.
     pub async fn pair(&self, qr: String, name: String) -> Result<String, MobileError> {
         let qr = QrPayload::decode(qr.trim()).map_err(link_error)?;
-        let net = net_for(&qr, true)?;
+        let net = net_for(&PairedDesktop::from_qr(&qr), true)?;
         let secret = self.state.lock().await.secret.clone();
         let phone = Arc::new(
             Phone::bind(secret.map(|s| s.0), &net)
@@ -112,7 +154,12 @@ impl PhoneLink {
                 .map_err(link_error)?,
         );
         let pairing = match phone
-            .pair(&qr, desktop_addr(&qr).map_err(link_error)?, &name, &[])
+            .pair(
+                &qr,
+                paired_addr(&PairedDesktop::from_qr(&qr)).map_err(link_error)?,
+                &name,
+                &[],
+            )
             .await
         {
             Ok(pairing) => pairing,
@@ -160,7 +207,7 @@ impl PhoneLink {
         if matches!(result, PairResult::Approved { .. }) {
             let (old_phone, old_link) = {
                 let mut state = self.state.lock().await;
-                state.paired = Some(qr);
+                state.paired = Some(PairedDesktop::from_qr(&qr));
                 (state.phone.replace((phone, false)), state.link.take())
             };
             if let Some(link) = old_link {
@@ -202,7 +249,7 @@ impl PhoneLink {
                 true,
             ),
         };
-        let mut addr = desktop_addr(&qr).map_err(link_error)?;
+        let mut addr = paired_addr(&qr).map_err(link_error)?;
         if relay_only {
             addr = notdot_link::transport::relay_only(&addr);
         }
@@ -275,6 +322,18 @@ impl PhoneLink {
 }
 
 impl PhoneLink {
+    fn with(secret: Option<iroh_key::Secret>, paired: Option<PairedDesktop>) -> Arc<Self> {
+        Arc::new(Self {
+            state: Arc::new(Mutex::new(State {
+                secret,
+                paired,
+                pending: None,
+                phone: None,
+                link: None,
+            })),
+        })
+    }
+
     async fn call(&self, id: RequestId, op: Op) -> Result<ServerFrame, MobileError> {
         let link = self
             .state
@@ -285,6 +344,14 @@ impl PhoneLink {
             .ok_or_else(|| link_error("not connected"))?;
         link.call(id, op, None).await.map_err(link_error)
     }
+}
+
+/// A new phone identity key (32 random bytes) for native secure storage.
+/// Create it once, store it this-device-only, then pass it to
+/// [`PhoneLink::restore`].
+#[uniffi::export]
+pub fn new_identity() -> Vec<u8> {
+    SecretKey::generate().to_bytes().to_vec()
 }
 
 /// A fresh idempotency key (32 hex digits) for a new call.
@@ -317,6 +384,168 @@ fn route(link: &Link) -> LinkRoute {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use notdot_link::{
+        pairing::{DeviceProfile, OFFER_TTL_MS, ProfileRef},
+        service::system_clock,
+        transport::Desktop,
+    };
+    use std::time::Duration;
+
+    /// A local desktop on loopback: direct paths only, no relay, nothing
+    /// leaves this machine. Profiles and data are synthetic.
+    async fn desktop() -> Desktop {
+        let net = NetConfig {
+            relays: None,
+            direct: true,
+            insecure_test_relay: false,
+            relay_roots: Vec::new(),
+        };
+        let desktop = Desktop::bind(None, &net, system_clock()).await.unwrap();
+        desktop.set_profile_epoch("owner", 1);
+        desktop.set_profile_epoch("member", 1);
+        desktop
+    }
+
+    /// Pair `phone` into `profile`, approving on the desktop as the owner
+    /// would after comparing codes. Returns the phone's device id.
+    async fn pair(desktop: &Desktop, phone: &PhoneLink, profile: &str) -> notdot_link::DeviceId {
+        let kind = if profile == "owner" {
+            DeviceProfile::Owner
+        } else {
+            DeviceProfile::Member
+        };
+        let qr = desktop
+            .create_offer(
+                ProfileRef {
+                    id: profile.into(),
+                    epoch: 1,
+                },
+                kind,
+                OFFER_TTL_MS,
+            )
+            .unwrap();
+        let sas = phone
+            .pair(qr.encode(), "Synthetic phone".into())
+            .await
+            .unwrap();
+        let pending = desktop.pending();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            pending[0].sas.to_string(),
+            sas,
+            "both screens show one code"
+        );
+        desktop.approve(&pending[0]).unwrap();
+        assert!(matches!(
+            phone.await_approval().await.unwrap(),
+            PairResult::Approved { .. }
+        ));
+        pending[0].device
+    }
+
+    async fn within<T>(future: impl std::future::Future<Output = T>) -> T {
+        tokio::time::timeout(Duration::from_secs(30), future)
+            .await
+            .expect("timed out")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_restarted_phone_reconnects_with_its_stored_identity() {
+        within(async {
+            let desktop = desktop().await;
+            let identity = new_identity();
+            let phone = PhoneLink::restore(identity.clone(), None).unwrap();
+            assert!(phone.paired_record().await.is_none());
+            pair(&desktop, &phone, "owner").await;
+            let record = phone.paired_record().await.expect("record after approval");
+            phone.connect(false).await.unwrap();
+            phone
+                .add_note(new_request_id(), "before restart".into())
+                .await
+                .unwrap();
+            // The app exits: everything in memory is gone.
+            phone.disconnect().await;
+            drop(phone);
+
+            let restarted = PhoneLink::restore(identity, Some(record.clone())).unwrap();
+            restarted.connect(false).await.unwrap();
+            restarted
+                .add_note(new_request_id(), "after restart".into())
+                .await
+                .unwrap();
+            let notes = restarted.list_notes().await.unwrap();
+            assert!(notes.contains(&"before restart".to_owned()), "{notes:?}");
+            assert!(notes.contains(&"after restart".to_owned()), "{notes:?}");
+
+            // The record alone grants nothing: another identity is refused.
+            let stranger = PhoneLink::restore(new_identity(), Some(record)).unwrap();
+            let refused = match stranger.connect(false).await {
+                Err(_) => true,
+                Ok(_) => stranger.list_notes().await.is_err(),
+            };
+            assert!(refused, "an unpaired identity must not reach the desktop");
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_revoked_phone_is_refused_after_restart_and_can_pair_again() {
+        within(async {
+            let desktop = desktop().await;
+            let identity = new_identity();
+            let phone = PhoneLink::restore(identity.clone(), None).unwrap();
+            let device = pair(&desktop, &phone, "owner").await;
+            let record = phone.paired_record().await.unwrap();
+            drop(phone);
+
+            desktop.revoke(device);
+            let restarted = PhoneLink::restore(identity.clone(), Some(record)).unwrap();
+            let refused = match restarted.connect(false).await {
+                Err(_) => true,
+                Ok(_) => restarted.list_notes().await.is_err(),
+            };
+            assert!(refused, "a revoked phone must be refused");
+
+            // Pairing again (owner approves a new code) restores access.
+            restarted.unpair().await;
+            assert!(restarted.paired_record().await.is_none());
+            pair(&desktop, &restarted, "owner").await;
+            restarted.connect(false).await.unwrap();
+            restarted.list_notes().await.unwrap();
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn phones_in_different_profiles_do_not_see_each_others_notes() {
+        within(async {
+            let desktop = desktop().await;
+            let owner = PhoneLink::restore(new_identity(), None).unwrap();
+            let member = PhoneLink::restore(new_identity(), None).unwrap();
+            pair(&desktop, &owner, "owner").await;
+            pair(&desktop, &member, "member").await;
+            owner.connect(false).await.unwrap();
+            member.connect(false).await.unwrap();
+            owner
+                .add_note(new_request_id(), "owner only".into())
+                .await
+                .unwrap();
+            member
+                .add_note(new_request_id(), "member only".into())
+                .await
+                .unwrap();
+            assert_eq!(owner.list_notes().await.unwrap(), ["owner only"]);
+            assert_eq!(member.list_notes().await.unwrap(), ["member only"]);
+        })
+        .await;
+    }
+
+    #[test]
+    fn identities_must_be_32_bytes_and_records_well_formed() {
+        assert!(PhoneLink::restore(vec![0; 31], None).is_err());
+        assert!(PhoneLink::restore(new_identity(), Some("notdot-paired:1:!".into())).is_err());
+        assert_ne!(new_identity(), new_identity());
+    }
 
     #[test]
     fn request_ids_round_trip_and_bad_ones_are_refused() {

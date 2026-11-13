@@ -133,6 +133,54 @@ impl QrPayload {
     }
 }
 
+/// What a phone keeps about the desktop it is paired with, so it can
+/// reconnect after a restart without the QR. It holds no pairing secret
+/// (the offer and its secret are single-use and spent): only the desktop's
+/// public key, which is what the phone authenticates, and reachability
+/// hints. Store it with the phone's identity key; on its own it grants
+/// nothing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PairedDesktop {
+    pub desktop: DeviceId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub direct: Vec<std::net::SocketAddr>,
+}
+const PAIRED_PREFIX: &str = "notdot-paired:1:";
+impl PairedDesktop {
+    pub fn from_qr(qr: &QrPayload) -> Self {
+        Self {
+            desktop: qr.desktop,
+            relay: qr.relay.clone(),
+            direct: qr.direct.clone(),
+        }
+    }
+    pub fn encode(&self) -> String {
+        let json = serde_json::to_vec(self).expect("paired record serialises");
+        PAIRED_PREFIX.to_owned() + &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json)
+    }
+    /// Strict parse, with the same limits as a QR code.
+    pub fn decode(text: &str) -> Result<Self, LinkError> {
+        let body = text
+            .strip_prefix(PAIRED_PREFIX)
+            .ok_or(LinkError::BadQr("not a notdot paired record"))?;
+        if body.len() > 2_048 {
+            return Err(LinkError::BadQr("too long"));
+        }
+        let json = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(body)
+            .map_err(|_| LinkError::BadQr("not base64url"))?;
+        let record: Self =
+            serde_json::from_slice(&json).map_err(|_| LinkError::BadQr("malformed"))?;
+        if record.direct.len() > 8 {
+            return Err(LinkError::BadQr("wrong field length"));
+        }
+        Ok(record)
+    }
+}
+
 /// Sent by the phone over a connection already authenticated to `desktop`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -519,6 +567,41 @@ impl PairingDesk {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_paired_record_round_trips_and_carries_no_pairing_secret() {
+        let qr = QrPayload {
+            desktop: DeviceId([7; 32]),
+            offer: vec![1; 16],
+            secret: vec![2; 32],
+            expires_ms: 5,
+            relay: Some("https://relay.example.test/".into()),
+            direct: vec!["192.0.2.1:4433".parse().unwrap()],
+        };
+        let record = PairedDesktop::from_qr(&qr);
+        let text = record.encode();
+        assert_eq!(PairedDesktop::decode(&text).unwrap(), record);
+        let json = String::from_utf8(
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(text.strip_prefix(PAIRED_PREFIX).unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            !json.contains("secret") && !json.contains("offer"),
+            "{json}"
+        );
+        // A QR is not a record, unknown fields and oversize input are refused.
+        assert!(PairedDesktop::decode(&qr.encode()).is_err());
+        let extra = PAIRED_PREFIX.to_owned()
+            + &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json.replacen(
+                '{',
+                r#"{"secret":"AA","#,
+                1,
+            ));
+        assert!(PairedDesktop::decode(&extra).is_err());
+        assert!(PairedDesktop::decode(&(PAIRED_PREFIX.to_owned() + &"A".repeat(2_049))).is_err());
+    }
+
     use super::*;
 
     const DESKTOP: DeviceId = DeviceId([1; 32]);

@@ -506,9 +506,20 @@ pub fn relay_only(addr: &EndpointAddr) -> EndpointAddr {
 /// Build the desktop's address from a scanned QR. The key is what is
 /// trusted; the hints only help find it.
 pub fn desktop_addr(qr: &QrPayload) -> Result<EndpointAddr, LinkError> {
-    let key = PublicKey::from_bytes(&qr.desktop.0).map_err(|_| LinkError::BadQr("desktop key"))?;
-    let mut addrs: Vec<TransportAddr> = qr.direct.iter().copied().map(TransportAddr::Ip).collect();
-    if let Some(relay) = &qr.relay {
+    paired_addr(&crate::pairing::PairedDesktop::from_qr(qr))
+}
+
+/// The paired desktop's address, from the phone's stored record.
+pub fn paired_addr(paired: &crate::pairing::PairedDesktop) -> Result<EndpointAddr, LinkError> {
+    let key =
+        PublicKey::from_bytes(&paired.desktop.0).map_err(|_| LinkError::BadQr("desktop key"))?;
+    let mut addrs: Vec<TransportAddr> = paired
+        .direct
+        .iter()
+        .copied()
+        .map(TransportAddr::Ip)
+        .collect();
+    if let Some(relay) = &paired.relay {
         addrs.push(TransportAddr::Relay(
             relay.parse().map_err(|_| LinkError::BadQr("relay url"))?,
         ));
