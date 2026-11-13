@@ -22,11 +22,15 @@ rustls-pki-types = "1"
 [features]
 # Accept the self-signed certificate of iroh's local test relay. Tests only.
 test-relay = ["iroh/test-utils"]
+[[example]]
+name = "desktop_sim"
+required-features = ["test-relay"]
 [[test]]
 name = "transport"
 required-features = ["test-relay"]
 [[test]]
 name = "reverse_proxy"
 [dev-dependencies]
+iroh-relay = { version = "1.4", default-features = false, features = ["server"] }
 iroh = { version = "1.4", default-features = false, features = ["tls-ring", "test-utils"] }
 tokio = { workspace = true, features = ["test-util"] }
