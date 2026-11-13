@@ -74,6 +74,18 @@ pub fn op_digest(op: &crate::protocol::Op) -> [u8; 32] {
     hash.finalize().into()
 }
 
+/// Whether `bytes` is a SEC1-encoded P-256 public key (a step-up key).
+pub fn valid_key(bytes: &[u8]) -> bool {
+    VerifyingKey::from_sec1_bytes(bytes).is_ok()
+}
+
+/// The nonce in a `StepUpChallenge` result (`{"nonce": base64}`).
+pub fn challenge_nonce(result: &serde_json::Value) -> Option<[u8; 32]> {
+    crate::b64::decode(result["nonce"].as_str()?)?
+        .try_into()
+        .ok()
+}
+
 /// The bytes a phone signs.
 pub fn message(desktop: DeviceId, phone: DeviceId, nonce: &[u8; 32], digest: &[u8; 32]) -> Vec<u8> {
     [LABEL, &desktop.0, &phone.0, nonce, digest].concat()

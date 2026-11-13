@@ -7,6 +7,7 @@
 //! - [`wake`]: the desktop's on-device wake detector (keyword spotter, plus
 //!   the Whisper backup with the `whisper` feature).
 //! - [`link`]: pairing and the encrypted link to the desktop.
+//! - [`stepup`]: owner step-up with a key in the phone's secure hardware.
 uniffi::setup_scaffolding!();
 
 #[cfg(feature = "whisper")]
@@ -16,6 +17,7 @@ mod backup_types;
 pub mod link;
 pub mod orb;
 pub mod session;
+pub mod stepup;
 #[cfg(feature = "wake")]
 pub mod wake;
 
@@ -26,6 +28,12 @@ pub enum MobileError {
     Invalid { detail: String },
     #[error("{detail}")]
     Link { detail: String },
+    /// The desktop no longer accepts this phone (removed there, or its
+    /// profile changed). The core has forgotten the pairing; native code
+    /// should delete the stored identity, paired record and step-up key,
+    /// and offer to pair again.
+    #[error("{detail}")]
+    Unpaired { detail: String },
     #[error("{detail}")]
     Wake { detail: String },
 }

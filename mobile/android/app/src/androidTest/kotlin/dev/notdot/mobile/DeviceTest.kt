@@ -18,7 +18,9 @@ import org.junit.runner.RunWith
 import uniffi.notdot_mobile_core.BackupState
 import uniffi.notdot_mobile_core.LinkRoute
 import uniffi.notdot_mobile_core.PairResult
+import uniffi.notdot_mobile_core.KeyProtection
 import uniffi.notdot_mobile_core.PhoneLink
+import uniffi.notdot_mobile_core.checkStepUpKey
 import uniffi.notdot_mobile_core.newRequestId
 import java.io.File
 import java.nio.ByteBuffer
@@ -122,7 +124,7 @@ class DeviceTest {
         val qr = InstrumentationRegistry.getArguments().getString("notdotQr")
         assumeTrue("no desktop simulator code", qr != null)
         val link = PhoneLink()
-        assertEquals(7, link.pair(qr!!, "Emulator phone").length)
+        assertEquals(7, link.pair(qr!!, "Emulator phone", null).length)
         assertTrue(link.awaitApproval() is PairResult.Approved)
         val first = link.connect(false)
         assertNotEquals(LinkRoute.DISCONNECTED, first)
@@ -221,10 +223,78 @@ class DeviceTest {
             bytes[bytes.size - 1] = (bytes[bytes.size - 1].toInt() xor 1).toByte()
             file.writeBytes(bytes)
             assertTrue(runCatching { restarted.identity() }.isFailure)
+            // Unreadable storage never blocks pairing: the user's next
+            // pairing starts afresh with a new identity and no record.
+            val fresh = restarted.identityCreatingIfNeeded()
+            assertEquals(32, fresh.size)
+            assertFalse(fresh.contentEquals(identity))
+            assertArrayEquals(fresh, IdentityStore(dir, "notdot-test-$tag").identity())
+            assertNull(restarted.pairedRecord())
         } finally {
             store.clear()
             dir.deleteRecursively()
         }
         assertNull(IdentityStore(dir, "notdot-test-$tag").identity())
     }
+
+    /** Step-up adapter on this device or emulator: a key is either in
+     *  secure hardware, as the Keystore itself reports, or refused and
+     *  removed. Never a software key. (An emulator has no StrongBox and no
+     *  enrolled biometric, so it shows the refusal; a phone shows which
+     *  hardware it used.) */
+    @Test
+    fun stepUpKeyIsHardwareAsReportedOrRefused() {
+        val alias = "notdot-test-step-up-${System.nanoTime()}"
+        val store = StepUpKeyStore(alias)
+        val keystore = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        try {
+            val key = store.key()
+            val entry = keystore.getEntry(alias, null) as java.security.KeyStore.PrivateKeyEntry
+            assertEquals(StepUpKeyStore.protectionOf(entry.privateKey), key.protection)
+            assertNotEquals(KeyProtection.SOFTWARE, key.protection)
+            checkStepUpKey(key)
+            android.util.Log.i("notdot.test", "step-up key protection: ${key.protection}")
+        } catch (e: StepUpKeyStore.NoSecureHardware) {
+            assertFalse("a refused key is removed", keystore.containsAlias(alias))
+            android.util.Log.i("notdot.test", "step-up refused: ${e.message}")
+        } finally {
+            store.delete()
+        }
+    }
+
+    /** Keystore signatures and the reported protection level, with a
+     *  test key that needs no biometric (never the app's key). */
+    @Test
+    fun keystoreSignaturesAndProtectionAreReadBack() {
+        val alias = "notdot-test-sign-${System.nanoTime()}"
+        val keystore = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        try {
+            java.security.KeyPairGenerator.getInstance(android.security.keystore.KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore").run {
+                initialize(
+                    android.security.keystore.KeyGenParameterSpec.Builder(alias, android.security.keystore.KeyProperties.PURPOSE_SIGN)
+                        .setAlgorithmParameterSpec(java.security.spec.ECGenParameterSpec("secp256r1"))
+                        .setDigests(android.security.keystore.KeyProperties.DIGEST_SHA256)
+                        .build(),
+                )
+                generateKeyPair()
+            }
+            val entry = keystore.getEntry(alias, null) as java.security.KeyStore.PrivateKeyEntry
+            val protection = StepUpKeyStore.protectionOf(entry.privateKey)
+            android.util.Log.i("notdot.test", "keystore test key protection: $protection")
+            val public = entry.certificate.publicKey as java.security.interfaces.ECPublicKey
+            val sec1 = StepUpKeyStore.sec1(public)
+            checkStepUpKey(uniffi.notdot_mobile_core.StepUpKey(sec1, KeyProtection.TRUSTED_ENVIRONMENT))
+            val message = "synthetic".toByteArray()
+            val signature = java.security.Signature.getInstance("SHA256withECDSA").run {
+                initSign(entry.privateKey); update(message); sign()
+            }
+            assertEquals(0x30.toByte(), signature[0])
+            assertTrue(java.security.Signature.getInstance("SHA256withECDSA").run {
+                initVerify(public); update(message); verify(signature)
+            })
+        } finally {
+            keystore.deleteEntry(alias)
+        }
+    }
+
 }

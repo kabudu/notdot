@@ -61,6 +61,7 @@ struct PairingView: View {
                 }
                 Section("Status") {
                     Text(link.message)
+                    Text(link.stepUp).font(.footnote)
                     Text(routeText).accessibilityIdentifier("route")
                 }
                 #if DEBUG

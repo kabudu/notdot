@@ -30,7 +30,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import uniffi.notdot_mobile_core.MobileException
 import uniffi.notdot_mobile_core.PairResult
 import uniffi.notdot_mobile_core.PhoneLink
 import uniffi.notdot_mobile_core.SessionEvent
@@ -111,6 +114,7 @@ private fun Pairing() {
     var link by remember { mutableStateOf(runCatching { store.restoreLink() }.getOrElse { PhoneLink() }) }
     var qr by remember { mutableStateOf("") }
     var message by remember { mutableStateOf("Not linked") }
+    var stepUp by remember { mutableStateOf("Sensitive actions: not set up") }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(qr, { qr = it }, label = { Text("Pairing code from the computer") }, singleLine = true)
         Button({
@@ -118,7 +122,17 @@ private fun Pairing() {
                 message = try {
                     // The identity is created (once) by this user action.
                     if (store.identity() == null) link = PhoneLink.restore(store.identityCreatingIfNeeded(), null)
-                    val code = link.pair(qr.trim(), "Android phone")
+                    // A hardware key, or none: never a software substitute.
+                    // Key generation (StrongBox especially) is slow: off the main thread.
+                    val key = try {
+                        withContext(Dispatchers.IO) { StepUpKeyStore().key() }.also {
+                            stepUp = "Sensitive actions: confirmed with a fingerprint or face (${it.protection})"
+                        }
+                    } catch (e: StepUpKeyStore.NoSecureHardware) {
+                        stepUp = "Sensitive actions are unavailable on this phone: ${e.message}"
+                        null
+                    }
+                    val code = link.pair(qr.trim(), "Android phone", key)
                     message = "Check the computer shows $code, then choose Allow there."
                     when (val result = link.awaitApproval()) {
                         is PairResult.Approved -> {
@@ -128,11 +142,21 @@ private fun Pairing() {
                         PairResult.Denied -> "The computer said no."
                         is PairResult.Rejected -> result.reason
                     }
+                } catch (e: MobileException.Unpaired) {
+                    // Removed at the computer: forget everything on this phone.
+                    withContext(Dispatchers.IO) {
+                        store.clear()
+                        StepUpKeyStore().delete()
+                    }
+                    link = PhoneLink()
+                    stepUp = "Sensitive actions: not set up"
+                    e.detail
                 } catch (e: Exception) {
                     e.message ?: "Could not link"
                 }
             }
         }, Modifier.heightIn(min = 48.dp), enabled = qr.isNotBlank()) { Text("Link") }
         Text(message, color = Color.White)
+        Text(stepUp, color = Color.White)
     }
 }

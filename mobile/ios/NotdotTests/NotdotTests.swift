@@ -192,6 +192,46 @@ final class IdentityStoreTests: XCTestCase {
     }
 }
 
+/// Step-up adapter contract. Simulator only: the Simulator reports a Secure
+/// Enclave but is not a phone's hardware, so this proves the adapter
+/// refuses it explicitly and never substitutes a software key. Secure Enclave creation, Face ID prompts and signing with
+/// the hardware key need a physical iPhone.
+final class StepUpKeyStoreTests: XCTestCase {
+    func testNoSecureEnclaveIsReportedNotDowngraded() throws {
+        let store = StepUpKeyStore(tag: Data("dev.notdot.mobile.test.\(UUID().uuidString)".utf8))
+        defer { try? store.delete() }
+        #if targetEnvironment(simulator)
+        XCTAssertFalse(StepUpKeyStore.hardwareAvailable)
+        XCTAssertThrowsError(try store.key()) { error in
+            guard case StepUpKeyStore.Failure.noSecureHardware = error else { return XCTFail("\(error)") }
+        }
+        XCTAssertThrowsError(try store.key(), "still nothing on a second try")
+        #else
+        throw XCTSkip("device run: covered by the manual Secure Enclave check in mobile/README.md")
+        #endif
+    }
+
+    /// The adapter's key encoding and signature format, with a throwaway
+    /// software key (not stored, never used by the app): the public key it
+    /// exports is accepted by the core, and the core refuses the same key
+    /// when it is honestly labelled as software.
+    func testKeyAndSignatureFormatsMatchTheCore() throws {
+        let attributes: [String: Any] = [kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+                                         kSecAttrKeySizeInBits as String: 256]
+        var error: Unmanaged<CFError>?
+        let key = try XCTUnwrap(SecKeyCreateRandomKey(attributes as CFDictionary, &error))
+        let publicKey = try StepUpKeyStore.publicKey(of: key)
+        XCTAssertEqual(publicKey.count, 65)
+        XCTAssertEqual(publicKey.first, 0x04)
+        try checkStepUpKey(key: StepUpKey(publicKey: publicKey, protection: .secureEnclave))
+        XCTAssertThrowsError(try checkStepUpKey(key: StepUpKey(publicKey: publicKey, protection: .software)))
+        let signature = try StepUpKeyStore.sign(Data("synthetic".utf8), with: key)
+        XCTAssertEqual(signature.first, 0x30, "DER sequence")
+        XCTAssertTrue(SecKeyVerifySignature(SecKeyCopyPublicKey(key)!, .ecdsaSignatureMessageX962SHA256,
+                                            Data("synthetic".utf8) as CFData, signature as CFData, &error))
+    }
+}
+
 /// Pairs with a desktop simulator on the host (see mobile/README.md). Skipped
 /// unless the runner passes TEST_RUNNER_NOTDOT_TEST_QR_FILE.
 final class LinkEndToEndTests: XCTestCase {
@@ -201,7 +241,7 @@ final class LinkEndToEndTests: XCTestCase {
         }
         let qr = try String(contentsOfFile: path, encoding: .utf8)
         let link = PhoneLink()
-        let code = try await link.pair(qr: qr, name: "Simulator phone")
+        let code = try await link.pair(qr: qr, name: "Simulator phone", stepUp: nil)
         XCTAssertEqual(code.count, 7)
         guard case .approved = try await link.awaitApproval() else { return XCTFail("not approved") }
         let direct = try await link.connect(relayOnly: false)

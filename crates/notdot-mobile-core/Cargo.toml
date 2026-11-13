@@ -31,6 +31,7 @@ notdot-orb-gen = { path = "../notdot-orb-gen" }
 [dev-dependencies]
 notdot-orb-gen = { path = "../notdot-orb-gen" }
 hound = "3"
+p256 = { version = "0.13", features = ["ecdsa"] }
 [[bin]]
 name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"

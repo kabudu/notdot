@@ -6,6 +6,7 @@ import android.security.keystore.KeyProperties
 import uniffi.notdot_mobile_core.PhoneLink
 import uniffi.notdot_mobile_core.newIdentity
 import java.io.File
+import java.security.GeneralSecurityException
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -31,8 +32,27 @@ class IdentityStore(private val dir: File, private val alias: String = "notdot-l
 
     fun identity(): ByteArray? = open(IDENTITY)
 
-    /** The stored identity, or a new one sealed and saved before it is returned. */
-    fun identityCreatingIfNeeded(): ByteArray = identity() ?: newIdentity().also { seal(IDENTITY, it) }
+    /**
+     * The stored identity, or a new one sealed and saved before it is
+     * returned. Called only when the user starts pairing. If the stored
+     * files cannot be read (tampered, or the wrapping key was lost), they
+     * are removed and pairing starts afresh rather than failing forever.
+     */
+    fun identityCreatingIfNeeded(): ByteArray {
+        val existing = try {
+            identity()
+        } catch (e: GeneralSecurityException) {
+            clear()
+            null
+        } catch (e: IllegalArgumentException) {
+            clear()
+            null
+        } catch (e: IllegalStateException) {
+            clear()
+            null
+        }
+        return existing ?: newIdentity().also { seal(IDENTITY, it) }
+    }
 
     fun pairedRecord(): String? = open(PAIRED)?.toString(Charsets.UTF_8)
 

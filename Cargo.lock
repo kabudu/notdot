@@ -4264,6 +4264,7 @@ dependencies = [
  "notdot-orb-gen",
  "notdot-wake-kws",
  "notdot-wake-runtime",
+ "p256",
  "thiserror 2.0.21",
  "tokio",
  "uniffi",

@@ -482,9 +482,7 @@ impl PairingDesk {
         {
             return Err(LinkError::BadRequest("phone name"));
         }
-        if !request.step_up_key.is_empty()
-            && p256::ecdsa::VerifyingKey::from_sec1_bytes(&request.step_up_key).is_err()
-        {
+        if !request.step_up_key.is_empty() && !crate::stepup::valid_key(&request.step_up_key) {
             return Err(LinkError::BadRequest("step-up key"));
         }
         let mac = proof_mac(

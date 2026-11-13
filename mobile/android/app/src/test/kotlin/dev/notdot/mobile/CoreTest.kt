@@ -18,12 +18,22 @@ import uniffi.notdot_mobile_core.StartSource
 import uniffi.notdot_mobile_core.VoiceSession
 import uniffi.notdot_mobile_core.BackupState
 import uniffi.notdot_mobile_core.WakeEngine
+import uniffi.notdot_mobile_core.KeyProtection
+import uniffi.notdot_mobile_core.MobileException
+import uniffi.notdot_mobile_core.StepUpKey
+import uniffi.notdot_mobile_core.checkStepUpKey
 import uniffi.notdot_mobile_core.defaultSessionPolicy
 import uniffi.notdot_mobile_core.orbDefaultHue
 import uniffi.notdot_mobile_core.orbFragmentGlsl
 import uniffi.notdot_mobile_core.orbShaderSha256
 import uniffi.notdot_mobile_core.orbUniformNames
 import java.io.File
+import java.math.BigInteger
+import java.security.KeyPairGenerator
+import java.security.interfaces.ECPublicKey
+import java.security.spec.ECGenParameterSpec
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertThrows
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -146,4 +156,20 @@ class CoreTest {
         }
         error("no data chunk in $file")
     }
+
+    /** The adapter's public-key encoding is what the core accepts, with a
+     *  throwaway JVM key (format only; Keystore protection is checked on a
+     *  device). A key labelled software is refused. */
+    @Test
+    fun stepUpKeyEncodingMatchesTheCoreAndSoftwareIsRefused() {
+        assertArrayEquals(ByteArray(31) + byteArrayOf(5), StepUpKeyStore.fixed(BigInteger.valueOf(5)))
+        val high = BigInteger.ONE.shiftLeft(255)
+        assertEquals(32, StepUpKeyStore.fixed(high).size)
+        val pair = KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec("secp256r1")) }.generateKeyPair()
+        val sec1 = StepUpKeyStore.sec1(pair.public as ECPublicKey)
+        assertEquals(65, sec1.size)
+        checkStepUpKey(StepUpKey(sec1, KeyProtection.TRUSTED_ENVIRONMENT))
+        assertThrows(MobileException::class.java) { checkStepUpKey(StepUpKey(sec1, KeyProtection.SOFTWARE)) }
+    }
+
 }

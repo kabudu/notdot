@@ -20,7 +20,7 @@ def uid(*parts):
 
 
 APP_SOURCES = ['Notdot/NotdotApp.swift', 'Notdot/ContentView.swift', 'Notdot/OrbView.swift', 'Notdot/OrbRenderer.swift',
-               'Notdot/AppModel.swift', 'Notdot/LinkModel.swift', 'Notdot/IdentityStore.swift', 'Notdot/AudioCapture.swift', 'Notdot/Intents.swift',
+               'Notdot/AppModel.swift', 'Notdot/LinkModel.swift', 'Notdot/IdentityStore.swift', 'Notdot/StepUpKeyStore.swift', 'Notdot/AudioCapture.swift', 'Notdot/Intents.swift',
                'NotdotShared/SessionActivity.swift', 'build/generated/notdot_mobile_core.swift']
 WIDGET_SOURCES = ['NotdotWidgets/NotdotWidgets.swift', 'NotdotShared/SessionActivity.swift']
 TEST_SOURCES = ['NotdotTests/NotdotTests.swift']
