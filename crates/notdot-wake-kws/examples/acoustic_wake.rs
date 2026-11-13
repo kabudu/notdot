@@ -145,7 +145,7 @@ fn acoustic(
     let (send, receive) = mpsc::sync_channel::<Vec<f32>>(512);
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => device.build_input_stream(
-            config.clone().into(),
+            config.into(),
             move |data: &[f32], _| {
                 let mono = data
                     .chunks(channels)
@@ -157,7 +157,7 @@ fn acoustic(
             None,
         ),
         cpal::SampleFormat::I16 => device.build_input_stream(
-            config.clone().into(),
+            config.into(),
             move |data: &[i16], _| {
                 let mono = data
                     .chunks(channels)
