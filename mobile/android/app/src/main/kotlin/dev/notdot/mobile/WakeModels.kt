@@ -13,6 +13,8 @@ import java.io.File
 object WakeModels {
     @Volatile private var cached: WakeEngine? = null
 
+    /** Synchronized: two first uses must not copy the same files at once. */
+    @Synchronized
     fun engine(context: Context, name: String = "Ava"): WakeEngine? = cached ?: runCatching {
         val dir = File(context.noBackupFilesDir, "wake")
         copy(context, "wake", dir)
