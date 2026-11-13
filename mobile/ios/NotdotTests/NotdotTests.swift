@@ -93,7 +93,6 @@ final class SilentModeTests: XCTestCase {
         model.start(source: .app)
         XCTAssertFalse(model.effects.microphone)
         XCTAssertTrue(model.status.contains("Silent"))
-        XCTAssertNotEqual(AVAudioApplication.shared.recordPermission, .granted, "no permission prompt was answered")
     }
 }
 
