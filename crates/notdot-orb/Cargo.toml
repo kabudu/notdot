@@ -7,8 +7,6 @@ license.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 [dependencies]
-# The orb contract (`visual_state`, `theme`, `contract`) needs only these.
-sha2 = "0.10"
 # Desktop web UI only, behind the default `web` feature.
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
@@ -26,3 +24,4 @@ web = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:serde"
 debug-ui = ["web"]
 [dev-dependencies]
 serde_json.workspace = true
+sha2 = "0.10"

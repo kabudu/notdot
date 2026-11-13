@@ -8,6 +8,7 @@ fn main() {
         .join("../notdot-orb/src/orb.frag");
     println!("cargo:rerun-if-changed={}", canonical.display());
     fs::write(out.join("orb.frag"), notdot_orb_gen::glsl_es()).expect("write GLSL");
+    fs::write(out.join("orb.frag.sha256"), notdot_orb_gen::shader_sha256()).expect("write hash");
     let fragment = notdot_orb_gen::msl_fragment().expect("generate fragment MSL");
     let vertex = notdot_orb_gen::msl_vertex().expect("generate vertex MSL");
     fs::write(out.join("OrbFragment.metal"), fragment.source).expect("write MSL");

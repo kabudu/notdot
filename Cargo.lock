@@ -4287,6 +4287,7 @@ version = "0.8.0"
 dependencies = [
  "naga",
  "notdot-orb",
+ "sha2 0.10.9",
 ]
 
 [[package]]

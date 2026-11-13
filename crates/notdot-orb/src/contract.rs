@@ -12,7 +12,7 @@ use crate::{
 /// Bump on any change to uniform meaning, overlay geometry or golden output.
 pub const ORB_CONTRACT_VERSION: u32 = 1;
 /// The canonical fragment shader (GLSL ES 1.00). Generated adapters embed it
-/// or a translation of it, stamped with [`shader_sha256`].
+/// or a translation of it, stamped with its SHA-256 (`notdot-orb-gen`).
 pub const FRAGMENT_SHADER: &str = include_str!("orb.frag");
 /// Full-screen triangle pair; `position` is the only attribute.
 pub const VERTEX_SHADER: &str =
@@ -420,35 +420,9 @@ impl OrbAnimator {
     }
 }
 
-/// SHA-256 of [`FRAGMENT_SHADER`], lower-case hex. Generated shader copies
-/// carry this so a build can reject a stale or hand-edited copy.
-pub fn shader_sha256() -> String {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(FRAGMENT_SHADER.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn shader_fingerprint_is_the_canonical_file_hash() {
-        let hash = shader_sha256();
-        assert_eq!(hash.len(), 64);
-        assert!(
-            hash.bytes()
-                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-        );
-        // Recorded for v0.8.0 in the private design notes; a shader change
-        // must update this value together with ORB_CONTRACT_VERSION.
-        assert_eq!(
-            hash,
-            "1dd9c26cac3a2523214c4f707fd40f760635e55fa2248b8a8e07ace3cc9a48b0"
-        );
-    }
 
     #[test]
     fn shader_declares_exactly_the_contract_uniforms() {

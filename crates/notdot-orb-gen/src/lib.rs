@@ -47,13 +47,23 @@ impl fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
+/// SHA-256 of the canonical shader, lower-case hex. Build tooling only:
+/// the desktop and app runtimes never need it.
+pub fn shader_sha256() -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(contract::FRAGMENT_SHADER.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 /// Fingerprint header for a generated file, using `//` comments, which
 /// GLSL and MSL share.
 pub fn header() -> String {
     format!(
         "// {MARKER} from {CANONICAL_PATH}. Do not edit; do not commit.\n\
          // orb.frag sha256={} contract={}\n",
-        contract::shader_sha256(),
+        shader_sha256(),
         contract::ORB_CONTRACT_VERSION
     )
 }
@@ -286,6 +296,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shader_fingerprint_is_the_canonical_file_hash() {
+        // Recorded for v0.8.0; a shader change must update this together
+        // with ORB_CONTRACT_VERSION and the golden vectors.
+        assert_eq!(
+            shader_sha256(),
+            "1dd9c26cac3a2523214c4f707fd40f760635e55fa2248b8a8e07ace3cc9a48b0"
+        );
+    }
+
+    #[test]
     fn android_copy_is_the_canonical_source_after_the_header() {
         let generated = glsl_es();
         verify(&generated).unwrap();
@@ -331,7 +351,7 @@ mod tests {
     #[test]
     fn verify_rejects_stale_and_foreign_sources() {
         assert!(matches!(verify("void main(){}"), Err(Error::Header(_))));
-        let stale = header().replace(&contract::shader_sha256(), &"0".repeat(64));
+        let stale = header().replace(&shader_sha256(), &"0".repeat(64));
         assert!(matches!(verify(&(stale + "x")), Err(Error::Header(e)) if e.contains("stale")));
     }
 

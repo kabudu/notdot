@@ -288,7 +288,7 @@ pub fn orb_contract_version() -> u32 {
 
 #[uniffi::export]
 pub fn orb_shader_sha256() -> String {
-    contract::shader_sha256()
+    include_str!(concat!(env!("OUT_DIR"), "/orb.frag.sha256")).to_owned()
 }
 
 /// GLSL uniform names in `OrbFrame.packed` order.

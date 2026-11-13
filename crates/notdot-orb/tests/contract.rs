@@ -13,6 +13,14 @@ use notdot_orb::{
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
+fn shader_sha256() -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(contract::FRAGMENT_SHADER.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 const SIZE: f32 = 400.;
 const TOLERANCE: f64 = 1e-6;
 
@@ -224,7 +232,7 @@ fn generate() -> Value {
         .collect();
     json!({
         "contract_version": ORB_CONTRACT_VERSION,
-        "shader_sha256": contract::shader_sha256(),
+        "shader_sha256": shader_sha256(),
         "uniforms": contract::UNIFORMS,
         "block_mapping": contract::BLOCK_MAPPING,
         "radius_fraction": contract::RADIUS_FRACTION,

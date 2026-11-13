@@ -7,4 +7,5 @@ edition.workspace = true
 license.workspace = true
 [dependencies]
 notdot-orb = { path = "../notdot-orb", default-features = false }
+sha2 = "0.10"
 naga = { version = "30", features = ["glsl-in", "msl-out"] }
