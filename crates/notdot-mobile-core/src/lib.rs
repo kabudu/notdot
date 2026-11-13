@@ -17,10 +17,10 @@ pub mod wake;
 /// Errors reported to native code in plain language.
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum MobileError {
-    #[error("{message}")]
-    Invalid { message: String },
-    #[error("{message}")]
-    Link { message: String },
-    #[error("{message}")]
-    Wake { message: String },
+    #[error("{detail}")]
+    Invalid { detail: String },
+    #[error("{detail}")]
+    Link { detail: String },
+    #[error("{detail}")]
+    Wake { detail: String },
 }

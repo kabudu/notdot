@@ -32,7 +32,7 @@ pub enum PairResult {
 
 fn link_error(error: impl std::fmt::Display) -> MobileError {
     MobileError::Link {
-        message: error.to_string(),
+        detail: error.to_string(),
     }
 }
 
@@ -218,13 +218,13 @@ pub fn new_request_id() -> String {
 fn parse_id(text: &str) -> Result<RequestId, MobileError> {
     if text.len() != 32 {
         return Err(MobileError::Invalid {
-            message: "request id must be 32 hex digits".into(),
+            detail: "request id must be 32 hex digits".into(),
         });
     }
     u128::from_str_radix(text, 16)
         .map(RequestId)
         .map_err(|_| MobileError::Invalid {
-            message: "request id must be 32 hex digits".into(),
+            detail: "request id must be 32 hex digits".into(),
         })
 }
 

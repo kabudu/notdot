@@ -1,0 +1,124 @@
+package dev.notdot.mobile
+
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
+import uniffi.notdot_mobile_core.PairResult
+import uniffi.notdot_mobile_core.PhoneLink
+import uniffi.notdot_mobile_core.SessionEvent
+
+/** Voice-only home: orb, one status line, Start/Stop. Text only in setup. */
+class MainActivity : ComponentActivity() {
+    private val microphone = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+        if (granted[Manifest.permission.RECORD_AUDIO] == true) VoiceSessionService.start(this)
+        else NotdotState.setStatus("Microphone access is off. Turn it on in Settings to talk hands-free.")
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            MaterialTheme(colorScheme = darkColorScheme()) { Home(::startHandsFree) }
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        NotdotState.handle(SessionEvent.AppVisible, permitted())
+    }
+
+    override fun onStop() {
+        NotdotState.handle(SessionEvent.AppHidden, permitted())
+        super.onStop()
+    }
+
+    private fun permitted() = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    /** User action, app visible: allowed to start a microphone service. */
+    private fun startHandsFree() {
+        if (NotdotState.silent) {
+            NotdotState.setStatus("Silent test mode: microphone stays off")
+            return
+        }
+        if (permitted()) VoiceSessionService.start(this)
+        else microphone.launch(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS))
+    }
+}
+
+@Composable
+private fun Home(start: () -> Unit) {
+    val effects by NotdotState.effects.collectAsState()
+    val status by NotdotState.status.collectAsState()
+    val orb by NotdotState.orb.collectAsState()
+    var linking by remember { mutableStateOf(false) }
+    Column(
+        Modifier.fillMaxSize().background(Color(0xFF050A14)).padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Orb(orb, Modifier.weight(1f).fillMaxWidth())
+        Text(status, color = Color.White, style = MaterialTheme.typography.titleMedium)
+        val context = androidx.compose.ui.platform.LocalContext.current
+        if (effects.surface) {
+            Button({ VoiceSessionService.stop(context) }, Modifier.heightIn(min = 48.dp)) { Text("Stop listening") }
+        } else {
+            Button(start, Modifier.heightIn(min = 48.dp)) { Text("Start hands-free") }
+        }
+        OutlinedButton({ linking = !linking }, Modifier.heightIn(min = 48.dp)) { Text("Linked computer") }
+        if (linking) Pairing()
+    }
+}
+
+@Composable
+private fun Pairing() {
+    val scope = rememberCoroutineScope()
+    val link = remember { PhoneLink() }
+    var qr by remember { mutableStateOf("") }
+    var message by remember { mutableStateOf("Not linked") }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(qr, { qr = it }, label = { Text("Pairing code from the computer") }, singleLine = true)
+        Button({
+            scope.launch {
+                message = try {
+                    val code = link.pair(qr.trim(), "Android phone")
+                    message = "Check the computer shows $code, then choose Allow there."
+                    when (val result = link.awaitApproval()) {
+                        is PairResult.Approved -> "Linked (${link.connect(false)})"
+                        PairResult.Denied -> "The computer said no."
+                        is PairResult.Rejected -> result.reason
+                    }
+                } catch (e: Exception) {
+                    e.message ?: "Could not link"
+                }
+            }
+        }, Modifier.heightIn(min = 48.dp), enabled = qr.isNotBlank()) { Text("Link") }
+        Text(message, color = Color.White)
+    }
+}

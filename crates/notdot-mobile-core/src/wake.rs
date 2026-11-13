@@ -7,7 +7,8 @@ use std::{path::Path, sync::Mutex};
 /// Validate a name and build the wake phrase, exactly as the desktop does.
 #[uniffi::export]
 pub fn wake_phrase(name: String, name_only: bool) -> Result<String, MobileError> {
-    notdot_wake_kws::phrase(&name, name_only).map_err(|message| MobileError::Invalid { message })
+    notdot_wake_kws::phrase(&name, name_only)
+        .map_err(|message| MobileError::Invalid { detail: message })
 }
 
 #[derive(uniffi::Object)]
@@ -22,7 +23,7 @@ impl WakeEngine {
         let phrase = wake_phrase(name, name_only)?;
         Spotter::new(Path::new(&models), &phrase)
             .map(|spotter| Self(Mutex::new(spotter)))
-            .map_err(|message| MobileError::Wake { message })
+            .map_err(|message| MobileError::Wake { detail: message })
     }
 
     /// Feed mono float samples at `rate` Hz; true once per detected wake.
