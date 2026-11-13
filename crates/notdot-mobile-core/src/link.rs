@@ -1305,14 +1305,17 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn an_erase_interrupted_by_a_restart_is_reported_never_rerun() {
         within(async {
+            eprintln!("interrupted erase: prepare");
             let roots = TestRoots::new(now());
             let dir = std::env::temp_dir().join(format!("notdot-interrupt-{}", new_request_id()));
             let secret = notdot_link::transport::SecretKey::generate();
             let store = Arc::new(notdot_link::service::SyntheticBackend::default());
             let desktop =
                 saved_desktop(&roots, &dir, &secret, Arc::new(Stuck(store.clone()))).await;
+            eprintln!("interrupted erase: pair and connect");
             let (phone, device, identity) = connected(&desktop, "owner").await;
             let keys = TestKeys::new(&roots, false);
+            eprintln!("interrupted erase: attest");
             phone.set_up_step_up(keys.clone()).await.unwrap();
             desktop.grant_sensitive(device, now() + 600_000).unwrap();
             store.remember("owner", "keep");
@@ -1329,17 +1332,26 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
+            eprintln!("interrupted erase: save phone record");
             let record = phone.paired_record().await.unwrap();
             // Closing never waits for the stuck call.
             tokio::time::timeout(Duration::from_secs(5), desktop.close())
                 .await
                 .expect("close does not wait for running calls");
+            eprintln!("interrupted erase: desktop closed");
             stuck.abort();
+            let _ = stuck.await;
+            // Retire the old client endpoint before restoring the same identity.
+            // Merely aborting schedules cancellation and can leave it alive.
+            phone.unpair().await;
             drop(phone);
 
+            eprintln!("interrupted erase: restore desktop");
             let desktop = saved_desktop(&roots, &dir, &secret, Arc::new(store.clone())).await;
             let phone = PhoneLink::restore(identity, Some(record)).unwrap();
+            eprintln!("interrupted erase: reconnect restored phone");
             phone.connect(false).await.unwrap();
+            eprintln!("interrupted erase: replay original request");
             let error = phone.reset_memory(erase, keys.clone()).await.unwrap_err();
             assert!(
                 matches!(&error, MobileError::Link { detail } if detail.contains("may or may not")),
