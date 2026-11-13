@@ -68,10 +68,14 @@ impl JsonFile {
         let path = dir.join(name);
         // Leftovers from a save interrupted before its rename.
         let _ = std::fs::remove_file(temp_path(&path));
-        let (generation, data) = match std::fs::metadata(&path) {
+        let (generation, data) = match std::fs::symlink_metadata(&path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (0, None),
             Err(error) => return Err(StoreError::Unreadable(error.kind().to_string())),
-            Ok(meta) if meta.len() > MAX_FILE_BYTES || !meta.is_file() => {
+            Ok(meta)
+                if meta.file_type().is_symlink()
+                    || meta.len() > MAX_FILE_BYTES
+                    || !meta.is_file() =>
+            {
                 return Err(StoreError::Unreadable("unexpected file".into()));
             }
             Ok(_) => {
@@ -105,13 +109,18 @@ impl JsonFile {
     /// Replace the file with `data`.
     pub fn save<T: Serialize>(&self, data: &T) -> Result<(), StoreError> {
         let mut generation = self.generation.lock().unwrap_or_else(|e| e.into_inner());
-        let next = *generation + 1;
+        let next = generation
+            .checked_add(1)
+            .ok_or_else(|| StoreError::Write("generation exhausted".into()))?;
         let bytes = serde_json::to_vec(&Envelope {
             version: VERSION,
             generation: next,
             data,
         })
         .map_err(|e| StoreError::Write(e.to_string()))?;
+        if bytes.len() as u64 > MAX_FILE_BYTES {
+            return Err(StoreError::Write("state file too large".into()));
+        }
         write_atomic(&self.path, &bytes).map_err(|e| StoreError::Write(e.kind().to_string()))?;
         *generation = next;
         Ok(())
@@ -139,6 +148,10 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
+        }
+        // Never follow an existing .saving symlink left by another process.
+        if std::fs::symlink_metadata(&temp).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(std::io::Error::other("temporary file is a symbolic link"));
         }
         let mut file = options.open(&temp)?;
         file.write_all(bytes)?;

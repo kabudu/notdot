@@ -501,6 +501,46 @@ impl Memory {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
+    /// Erase every record, including archived and derived records. Advances
+    /// the learning epoch under the mutation gate so in-flight extraction
+    /// cannot repopulate the ledger from an older conversation.
+    pub async fn clear_all(&self) -> Result<u64, String> {
+        if self.restore_held() {
+            return Err(RESTORE_PENDING.into());
+        }
+        let _gate = self.mutations.lock().await;
+        if self.restore_held() {
+            return Err(RESTORE_PENDING.into());
+        }
+        self.policy
+            .send_modify(|p| p.epoch = p.epoch.wrapping_add(1));
+        let records = self
+            .store
+            .export(ExportRequest {
+                tenant_id: Some("local".into()),
+                namespace: Some("notdot".into()),
+                include_archived: true,
+            })
+            .await
+            .map_err(|e| e.to_string())?
+            .records;
+        let count = records.len() as u64;
+        for record in records {
+            self.store
+                .delete(DeleteRequest {
+                    tenant_id: "local".into(),
+                    namespace: "notdot".into(),
+                    record_id: record.record.id,
+                    hard_delete: true,
+                    audit_reason: "User approved erasing assistant memories".into(),
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        self.revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(count)
+    }
     pub async fn maintain(&self) -> Result<String, String> {
         let _gate = self.write_gate().await?;
         self.maintain_unlocked().await

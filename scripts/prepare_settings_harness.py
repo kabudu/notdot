@@ -35,6 +35,9 @@ adapter = adapter.replace(marker, """if(cmd==='voice_catalog')return {voices:Arr
 marker = "if(cmd==='model_catalog')return [{model:'gpt-6.1-terra',displayName:'Terra',supportedReasoningEfforts:[{reasoningEffort:'medium',description:'Medium'}]}];"
 assert marker in adapter
 adapter = adapter.replace(marker, """if(cmd==='model_catalog')return ['gpt-6.1-terra','test-fast','test-long-model'].map((model,i)=>({model,displayName:i===0?'Terra':i===1?'A faster synthetic model':'A synthetic model with a deliberately long display name',supportedReasoningEfforts:['low','medium','high','xhigh','max'].map(reasoningEffort=>({reasoningEffort,description:reasoningEffort}))}));""", 1)
+adapter = adapter.replace("if(cmd==='speaker_summary')", """if(cmd==='phones_status')return {available:true,running:true,settings:{enabled:true,android_apps:[],apple_apps:[],apple_categories:[],apple_development:false},profiles:[{id:'owner',name:'Synthetic owner'}],pending:[{offer:'abcd',name:'Synthetic phone',code:'123 456'}],devices:[{id:'device',name:'Synthetic phone',owner:true,step_up:null}],revocations_fresh:false,revocations:{}};
+    if(cmd.startsWith('phones_'))return {};
+    if(cmd==='speaker_summary')""", 1)
 (dist / 'conversation-harness.js').write_text(adapter)
 (dist / 'settings-layout-harness.js').write_text((root / 'scripts/fixtures/settings-layout-harness.js').read_text())
 (dist / 'runner.html').write_text('''<!doctype html><html lang="en"><meta charset="utf-8"><title>Settings layout checks</title><body style="background:#16202a;color:white;font-family:system-ui"><h1>Settings layout acceptance</h1><button id="run">Run all layouts</button><pre id="output"></pre><div id="host"></div><script>

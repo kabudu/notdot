@@ -13,6 +13,7 @@ mod memory_confirmation;
 mod notes;
 mod onboarding;
 mod orb_input;
+mod phones;
 mod profile_access;
 mod profile_context;
 mod quota;
@@ -155,6 +156,7 @@ struct AppState {
     wake: wake::Wake,
     streaming: transcription::Streaming,
     credentials: Arc<credentials::Credentials>,
+    phones: phones::Phones,
     backups: backup::Backups,
     interrupt: interrupt::Interrupt,
 }
@@ -2056,6 +2058,14 @@ fn main() {
             }
         }))
         .invoke_handler(tauri::generate_handler![
+            phones::phones_status,
+            phones::phones_set_enabled,
+            phones::phones_create_offer,
+            phones::phones_decide,
+            phones::phones_remove,
+            phones::phones_sensitive,
+            phones::phones_set_settings,
+            phones::phones_refresh_revocations,
             orb_input::orb_input_mode,
             snapshot,
             onboarding::setup_codex,
@@ -2270,6 +2280,7 @@ fn main() {
                     session_pending: None,
                     settings_pending: None,
                 }),
+                phones: phones::Phones::open(&dir).map_err(std::io::Error::other)?,
                 credentials: Arc::new(credentials),
                 profiles,
                 active_context: std::sync::RwLock::new(active_context),
@@ -2291,6 +2302,10 @@ fn main() {
                 interrupt: interrupt::Interrupt::new(models.clone()),
             });
             app.manage(state.clone());
+            let phone_state = state.clone();
+            tauri::async_runtime::spawn(async move {
+                phone_state.phones.start_if_enabled(&phone_state).await;
+            });
             onboarding::spawn(state.clone());
             transcription::spawn(app.handle().clone(), state.clone(), capture_input);
             profile_access::spawn_revocation_watch(state.clone());
@@ -2481,6 +2496,7 @@ fn main() {
             if matches!(event, tauri::RunEvent::Exit) {
                 let state = app.state::<Arc<AppState>>().inner().clone();
                 tauri::async_runtime::block_on(async move {
+                    state.phones.stop().await;
                     for context in state.profiles.all().unwrap_or_default() {
                         if let Some(bridge) = context.bridge.lock().await.take() {
                             bridge.shutdown().await;
@@ -2544,6 +2560,7 @@ pub(crate) mod test_support {
                 session_pending: None,
                 settings_pending: None,
             }),
+            phones: phones::Phones::open(dir).unwrap(),
             credentials: Arc::new(credentials::Credentials::read_only()),
             profiles,
             active_context: std::sync::RwLock::new(active),

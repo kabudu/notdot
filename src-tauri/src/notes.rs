@@ -157,6 +157,43 @@ impl Notes {
             }
         }
     }
+    /// Save literal phone dictation without routing it through the spoken
+    /// command parser (the note's body is data, never instructions).
+    #[cfg(feature = "phones")]
+    pub async fn add_from_phone(&self, text: &str) -> Result<u64, String> {
+        if text.trim().is_empty() || text.len() > 4096 {
+            return Err("A note needs between 1 and 4096 bytes".into());
+        }
+        let mut inner = self.state.lock().await;
+        if self.held() {
+            return Err(notdot_core::memory::RESTORE_PENDING.into());
+        }
+        let mut next = inner.book.as_ref().map_err(Clone::clone)?.clone();
+        let title = text
+            .split_whitespace()
+            .take(8)
+            .collect::<Vec<_>>()
+            .join(" ");
+        next.notes.push(notes::Note {
+            id: uuid::Uuid::new_v4().to_string(),
+            title: notes::clean_title(&title)?,
+            kind: notes::Kind::Note,
+            body: text.into(),
+            items: vec![],
+            created: now(),
+            updated: now(),
+        });
+        next.version = 1;
+        next.revision = next
+            .revision
+            .checked_add(1)
+            .filter(|r| *r < notes::MAX_REVISION)
+            .ok_or("Notes need attention")?;
+        let revision = next.revision;
+        let result = save_async(&self.path, &next).await;
+        settle(&mut inner.book, next, result)?;
+        Ok(revision)
+    }
     pub async fn snapshot(&self) -> Result<Notebook, String> {
         self.state.lock().await.book.clone()
     }

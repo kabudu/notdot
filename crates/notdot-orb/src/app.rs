@@ -17,6 +17,8 @@ mod notes_panel;
 mod onboarding;
 #[path = "orb_renderer.rs"]
 mod orb_renderer;
+#[path = "phones_panel.rs"]
+mod phones_panel;
 #[path = "settings_navigation.rs"]
 mod settings_navigation;
 #[path = "shader_renderer.rs"]
@@ -1299,6 +1301,7 @@ fn open_panel(view: &Shared) {
     });
     settings_navigation::on_open(!view.borrow().snapshot.settings.onboarding_complete);
     speakers::on_open();
+    phones_panel::on_open();
     let _ = dialog("panel").show_modal();
     if view.borrow().snapshot.key_authorized {
         let target = view.clone();
@@ -1312,6 +1315,7 @@ fn open_panel(view: &Shared) {
 fn close_panel(view: &Shared) {
     speakers::cancel();
     notes_panel::reset();
+    phones_panel::reset();
     view.borrow_mut().preview_hue = None;
     apply_theme(view.borrow().snapshot.settings.hue);
     dialog("panel").close();
@@ -2646,6 +2650,7 @@ pub fn start() -> Result<(), JsValue> {
         });
     });
     notes_panel::install();
+    phones_panel::install();
     interruption::install(&view);
     on(element("reset-memory").as_ref(), "click", |_| {
         let _ = element("reset-memory-confirm").remove_attribute("hidden");
@@ -2828,6 +2833,7 @@ pub fn start() -> Result<(), JsValue> {
                     if !previous_profile.is_empty() && previous_profile != snapshot.profile_id {
                         // Another person's notes, memories or backup must not stay on screen.
                         notes_panel::reset();
+                        phones_panel::reset();
                         let capturing = {
                             let v = target.borrow();
                             v.capture_token.as_deref() == snapshot.wake["capture_token"].as_str()

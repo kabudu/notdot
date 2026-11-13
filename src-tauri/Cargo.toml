@@ -8,6 +8,7 @@ license.workspace = true
 sha2 = "0.10"
 tauri-build = { version = "2", features = [] }
 [dependencies]
+notdot-link = { path = "../crates/notdot-link", optional = true }
 notdot-core = { path = "../crates/notdot-core" }
 notdot-speakers = { path = "../crates/notdot-speakers" }
 notdot-voice = { path = "../crates/notdot-voice" }
@@ -42,9 +43,13 @@ rubato = { version = "=0.16.2", default-features = false }
 rfd = { version = "=0.15.4", default-features = false, features = ["gtk3"] }
 
 [features]
+# Experimental phone link, opt-in while mobile builds are on the draft branch.
+phones = ["dep:notdot-link"]
 custom-protocol = ["tauri/custom-protocol"]
 
 [dev-dependencies]
+notdot-link = { path = "../crates/notdot-link", features = ["test-attestation"] }
+p256 = { version = "0.13", features = ["ecdsa"] }
 async-trait = "0.1"
 tauri = { version = "2", features = ["test"] }
 tempfile = "3"

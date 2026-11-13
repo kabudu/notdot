@@ -709,6 +709,30 @@
       </div>
      </div>
     </details>
+    <details class="settings-section" id="phones-section" data-settings-category="app" hidden>
+     <summary><span><strong>Phones</strong><small>Connect a phone and manage its access</small></span></summary>
+     <div class="settings-body">
+      <p class="hint">Mobile prototype. Connections stay on your network until a private relay is configured. Your voice-service keys stay on this computer.</p>
+      <label class="switch-row"><span class="switch-copy">Allow paired phones to connect</span><input type="checkbox" role="switch" id="phones-enable"><span aria-hidden="true" class="switch-track"></span></label>
+      <p id="phones-message" role="status" aria-live="polite"></p>
+      <label for="phones-profile">Whose phone is this?</label><select id="phones-profile"></select>
+      <div class="tool-actions"><button type="button" id="phones-offer">Create pairing code</button><button type="button" id="phones-refresh">Refresh phones</button></div>
+      <p class="hint">Pair only with a phone you trust. Compare its six-digit code before allowing access.</p>
+      <code id="phones-code" style="display:block;overflow-wrap:anywhere;user-select:text"></code>
+      <div id="phones-pending" aria-label="Pairing requests"></div><div id="phones-devices" aria-label="Paired phones"></div>
+      <details><summary>App verification settings</summary>
+       <p class="hint">For prototype testing: list the exact app IDs and signing fingerprints you trust. An empty list refuses sensitive actions. Never copy a policy from someone you do not trust.</p>
+       <label for="phones-android-package">Android app ID</label><input id="phones-android-package" placeholder="dev.notdot.mobile.prototype" autocomplete="off">
+       <label for="phones-android-signer">Android signing fingerprint (SHA-256)</label><input id="phones-android-signer" autocomplete="off" spellcheck="false">
+       <label for="phones-apple-team">Apple team ID</label><input id="phones-apple-team" autocomplete="off">
+       <label for="phones-apple-bundle">iPhone app ID</label><input id="phones-apple-bundle" autocomplete="off">
+       <label for="phones-apple-category">App Attest validation category</label><input id="phones-apple-category" type="number" min="0" max="1000">
+       <label class="switch-row"><span class="switch-copy">Allow iPhone development builds</span><input type="checkbox" role="switch" id="phones-apple-development"><span aria-hidden="true" class="switch-track"></span></label>
+       <button type="button" id="phones-save-policy">Save trusted apps</button>
+       <p id="phones-list-status" role="status"></p><button type="button" id="phones-revocations">Refresh Android certificate checks</button>
+      </details>
+     </div>
+    </details>
     <details class="settings-section" id="connection-section" data-settings-category="app" hidden>
      <summary>
       <span>
@@ -779,5 +803,9 @@
     Close
    </button>
   </dialog>
- </body>
+ <dialog id="phones-confirm" aria-labelledby="phones-confirm-title" aria-describedby="phones-confirm-text">
+ <h2 id="phones-confirm-title">Confirm phone access</h2><p id="phones-confirm-text"></p>
+ <div class="tool-actions"><button type="button" id="phones-confirm-cancel" autofocus>Cancel</button><button type="button" id="phones-confirm-allow">Confirm change</button></div>
+</dialog>
+</body>
 </html>

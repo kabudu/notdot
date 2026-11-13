@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **Mobile foundations.** Experimental paired-phone connections with private notes, saved permissions and verified approvals for sensitive actions.
+
 ## [0.8.0] - 2026-11-12
 
 Interrupt replies naturally, keep voice notes and lists, and protect your memories with encrypted backups.
