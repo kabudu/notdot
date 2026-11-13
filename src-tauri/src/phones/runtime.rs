@@ -369,13 +369,13 @@ impl Phones {
 
 /// Separate OS item, never a voice provider entry. Background restoration
 /// cannot show Keychain UI; failure is visible in Phones, never a new identity.
-fn identity(dir: &Path, interactive: bool) -> Result<SecretKey, String> {
+fn identity(dir: &Path, _interactive: bool) -> Result<SecretKey, String> {
     use base64::Engine;
     let _serial = crate::credentials::OPERATIONS
         .lock()
         .map_err(|_| "Credential store is busy")?;
     #[cfg(target_os = "macos")]
-    let _no_ui = if interactive {
+    let _no_ui = if _interactive {
         None
     } else {
         crate::credentials::non_interactive_keychain()?
