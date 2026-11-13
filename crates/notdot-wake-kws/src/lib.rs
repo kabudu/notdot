@@ -277,6 +277,106 @@ impl VoiceGate {
     }
 }
 
+/// Collects one spoken utterance at a time for the full-context (Whisper)
+/// backup decoder. Shared by desktop and mobile so both cut audio the same
+/// way: half a second of lead-in before speech, a 350 ms pause (a natural gap
+/// between greeting and name stays inside one utterance), at most six
+/// seconds, and nothing with under 200 ms of speech.
+///
+/// Memory is bounded by the six-second cap plus the half-second lead-in.
+/// While the decoder is busy, audio keeps accumulating up to the cap and the
+/// utterance is released only once the decoder is free again, as before.
+pub struct Utterances {
+    gate: VoiceGate,
+    tail: std::collections::VecDeque<f32>,
+    samples: Vec<f32>,
+    silence: usize,
+    speech: usize,
+    pause_ms: u32,
+}
+impl Default for Utterances {
+    fn default() -> Self {
+        Self {
+            gate: VoiceGate::default(),
+            tail: std::collections::VecDeque::new(),
+            samples: Vec::new(),
+            silence: 0,
+            speech: 0,
+            pause_ms: 350,
+        }
+    }
+}
+impl Utterances {
+    /// Longest utterance kept, in seconds.
+    pub const MAX_SECONDS: usize = 6;
+
+    /// Feed one packet. Returns a finished utterance when `ready` (the
+    /// decoder can take work) and either the pause or the cap is reached.
+    /// A finished segment with too little speech is dropped silently.
+    pub fn push(&mut self, rate: u32, samples: &[f32], ready: bool) -> Option<Vec<f32>> {
+        let rate = rate as usize;
+        let voiced = self.gate.observe(energy(samples));
+        if self.samples.is_empty() {
+            if voiced {
+                self.samples.extend(self.tail.drain(..));
+            } else {
+                self.tail.extend(samples.iter().copied());
+                while self.tail.len() > rate / 2 {
+                    self.tail.pop_front();
+                }
+                return None;
+            }
+        }
+        let remaining = (rate * Self::MAX_SECONDS).saturating_sub(self.samples.len());
+        self.samples
+            .extend_from_slice(&samples[..samples.len().min(remaining)]);
+        if voiced {
+            self.silence = 0;
+            self.speech += samples.len();
+        } else {
+            self.silence += samples.len();
+        }
+        let mut finished = None;
+        if ready
+            && (self.silence >= rate * self.pause_ms as usize / 1000
+                || self.samples.len() >= rate * Self::MAX_SECONDS)
+        {
+            let samples = std::mem::take(&mut self.samples);
+            if self.speech >= rate / 5 {
+                finished = Some(samples);
+            }
+            self.speech = 0;
+            self.silence = 0;
+        }
+        finished
+    }
+
+    /// Whether an utterance has started and is still being collected.
+    pub fn is_collecting(&self) -> bool {
+        !self.samples.is_empty()
+    }
+
+    /// Change the end-of-utterance pause (diagnostics only; default 350 ms).
+    pub fn set_pause_ms(&mut self, ms: u32) {
+        self.pause_ms = ms;
+    }
+
+    /// Drop collected audio but keep the learned noise floor (after a
+    /// decoder error).
+    pub fn clear(&mut self) {
+        self.samples.clear();
+        self.tail.clear();
+        self.speech = 0;
+        self.silence = 0;
+    }
+
+    /// Start afresh, including the noise floor (new stream or reset).
+    pub fn reset(&mut self) {
+        self.clear();
+        self.gate = VoiceGate::default();
+    }
+}
+
 pub fn energy(samples: &[f32]) -> f32 {
     if samples.is_empty() {
         0.
@@ -314,6 +414,46 @@ mod tests {
         for name in ["", "Ava #0.01", "Ava @other", "Ava\0", "艾娃"] {
             assert!(phrase(name, false).is_err());
         }
+    }
+    #[test]
+    fn utterances_need_speech_a_pause_and_a_free_decoder() {
+        let rate = 16_000;
+        let packet = 320;
+        let quiet = vec![0.0001f32; packet];
+        let loud = vec![0.05f32; packet];
+        let mut cut = Utterances::default();
+        for _ in 0..50 {
+            assert!(cut.push(rate, &quiet, true).is_none());
+        }
+        // 400 ms of speech, then a pause while the decoder is busy: held.
+        for _ in 0..20 {
+            assert!(cut.push(rate, &loud, true).is_none());
+        }
+        for _ in 0..30 {
+            assert!(cut.push(rate, &quiet, false).is_none());
+        }
+        // Released once the decoder is free, with half a second of lead-in.
+        let utterance = cut.push(rate, &quiet, true).expect("utterance");
+        assert_eq!(utterance.len(), 8_000 + 20 * packet + 31 * packet);
+        // A click under 200 ms of speech is dropped, not decoded.
+        cut.push(rate, &loud, true);
+        for _ in 0..20 {
+            assert!(cut.push(rate, &quiet, true).is_none());
+        }
+        // Continuous speech is cut at the cap.
+        let mut capped = None;
+        for _ in 0..400 {
+            if let Some(u) = cut.push(rate, &loud, true) {
+                capped = Some(u);
+                break;
+            }
+        }
+        assert_eq!(
+            capped.unwrap().len(),
+            rate as usize * Utterances::MAX_SECONDS
+        );
+        cut.reset();
+        assert!(cut.push(rate, &quiet, true).is_none());
     }
     #[test]
     fn voice_gate_tracks_a_quiet_floor_and_ignores_bad_levels() {
