@@ -401,9 +401,19 @@ mod tests {
         assert!(!engine.backup_busy());
         assert_eq!(engine.backup_stats().wakes, 0);
 
-        // Drop during another decode of the same phrase.
+        drop(engine);
+
+        // Drop during a decode, on a fresh engine fed the same way. (Not the
+        // reset engine: on x86_64 the spotter can hear this quiet phrase
+        // after a reset, and a spotter wake clears the backup's audio, so
+        // no decode would start; that is correct behaviour, not a hang.)
+        let engine = WakeEngine::new(models(), "Ava".into(), false).unwrap();
+        assert_eq!(ready(&engine), BackupState::Ready);
         for chunk in audio.chunks(packet) {
-            engine.accept(chunk.to_vec(), rate);
+            assert!(
+                !engine.accept(chunk.to_vec(), rate),
+                "woke before the backup decoded"
+            );
             if engine.backup_busy() {
                 break;
             }
