@@ -72,6 +72,28 @@ class PersonalPhoneticDeviceTest {
     }
 
     @Test
+    fun selectionReopensAndGuidedPromptsLabelAllSteps() {
+        val name = "guided-selection-test-$tag"
+        val preferences = target.getSharedPreferences(name, android.content.Context.MODE_PRIVATE)
+        try {
+            assertTrue(preferences.edit().putString("detector", LabDetector.PHONETIC.id).commit())
+            val reopened = target.getSharedPreferences(name, android.content.Context.MODE_PRIVATE)
+            assertEquals(LabDetector.PHONETIC, selectedLabDetector(reopened.getString("detector", null), true))
+            assertTrue(preferences.edit().putString("detector", LabDetector.MFCC.id).commit())
+            assertEquals(LabDetector.MFCC, selectedLabDetector(reopened.getString("detector", null), true))
+            val run = GuidedWakeCheck("Hey Ava", listOf("Hey Ada", "Hey Eva", "Hey Nova"))
+            assertEquals(14, run.prompts.size)
+            run.prompts.forEachIndexed { step, prompt ->
+                assertEquals(prompt, run.current)
+                run.saved(step)
+            }
+            assertTrue(run.complete)
+        } finally {
+            target.deleteSharedPreferences(name)
+        }
+    }
+
+    @Test
     fun theCandidateIsBuiltInAndItsPinnedModelLoads() {
         assertTrue("build the core with NOTDOT_PERSONAL_PHONETIC=1", phoneticAvailable())
         val models = WakeModels.directory(target)

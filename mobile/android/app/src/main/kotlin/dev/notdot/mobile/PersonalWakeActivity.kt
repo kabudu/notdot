@@ -129,6 +129,8 @@ class PersonalWakeActivity : ComponentActivity() {
         if (d == detector || enrolment != null || coordinators.values.any { it.busy.value } || attempts.pending.value) return
         stopRecording()
         detector = d
+        labPreferences.edit().putString("detector", d.id).apply()
+        guided = null
         lastMatch = null
         message = ""
         saved = null
@@ -149,6 +151,10 @@ class PersonalWakeActivity : ComponentActivity() {
     private var lastMatch by mutableStateOf<PersonalMatch?>(null)
     private var trials by mutableStateOf<List<WakeTrial>>(emptyList())
     private var expectedTrial by mutableStateOf("Hey Ava")
+    private var guided by mutableStateOf<GuidedWakeCheck?>(null)
+    private var guidedRevision by mutableIntStateOf(0)
+    private var savingTrial by mutableStateOf(false)
+    private val labPreferences by lazy { getSharedPreferences("personal-wake-lab", MODE_PRIVATE) }
     private var historyError by mutableStateOf("")
     private val historyStore by lazy {
         PersonalWakeStore(File(noBackupFilesDir, "personal-wake-history"), KeystoreSealer("notdot-personal-wake-history"))
@@ -163,7 +169,8 @@ class PersonalWakeActivity : ComponentActivity() {
         }
     }
 
-    private fun recordTrial(expected: String, outcome: String, by: LabDetector = detector) {
+    private fun recordTrial(expected: String, outcome: String, by: LabDetector = detector, onSaved: () -> Unit = {}) {
+        savingTrial = true
         val trial = WakeTrial(System.currentTimeMillis(), expected.take(120), outcome.take(1000), by.id)
         executor.execute {
             val result = runCatching {
@@ -171,8 +178,11 @@ class PersonalWakeActivity : ComponentActivity() {
                 WakeTrialHistory.append(previous, trial).also { historyStore.save(WakeTrialHistory.encode(it)) }
             }
             main.post {
-                if (!isDestroyed) result.onSuccess { trials = it; historyError = "" }
-                    .onFailure { historyError = "This test result could not be saved. Your enrolment is unchanged." }
+                if (!isDestroyed) {
+                    savingTrial = false
+                    result.onSuccess { trials = it; historyError = ""; onSaved() }
+                        .onFailure { historyError = "This test result could not be saved. Your enrolment is unchanged. Retry this step." }
+                }
             }
         }
     }
@@ -210,6 +220,7 @@ class PersonalWakeActivity : ComponentActivity() {
             finish()
             return
         }
+        detector = selectedLabDetector(labPreferences.getString("detector", null), phoneticBuilt)
         refreshSaved()
         refreshHistory()
         setContent { MaterialTheme(colorScheme = darkColorScheme()) { Lab() } }
@@ -517,7 +528,11 @@ class PersonalWakeActivity : ComponentActivity() {
     // ---- Trying the phrase ----
 
     private fun tryPhrase() {
-        if (coordinator.busy.value) return
+        if (coordinator.busy.value || savingTrial) return
+        val run = guided ?: return
+        val expectedPrompt = run.current ?: return
+        val step = run.index
+        expectedTrial = expectedPrompt
         stopRecording()
         val attempt = attempts.begin()
         val id = coordinator.current()
@@ -543,7 +558,12 @@ class PersonalWakeActivity : ComponentActivity() {
                         screen = Screen.Test
                         result.onSuccess {
                             lastMatch = it; message = ""
-                            recordTrial(expected, matchHeadline(it) + " Distance: ${it.nearestPhrase}; bound: ${it.phraseBound}; similar: ${it.nearestContrast}.", d)
+                            recordTrial(expected, matchHeadline(it) + " Distance: ${it.nearestPhrase}; bound: ${it.phraseBound}; similar: ${it.nearestContrast}.", d) {
+                                if (guided === run && it.issue == null) {
+                                    run.saved(step)
+                                    guidedRevision++
+                                }
+                            }
                         }.onFailure {
                             message = it.message ?: "Could not compare"
                             recordTrial(expected, "Comparison failed.", d)
@@ -620,9 +640,13 @@ class PersonalWakeActivity : ComponentActivity() {
             OutlinedTextField(similar, { similar = it.take(120) }, Modifier.fillMaxWidth(),
                 label = { Text("Similar phrases to tell apart (optional, separated by commas)") })
             Text(saved ?: "Nothing saved.", color = Color(0xFFB4C5D5))
-            Wide(if (saved == null) "Record my phrase" else "Record again", enabled = !busy, primary = true, onClick = ::startEnrolment)
+            Wide(if (saved == null) "Record phrase · ${detector.title}" else "Record again · ${detector.title}", enabled = !busy, primary = true, onClick = ::startEnrolment)
             if (saved != null) {
-                Wide("Try my phrase", enabled = !busy) { screen = Screen.Test }
+                Wide("Start guided check", enabled = !busy && !savingTrial) {
+                    guided = GuidedWakeCheck(phrase, similar.split(',').map { it.trim() })
+                    lastMatch = null
+                    screen = Screen.Test
+                }
                 Wide("Delete saved recordings", enabled = !busy, onClick = ::deleteSaved)
             }
         }
@@ -676,10 +700,20 @@ class PersonalWakeActivity : ComponentActivity() {
         val busy by coordinator.busy.collectAsState()
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(saved ?: "Nothing saved.", color = Color(0xFFB4C5D5))
-            OutlinedTextField(expectedTrial, { expectedTrial = it.take(120) }, Modifier.fillMaxWidth(),
-                label = { Text("What you will say (test label)") }, singleLine = true)
-            Text("This label does not influence recognition. The latest 100 results stay encrypted on this phone; no audio is saved.", color = Color(0xFFB4C5D5))
-            Wide("Try my phrase", enabled = !busy && saved != null, primary = true, onClick = ::tryPhrase)
+            @Suppress("UNUSED_EXPRESSION") guidedRevision
+            val run = guided
+            if (run?.complete == true) {
+                Text("Check complete. All ${run.prompts.size} results are saved below.", color = Color.White, style = MaterialTheme.typography.titleLarge)
+                Wide("Run another guided check", enabled = !savingTrial) {
+                    guided = GuidedWakeCheck(phrase, similar.split(',').map { it.trim() })
+                    lastMatch = null
+                }
+            } else if (run != null) {
+                Text("Step ${run.index + 1} of ${run.prompts.size} · ${detector.title}", color = Color.White)
+                Text("Say “${run.current}”", color = Color.White, style = MaterialTheme.typography.headlineSmall)
+                Text("Tap Record, say the phrase shown, then pause. The result is labelled automatically.", color = Color(0xFFB4C5D5))
+                Wide(if (savingTrial) "Saving result…" else "Record this phrase", enabled = !busy && !savingTrial, primary = true, onClick = ::tryPhrase)
+            }
             lastMatch?.let { m ->
                 val headline = matchHeadline(m)
                 Text(headline, color = Color.White, style = MaterialTheme.typography.titleMedium)
@@ -701,7 +735,7 @@ class PersonalWakeActivity : ComponentActivity() {
                 val time = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(trial.time))
                 Text("${trials.size - index}. $time · ${trial.detector} · ${trial.expected}\n${trial.outcome}", color = Color(0xFFB4C5D5))
             }
-            Wide("Done") { stopRecording(); lastMatch = null; screen = Screen.Home }
+            Wide("Done", enabled = !savingTrial) { stopRecording(); guided = null; lastMatch = null; screen = Screen.Home }
         }
     }
 
