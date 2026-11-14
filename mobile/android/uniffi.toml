@@ -1,0 +1,5 @@
+[defaults.bindings.kotlin]
+# One cleaner works on the Android 10 minimum and in host JVM tests.
+# JNA is already required by the generated bindings; avoid references to
+# java.lang.ref.Cleaner, which Android only exposes from API 33.
+disable_java_cleaner = true

@@ -59,5 +59,5 @@ host=$(ls "$root/target/mobile/debug/libnotdot_mobile_core.dylib" "$root/target/
 cp "$host" "$out/host/"
 cd "$root"
 cargo run -q -p notdot-mobile-core --no-default-features --features bindgen --bin uniffi-bindgen -- \
-  generate --library "$host" --language kotlin --out-dir "$out/kotlin"
+  generate --library "$host" --language kotlin --config "$here/uniffi.toml" --out-dir "$out/kotlin"
 echo "built $(ls "$out/jniLibs/arm64-v8a" | tr '\n' ' ')"

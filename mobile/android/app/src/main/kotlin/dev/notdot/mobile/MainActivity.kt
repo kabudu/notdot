@@ -91,7 +91,12 @@ class MainActivity : ComponentActivity() {
             if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
                 notification.launch(Manifest.permission.POST_NOTIFICATIONS)
             else VoiceSessionService.start(this)
-        } else microphone.launch(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS))
+        } else {
+            val permissions = if (android.os.Build.VERSION.SDK_INT >= 33)
+                arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS)
+            else arrayOf(Manifest.permission.RECORD_AUDIO)
+            microphone.launch(permissions)
+        }
     }
 }
 

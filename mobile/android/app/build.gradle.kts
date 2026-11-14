@@ -10,11 +10,13 @@ val core = rootProject.layout.projectDirectory.dir("build-core")
 val repo = rootProject.layout.projectDirectory.dir("../..")
 
 // The desktop's wake models (keyword spotter, plus the Whisper backup model
-// unless built with -PnotdotWhisper=false), copied into generated assets so
+// only when explicitly built with -PnotdotWhisper=true), copied into generated assets so
 // nothing is duplicated in the source tree.
-val whisper = (findProperty("notdotWhisper") as String?)?.toBoolean() ?: true
+// Explicit development opt-in until physical-device wake acceptance passes.
+val nativeWake = (findProperty("notdotNativeWake") as String?)?.toBoolean() ?: false
+val whisper = (findProperty("notdotWhisper") as String?)?.toBoolean() ?: !nativeWake
 val wakeAssets = layout.buildDirectory.dir("generated/wake-assets")
-val copyWakeModels by tasks.registering(Copy::class) {
+val copyWakeModels by tasks.registering(Sync::class) {
     from(repo.dir("src-tauri/resources/wake")) {
         include("phonetic/**", "bpe.model", "encoder.onnx", "decoder.onnx", "joiner.onnx", "tokens.txt", "LICENSE", "NOTICE.md")
         if (whisper) include("ggml-tiny.en-q5_1.bin", "WHISPER-LICENSE")
@@ -43,6 +45,7 @@ android {
     compileSdk = 36
     defaultConfig {
         applicationId = "dev.notdot.mobile.prototype"
+        buildConfigField("boolean", "NATIVE_WAKE", nativeWake.toString())
         minSdk = 29
         targetSdk = 36
         versionCode = 1

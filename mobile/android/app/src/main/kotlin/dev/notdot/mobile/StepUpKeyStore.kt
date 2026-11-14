@@ -138,8 +138,10 @@ object StepUpKeys {
      *  from Google's remote provisioning, so a phone that has never been
      *  online may have none yet: that is temporary, not a hardware gap. */
     internal fun generationFailure(e: Exception): MobileException {
-        val keystore = generateSequence(e as Throwable) { it.cause }
-            .firstOrNull { it is android.security.KeyStoreException }
+        val keystore = if (Build.VERSION.SDK_INT >= 33) {
+            generateSequence(e as Throwable) { it.cause }
+                .firstOrNull { it is android.security.KeyStoreException }
+        } else null
         if (Build.VERSION.SDK_INT >= 33 && keystore is android.security.KeyStoreException && keystore.isTransientFailure) {
             return MobileException.Offline(
                 "This phone needs to be online once to get its security certificates from Google. Connect to the internet and try again.")

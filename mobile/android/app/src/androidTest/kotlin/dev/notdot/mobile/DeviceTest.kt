@@ -188,6 +188,7 @@ class DeviceTest {
      */
     @Test
     fun fullDetectorWakesOnTheCorpusThroughThePackagedModels() {
+        assumeTrue("legacy model test is not the native recogniser acceptance test", !BuildConfig.NATIVE_WAKE)
         val target = InstrumentationRegistry.getInstrumentation().targetContext
         val engine = checkNotNull(WakeModels.engine(target)) { "wake engine" }
         val loading = System.currentTimeMillis()
@@ -222,6 +223,28 @@ class DeviceTest {
         val stats = engine.backupStats()
         println("emulator backup stats: $stats")
         assertEquals("backup stats: $stats", 0uL, stats.failures)
+    }
+
+    @Test
+    fun anAppUpdateUsesItsOwnModelFilesInsteadOfStaleCopies() {
+        val target = InstrumentationRegistry.getInstrumentation().targetContext
+        val root = File(target.cacheDir, "model-copy-test-${System.nanoTime()}")
+        try {
+            val first = WakeModels.install(target, root, 1)
+            File(first, "phonetic/en.phone").writeText("obsolete copy")
+            val legacy = File(root, "legacy.onnx").apply { writeText("old flat-layout model") }
+            val legacyFolder = File(root, "phonetic").apply { mkdirs() }
+            File(legacyFolder, "en.phone").writeText("old flat-layout dictionary")
+            val next = WakeModels.install(target, root, 2)
+            val expected = target.assets.open("wake/phonetic/en.phone").use { it.readBytes() }
+            assertArrayEquals(expected, File(next, "phonetic/en.phone").readBytes())
+            assertFalse("obsolete model copies are reclaimed", first.exists())
+            assertFalse("old flat-layout model reclaimed", legacy.exists())
+            assertFalse("old flat-layout dictionary reclaimed", legacyFolder.exists())
+            assertEquals(next, WakeModels.install(target, root, 2))
+        } finally {
+            root.deleteRecursively()
+        }
     }
 
     /** Keystore-sealed identity with a disposable key alias and folder. */

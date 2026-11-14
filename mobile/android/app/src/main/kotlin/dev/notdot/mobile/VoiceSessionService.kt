@@ -26,7 +26,81 @@ import kotlin.concurrent.thread
  */
 class VoiceSessionService : Service() {
     @Volatile private var capturing = false
-    private var recorder: AudioRecord? = null
+    @Volatile private var recorder: AudioRecord? = null
+
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    private val restartToken = Any()
+    @Volatile private var nativeWake: OnDeviceWakeRecognizer? = null
+    @Volatile private var wakeReady = false
+    private var restartPolicy = WakeRestartPolicy()
+    private var listeningSince = 0L
+    @Volatile private var microphoneSilenced = false
+    private var languageIndex = 0
+    private val nativeLanguages by lazy {
+        (listOf(resources.configuration.locales[0].toLanguageTag()).filter { it.startsWith("en", true) } +
+            listOf("en-GB", "en-US", "en")).distinct()
+    }
+
+    private fun startWake() {
+        nativeWake?.stop()
+        wakeReady = false
+        listeningSince = 0
+        val detector = OnDeviceWakeRecognizer(this, object : OnDeviceWakeRecognizer.Listener {
+            override fun onStatus(status: WakeRecognizerStatus) {
+                when (status) {
+                    WakeRecognizerStatus.CheckingLanguage -> NotdotState.setStatus("Preparing on-device wake listening…")
+                    is WakeRecognizerStatus.Listening -> {
+                        wakeReady = true
+                        listeningSince = android.os.SystemClock.elapsedRealtime()
+                        NotdotState.setStatus("Listening hands-free · Say Hey Ava")
+                    }
+                    is WakeRecognizerStatus.Ended -> {
+                        wakeReady = false
+                        scheduleWakeRestart()
+                    }
+                }
+            }
+            override fun onWake() {
+                NotdotState.wakeHeard()
+            }
+            override fun onError(error: WakeRecognizerError) {
+                wakeReady = false
+                val languageUnavailable = error is WakeRecognizerError.LanguageNotInstalled ||
+                    (error is WakeRecognizerError.Recognizer && error.code in setOf(12, 13))
+                if (languageUnavailable && languageIndex + 1 < nativeLanguages.size) {
+                    languageIndex++
+                    scheduleWakeRestart()
+                } else if (WakeRestartPolicy.retryable(error)) {
+                    scheduleWakeRestart()
+                } else {
+                    stop(SessionEvent.SystemStopped)
+                    NotdotState.setStatus(when (error) {
+                        is WakeRecognizerError.LanguageNotInstalled -> "On-device English recognition is not installed on this phone."
+                        is WakeRecognizerError.Unsupported -> "On-device wake listening is unavailable on this phone."
+                        is WakeRecognizerError.Recognizer -> if (error.code in setOf(12, 13)) "On-device English recognition is not installed for this language." else "Wake listening stopped. Please start hands-free again."
+                        else -> "Wake listening stopped. Please start hands-free again."
+                    })
+                }
+            }
+        }, language = nativeLanguages[languageIndex])
+        nativeWake = detector
+        detector.start("Ava")
+    }
+
+    private fun scheduleWakeRestart() {
+        if (!capturing) return
+        val old = nativeWake
+        val sessionMs = if (listeningSince == 0L) 0L else android.os.SystemClock.elapsedRealtime() - listeningSince
+        val delay = restartPolicy.nextDelayMs(sessionMs)
+        NotdotState.setStatus("Reconnecting on-device wake listening…")
+        main.removeCallbacksAndMessages(restartToken)
+        main.postDelayed({
+            if (capturing && !microphoneSilenced && nativeWake === old) {
+                old?.stop()
+                startWake()
+            }
+        }, restartToken, delay)
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -41,7 +115,19 @@ class VoiceSessionService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        startForeground(NOTIFICATION_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 30)
+                startForeground(NOTIFICATION_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            else startForeground(NOTIFICATION_ID, notification())
+        } catch (_: IllegalStateException) {
+            NotdotState.setStatus("Open notdot to start hands-free listening.")
+            stopSelf()
+            return START_NOT_STICKY
+        } catch (_: SecurityException) {
+            NotdotState.setStatus("Open notdot and check microphone access before starting hands-free.")
+            stopSelf()
+            return START_NOT_STICKY
+        }
         val effects = NotdotState.handle(SessionEvent.Start(StartSource.APP), microphonePermitted = true)
         if (effects.microphone) startCapture()
         return START_NOT_STICKY
@@ -70,70 +156,130 @@ class VoiceSessionService : Service() {
     private fun startCapture() {
         if (capturing) return
         val rate = 16_000
-        val size = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_FLOAT)
-        val record = AudioRecord(
+        val size = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        if (size <= 0) {
+            stop(SessionEvent.SystemStopped)
+            NotdotState.setStatus("This microphone cannot provide wake audio.")
+            return
+        }
+        val record = try { AudioRecord(
             MediaRecorder.AudioSource.VOICE_RECOGNITION, rate, AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_FLOAT, maxOf(size, rate / 50 * 4 * 4),
-        )
+            AudioFormat.ENCODING_PCM_16BIT, maxOf(size, rate / 50 * 2 * 4),
+        ) } catch (_: RuntimeException) {
+            stop(SessionEvent.SystemStopped)
+            NotdotState.setStatus("Microphone capture could not start.")
+            return
+        }
         recorder = record
         capturing = true
-        record.startRecording()
+        try {
+            check(record.state == AudioRecord.STATE_INITIALIZED)
+            record.startRecording()
+            check(record.recordingState == AudioRecord.RECORDSTATE_RECORDING)
+        } catch (_: RuntimeException) {
+            stop(SessionEvent.SystemStopped)
+            NotdotState.setStatus("Microphone capture could not start.")
+            return
+        }
+        restartPolicy = WakeRestartPolicy()
+        listeningSince = 0
+        languageIndex = 0
+        microphoneSilenced = false
+        NotdotState.setStatus("Preparing wake listening…")
+        if (BuildConfig.NATIVE_WAKE) startWake()
         thread(name = "notdot-capture") {
-            val packet = FloatArray(rate / 50)
+            val packet = ByteArray(rate / 50 * 2)
             var meterSum = 0f
             var meterCount = 0
             var meterPeak = 0f
-            NotdotState.setStatus("Preparing wake listening…")
-            val wake = WakeModels.engine(this)
-            var announcedReady = false
+            val legacy = if (BuildConfig.NATIVE_WAKE) null else WakeModels.engine(this)
+            if (!BuildConfig.NATIVE_WAKE && legacy == null) {
+                failCapture(record, "Wake listening could not start. Please try again.")
+                return@thread
+            }
+            legacy?.reset()
             var silenced = false
-            while (capturing) {
-                val read = record.read(packet, 0, packet.size, AudioRecord.READ_BLOCKING)
-                if (read <= 0) continue
+            while (capturing && recorder === record) {
+                val read = try { record.read(packet, 0, packet.size, AudioRecord.READ_BLOCKING) }
+                catch (_: IllegalStateException) { -1 }
+                if (!capturing || recorder !== record) break
+                if (read <= 0) {
+                    failCapture(record, "Microphone capture stopped. Please start hands-free again.")
+                    break
+                }
                 // Android gives silenced apps zeros while a call or assistant
                 // holds the microphone; the session shows "Paused".
                 val nowSilenced = record.activeRecordingConfiguration?.isClientSilenced == true
                 if (nowSilenced != silenced) {
                     silenced = nowSilenced
+                    microphoneSilenced = silenced
+                    val changedToSilenced = silenced
+                    if (BuildConfig.NATIVE_WAKE) main.post {
+                        if (capturing && recorder === record) {
+                            if (changedToSilenced) {
+                                main.removeCallbacksAndMessages(restartToken)
+                                nativeWake?.stop()
+                                wakeReady = false
+                            } else startWake()
+                        }
+                    }
                     NotdotState.handle(SessionEvent.Silenced(silenced))
                 }
                 if (silenced) continue
-                if (!announcedReady && wake?.backupState() == uniffi.notdot_mobile_core.BackupState.READY) {
-                    announcedReady = true
-                    NotdotState.setStatus("Listening hands-free · Say Hey Ava")
-                }
+                if (!BuildConfig.NATIVE_WAKE) wakeReady = legacy?.backupState() == uniffi.notdot_mobile_core.BackupState.READY
                 // Level only (never audio) for diagnostics, once a second.
                 var sum = 0.0
-                for (i in 0 until read) sum += packet[i] * packet[i]
-                val rms = kotlin.math.sqrt(sum / read).toFloat()
-                if (announcedReady) NotdotState.wakeInput(rms, wake?.backupBusy() == true)
+                for (i in 0 until read - 1 step 2) {
+                    val sample = (((packet[i + 1].toInt() shl 8) or (packet[i].toInt() and 0xff)).toShort()).toDouble() / 32768.0
+                    sum += sample * sample
+                }
+                val rms = kotlin.math.sqrt(sum / (read / 2).coerceAtLeast(1)).toFloat()
+                if (wakeReady) NotdotState.wakeInput(rms, !BuildConfig.NATIVE_WAKE && legacy?.backupBusy() == true)
                 meterSum += rms; meterCount++; meterPeak = maxOf(meterPeak, rms)
-                if (meterCount * read >= rate) {
+                if (meterCount * read >= rate * 2) {
                     val effects = NotdotState.handle(SessionEvent.Tick)
                     if (effects.endSurface) {
-                        android.os.Handler(android.os.Looper.getMainLooper()).post { stop(SessionEvent.SystemStopped) }
+                        main.post { if (recorder === record) stop(SessionEvent.SystemStopped) }
                         break
                     }
-                    // Backup decoder state and counters (no audio or text).
-                    val backup = wake?.let { w ->
-                        val s = w.backupStats()
-                        "${w.backupState()} decodes=${s.decodes} wakes=${s.wakes} failures=${s.failures} decode_ms_total=${s.decodeMsTotal} decode_ms_max=${s.decodeMsMax}"
-                    } ?: "none"
-                    android.util.Log.i("notdot.voice", "capture rate=$rate mean_rms=${meterSum / meterCount} peak_rms=$meterPeak backup=$backup")
+                    android.util.Log.i("notdot.voice", "capture ready=$wakeReady mean_rms=${meterSum / meterCount} peak_rms=$meterPeak")
                     meterSum = 0f; meterCount = 0; meterPeak = 0f
                 }
-                if (wake?.accept(packet.copyOf(read).toList(), rate.toUInt()) == true) {
-                    android.util.Log.i("notdot.voice", "wake detected")
-                    NotdotState.wakeHeard()
+                val bytes = if (read == packet.size) packet else packet.copyOf(read)
+                val detector = nativeWake
+                if (capturing && recorder === record) {
+                    if (BuildConfig.NATIVE_WAKE) detector?.feedPcm16(bytes)
+                    else {
+                        val woke = legacy?.acceptPcm16(bytes, rate.toUInt()) == true
+                        if (woke && capturing && recorder === record) NotdotState.wakeHeard()
+                    }
                 }
+            }
+        }
+    }
+
+    private fun failCapture(record: AudioRecord, message: String) {
+        main.post {
+            // A late failure from an older capture never stops a new session.
+            if (recorder === record) {
+                stop(SessionEvent.SystemStopped)
+                NotdotState.setStatus(message)
             }
         }
     }
 
     private fun stop(event: SessionEvent) {
         capturing = false
-        recorder?.run { stop(); release() }
+        main.removeCallbacksAndMessages(null)
+        wakeReady = false
+        nativeWake?.stop()
+        nativeWake = null
+        val old = recorder
         recorder = null
+        old?.run {
+            runCatching { stop() }
+            release()
+        }
         NotdotState.handle(event)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()

@@ -89,7 +89,7 @@ To include the end-to-end link tests, run `cargo run -p notdot-link --features t
 | Sensitive-actions screens | iOS simulator and Android emulator with a **debug-only scripted backend**: every state (not set up, set up, not allowed, confirm, working, done, cancelled, denied, expired, offline, revoked, unavailable), destructive alert with "Erase memories" and "Keep memories", double tap starts one request, large text (iOS accessibility XL; Android 1.6×) with results kept on screen | Pass (screenshots kept locally) |
 | Identity storage: Keychain (iOS), Keystore-sealed files (Android), including tamper and swap refusal on Android | iOS simulator, Android emulator, disposable names | Pass; no prompts |
 
-None of this is evidence of behaviour on a physical phone. The only acoustic evidence is from a Mac's own speakers and microphone.
+The table above describes offline and simulator checks. Physical Android findings and the newer on-device recogniser experiment are recorded below; those results have separate acceptance gaps.
 
 App microphone capture could not be exercised on this Mac. With Xcode 27, the iOS simulator's host audio input is never authorised: no Simulator app or helper declares microphone use, so macOS shows no prompt, and the app's audio unit aborts with an RPC timeout. The Android emulator hung when host audio was enabled. App microphone evidence must come from devices; debug builds include an unattended auto-start hook for that (`-NotdotAutoStart YES` on iOS; the `notdotAutoStart` intent extra on Android).
 
@@ -158,3 +158,7 @@ The existing GitHub secrets configure desktop signing and notarisation; secret v
 A retail Android 14 phone exposed two issues that simulator tests did not: granting microphone permission after first launch did not update the cached session policy, and a detected wake did not switch the Android orb to its listening animation. Permission restoration now has a shared Rust regression test for both platforms; Android applies the visual cue and shows when its detector is still preparing. App permissions can be reopened from Linked computer. Android uses the existing desktop logomark as its adaptive launcher icon.
 
 The same device's packaged-model corpus missed quiet speech with two or four decoder threads. Six bounded Android decoder threads accepted all six positive cases and rejected all six negative cases, but one unrelated-speech decode still exceeded the unchanged three-second budget. The zero-failure performance assertion remains failing on that phone; this is not a full wake-acceptance pass. Three subsequent live wake detections had no decoder errors, with 2.46-2.71 seconds of decode work each. Battery use, thermal behaviour, extended false-wake rates and lock/Doze behaviour still need device checks. Desktop and iOS decoder thread limits are unchanged.
+
+### Android native wake experiment
+
+An opt-in Android 13+ adapter uses the phone's on-device recogniser, with no speech-service key or Whisper fallback. Its cancellation and startup tests pass, but physical-phone tests still show missed wakes and false activations. It is **not enabled by default**. See [Android wake validation](docs/ANDROID-WAKE-VALIDATION.md) for results, limits and reproduction steps.
