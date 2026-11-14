@@ -8,6 +8,8 @@
 //!   the Whisper backup with the `whisper` feature).
 //! - [`link`]: pairing and the encrypted link to the desktop.
 //! - [`stepup`]: owner step-up with a key in the phone's secure hardware.
+//! - [`personal`]: experimental personalised wake-phrase templates (a local
+//!   diagnostic; not connected to wake activation).
 uniffi::setup_scaffolding!();
 
 #[cfg(feature = "whisper")]
@@ -16,6 +18,7 @@ mod backup;
 mod backup_types;
 pub mod link;
 pub mod orb;
+pub mod personal;
 pub mod session;
 pub mod stepup;
 #[cfg(feature = "wake")]

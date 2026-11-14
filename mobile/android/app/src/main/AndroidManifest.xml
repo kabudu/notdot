@@ -28,6 +28,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Experimental personal wake-phrase lab; opened only from the app
+             when built with -PnotdotPersonalWakeLab=true. -->
+        <activity
+            android:name=".PersonalWakeActivity"
+            android:exported="false" />
         <!-- User-started hands-free session: microphone foreground service. -->
         <service
             android:name=".VoiceSessionService"

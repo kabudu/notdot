@@ -122,6 +122,12 @@ private fun Home(start: () -> Unit, permissions: () -> Unit, scenario: String?) 
             Button(start, Modifier.heightIn(min = 48.dp)) { Text("Start hands-free") }
         }
         OutlinedButton({ linking = !linking }, Modifier.heightIn(min = 48.dp)) { Text("Linked computer") }
+        if (BuildConfig.PERSONAL_WAKE_LAB && !linking) {
+            OutlinedButton(
+                { context.startActivity(android.content.Intent(context, PersonalWakeActivity::class.java)) },
+                Modifier.heightIn(min = 48.dp),
+            ) { Text("Personal wake phrase (experiment)") }
+        }
         if (linking) {
             OutlinedButton(permissions, Modifier.heightIn(min = 48.dp)) { Text("App permissions") }
             Text("Choose While using the app for the microphone. Start hands-free to keep listening with a stoppable notification.", color = Color(0xFFB4C5D5), style = MaterialTheme.typography.bodyMedium)

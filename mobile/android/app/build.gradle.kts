@@ -14,6 +14,9 @@ val repo = rootProject.layout.projectDirectory.dir("../..")
 // nothing is duplicated in the source tree.
 // Explicit development opt-in until physical-device wake acceptance passes.
 val nativeWake = (findProperty("notdotNativeWake") as String?)?.toBoolean() ?: false
+// Experimental personal wake-phrase lab screen (a local diagnostic only;
+// never connected to wake listening). Off unless explicitly requested.
+val personalWakeLab = (findProperty("notdotPersonalWakeLab") as String?)?.toBoolean() ?: false
 val whisper = (findProperty("notdotWhisper") as String?)?.toBoolean() ?: !nativeWake
 val wakeAssets = layout.buildDirectory.dir("generated/wake-assets")
 val copyWakeModels by tasks.registering(Sync::class) {
@@ -46,6 +49,7 @@ android {
     defaultConfig {
         applicationId = "dev.notdot.mobile.prototype"
         buildConfigField("boolean", "NATIVE_WAKE", nativeWake.toString())
+        buildConfigField("boolean", "PERSONAL_WAKE_LAB", personalWakeLab.toString())
         minSdk = 29
         targetSdk = 36
         versionCode = 1
