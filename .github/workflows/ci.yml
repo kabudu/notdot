@@ -243,27 +243,50 @@ jobs:
       - name: Check isolated input host loads on Windows
         shell: pwsh
         run: |
-          $env:NOTDOT_INPUT_TEST_URL = 'http://127.0.0.1:9'
+          $portFile = Join-Path $env:RUNNER_TEMP 'input-smoke.port'
           $log = Join-Path $env:RUNNER_TEMP 'input-host-startup.log'
-          $process = Start-Process -FilePath 'target/x86_64-pc-windows-msvc/release/examples/orb-input-acceptance.exe' -PassThru -RedirectStandardError $log
+          $serverLog = Join-Path $env:RUNNER_TEMP 'input-smoke-server.log'
+          $stdout = Join-Path $env:RUNNER_TEMP 'input-host-stdout.log'
+          Remove-Item -LiteralPath $portFile -ErrorAction SilentlyContinue
+          $process = $null
+          $server = Start-Process -FilePath python -ArgumentList @('scripts/serve_input_smoke.py', '--port-file', $portFile) -PassThru -RedirectStandardError $serverLog
           try {
+            $deadline = (Get-Date).AddSeconds(10)
+            while (-not (Test-Path $portFile) -and -not $server.HasExited -and (Get-Date) -lt $deadline) {
+              Start-Sleep -Milliseconds 100
+            }
+            if (-not (Test-Path $portFile)) { throw "Local input fixture did not start: $(Get-Content $serverLog -Raw -ErrorAction SilentlyContinue)" }
+            $port = (Get-Content $portFile -Raw).Trim()
+            $env:NOTDOT_INPUT_TEST_URL = "http://127.0.0.1:$port"
+            $null = Invoke-WebRequest -Uri $env:NOTDOT_INPUT_TEST_URL -TimeoutSec 5
+            $process = Start-Process -FilePath 'target/x86_64-pc-windows-msvc/release/examples/orb-input-acceptance.exe' -PassThru -RedirectStandardError $log -RedirectStandardOutput $stdout
             $deadline = (Get-Date).AddSeconds(30)
             do {
               Start-Sleep -Milliseconds 250
+              $process.Refresh()
               $output = Get-Content $log -Raw -ErrorAction SilentlyContinue
               $ready = $output -match 'geometry core=Ok'
             } while (-not $ready -and -not $process.HasExited -and (Get-Date) -lt $deadline)
-            if (-not $ready) { throw "Input host did not create its native windows: $output" }
+            if (-not $ready) {
+              $exit = if ($process.HasExited) { $process.ExitCode } else { 'still running' }
+              throw "Input host did not create its native windows (process=$exit): stderr=$output; stdout=$(Get-Content $stdout -Raw -ErrorAction SilentlyContinue)"
+            }
           } finally {
-            if (-not $process.HasExited) { Stop-Process -Id $process.Id }
-            Remove-Item Env:NOTDOT_INPUT_TEST_URL
+            if ($null -ne $process -and -not $process.HasExited) { Stop-Process -Id $process.Id }
+            if (-not $server.HasExited) { Stop-Process -Id $server.Id }
+            Remove-Item Env:NOTDOT_INPUT_TEST_URL -ErrorAction SilentlyContinue
           }
       - name: Retain isolated Windows input acceptance host
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: windows-input-acceptance
-          path: target/x86_64-pc-windows-msvc/release/examples/orb-input-acceptance.exe
-          if-no-files-found: error
+          path: |
+            target/x86_64-pc-windows-msvc/release/examples/orb-input-acceptance.exe
+            ${{ runner.temp }}/input-host-startup.log
+            ${{ runner.temp }}/input-host-stdout.log
+            ${{ runner.temp }}/input-smoke-server.log
+          if-no-files-found: warn
           retention-days: 7
       - name: Install verified prebuilt release tools
         run: python scripts/install_release_tools.py
