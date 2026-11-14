@@ -19,8 +19,8 @@
 use crate::MobileError;
 
 pub const RATE: u32 = 16_000;
-const MAX_TAKE_SAMPLES: usize = 4 * RATE as usize;
-const MAX_TEST_SAMPLES: usize = 6 * RATE as usize;
+pub(crate) const MAX_TAKE_SAMPLES: usize = 4 * RATE as usize;
+pub(crate) const MAX_TEST_SAMPLES: usize = 6 * RATE as usize;
 const MIN_SAMPLES: usize = RATE as usize * 3 / 10;
 pub const MAX_POSITIVES: usize = 8;
 pub const MIN_POSITIVES: usize = 3;
@@ -96,13 +96,13 @@ pub struct PersonalMatch {
     pub matched: bool,
 }
 
-fn invalid(detail: &str) -> MobileError {
+pub(crate) fn invalid(detail: &str) -> MobileError {
     MobileError::Invalid {
         detail: detail.to_owned(),
     }
 }
 
-fn samples(pcm16: &[u8], rate: u32, max: usize) -> Result<Vec<f64>, MobileError> {
+pub(crate) fn samples(pcm16: &[u8], rate: u32, max: usize) -> Result<Vec<f64>, MobileError> {
     if rate != RATE {
         return Err(invalid("Personal wake recordings must be 16 kHz"));
     }
@@ -259,6 +259,23 @@ fn dsp() -> &'static Dsp {
     DSP.get_or_init(Dsp::new)
 }
 
+/// The speech span of `x` in 10 ms frames (within 30 dB of the loudest,
+/// plus 3 frames each side), as [`prepare`] trims templates. None if empty.
+#[cfg_attr(
+    not(all(feature = "personal-phonetic", not(windows))),
+    allow(dead_code)
+)]
+pub(crate) fn speech_span(x: &[f64]) -> Option<(usize, usize)> {
+    let (_, e) = dsp().features(x);
+    let top = e.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let first = (0..e.len()).find(|&i| e[i] > top - SPEECH_RANGE)?;
+    let last = (0..e.len()).rev().find(|&i| e[i] > top - SPEECH_RANGE)?;
+    Some((
+        first.saturating_sub(TRIM_PAD),
+        (last + 1 + TRIM_PAD).min(e.len()),
+    ))
+}
+
 /// Mean-normalised over speech frames, optionally trimmed to speech, and
 /// each frame scaled to unit length.
 fn prepare(x: &[f64], trim: bool) -> Vec<[f64; DIMS]> {
@@ -295,7 +312,7 @@ fn prepare(x: &[f64], trim: bool) -> Vec<[f64; DIMS]> {
 /// step pays template frames i-1 and i at query frame j; a (1,2) step pays
 /// template frame i at query frames j-1 and j); cost 1 - cosine; the result
 /// is the mean cost per charged cell of the best path ending anywhere.
-pub(crate) fn sdtw(t: &[[f64; DIMS]], q: &[[f64; DIMS]]) -> f64 {
+pub(crate) fn sdtw<const D: usize>(t: &[[f64; D]], q: &[[f64; D]]) -> f64 {
     let (tn, qn) = (t.len(), q.len());
     if tn == 0 || qn == 0 {
         return f64::INFINITY;
@@ -347,7 +364,7 @@ pub(crate) fn sdtw(t: &[[f64; DIMS]], q: &[[f64; DIMS]]) -> f64 {
 
 // ---- Checks ----
 
-fn check(x: &[f64], max_speech_ms: u32) -> (Option<TakeIssue>, u32) {
+pub(crate) fn check(x: &[f64], max_speech_ms: u32) -> (Option<TakeIssue>, u32) {
     if x.len() < MIN_SAMPLES {
         return (Some(TakeIssue::TooShort), 0);
     }
@@ -477,7 +494,7 @@ fn decode_features(bytes: &[u8]) -> Result<Vec<[f64; DIMS]>, MobileError> {
 }
 
 /// The phrase as compared for binding: case and spacing ignored.
-fn phrase_key(phrase: &str) -> Result<String, MobileError> {
+pub(crate) fn phrase_key(phrase: &str) -> Result<String, MobileError> {
     if phrase.len() > 4 * MAX_PHRASE {
         return Err(invalid("Choose a shorter wake phrase"));
     }

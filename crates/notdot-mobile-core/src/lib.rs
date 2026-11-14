@@ -16,9 +16,14 @@ uniffi::setup_scaffolding!();
 mod backup;
 #[cfg(feature = "wake")]
 mod backup_types;
+#[cfg(any(test, all(feature = "personal-phonetic", not(windows))))]
+mod fbank;
 pub mod link;
 pub mod orb;
+#[cfg(all(feature = "personal-phonetic", not(windows)))]
+mod ort;
 pub mod personal;
+pub mod phonetic;
 pub mod session;
 pub mod stepup;
 #[cfg(feature = "wake")]

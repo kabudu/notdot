@@ -174,6 +174,33 @@ class PersonalEnrolment(val phrase: String, similar: List<String>) {
     }
 }
 
+/**
+ * The lab's detectors, side by side, each with its own encrypted store and
+ * key. The original MFCC detector keeps exactly its existing folder and key
+ * alias, so its saved enrolment is untouched; the phonetic experiment needs
+ * its own new recordings (MFCC templates cannot be converted).
+ */
+enum class LabDetector(val id: String, val folder: String, val alias: String, val title: String, val maxBytes: Long) {
+    MFCC("mfcc-v1", PersonalWakeStore.FOLDER, "notdot-personal-wake", "Sound pattern (original)", PersonalWakeStore.MAX_BYTES),
+    // 14 templates x 100 frames x 320 values x 4 bytes is about 1.8 MB.
+    PHONETIC("phonetic-v1", "personal-wake-phonetic", "notdot-personal-wake-phonetic", "Phonetic (experiment)", 4L shl 20),
+}
+
+/**
+ * What to tell the user when a take could not be processed at all (as
+ * opposed to a take judged too quiet or too short): a setup or runtime
+ * problem, worded so it is not mistaken for "say it again". [detail] is the
+ * core's own error text (never audio or transcripts), shortened.
+ */
+fun takeProblem(d: LabDetector, detail: String?): String {
+    val why = detail?.trim()?.take(160)?.ifEmpty { null } ?: "unknown error"
+    return when (d) {
+        LabDetector.PHONETIC -> "The phonetic experiment could not run ($why). Its model may be missing, damaged or " +
+            "not built into this app. Nothing was kept, and the original detector is unaffected."
+        LabDetector.MFCC -> "This recording could not be processed ($why). Nothing was kept."
+    }
+}
+
 /** Seals bytes for one file name (the name is bound into the tag). */
 interface Sealer {
     fun seal(name: String, data: ByteArray): ByteArray
@@ -304,7 +331,7 @@ class PersonalLabCoordinator(private val worker: SerialWorker, private val store
  * whose other children are deleted on every app update). Writes are
  * atomic: the new model replaces the old only once fully written.
  */
-class PersonalWakeStore(private val dir: File, private val sealer: Sealer) {
+class PersonalWakeStore(private val dir: File, private val sealer: Sealer, private val maxBytes: Long = MAX_BYTES) {
     private val file get() = File(dir, NAME)
 
     fun exists() = file.exists()
@@ -314,12 +341,12 @@ class PersonalWakeStore(private val dir: File, private val sealer: Sealer) {
         val f = file
         if (!f.exists()) return null
         // Bounded before reading: a model is well under this size.
-        if (f.length() > MAX_BYTES) throw java.security.GeneralSecurityException("personal wake file is too large")
+        if (f.length() > maxBytes) throw java.security.GeneralSecurityException("personal wake file is too large")
         return sealer.open(NAME, f.readBytes())
     }
 
     fun save(model: ByteArray) {
-        require(model.isNotEmpty() && model.size <= MAX_BYTES - 64) { "personal wake model size is out of range" }
+        require(model.isNotEmpty() && model.size <= maxBytes - 64) { "personal wake model size is out of range" }
         val sealed = sealer.seal(NAME, model)
         dir.mkdirs()
         val partial = File(dir, "$NAME.partial")

@@ -17,6 +17,9 @@ features=""
 if [ "${NOTDOT_WAKE:-1}" = 1 ]; then features="--features wake"; fi
 # The desktop's Whisper backup (whisper.cpp via CMake) on top of the spotter.
 if [ -n "$features" ] && [ "${NOTDOT_WHISPER:-1}" = 1 ]; then features="--features whisper"; fi
+# Experimental personal wake-phrase candidate (debug lab only): phonetic
+# templates via the bundled keyword spotter and sherpa's ONNX Runtime.
+if [ -n "$features" ] && [ "${NOTDOT_PERSONAL_PHONETIC:-0}" = 1 ]; then features="$features --features personal-phonetic"; fi
 # whisper-rs-sys 0.15 chooses BLAS from the build host, not the target: on a
 # macOS host it links ggml-blas, which is not built for Android. An empty
 # archive satisfies that link (nothing references it); Linux hosts skip this.

@@ -15,6 +15,10 @@ wake = ["dep:notdot-wake-kws"]
 # The desktop's Whisper backup decoder (whisper.cpp, CPU only) on top of the
 # keyword spotter. Adds the 32 MB ggml-tiny.en-q5_1 model to the app bundle.
 whisper = ["wake", "dep:notdot-wake-runtime", "dep:whisper-rs"]
+# Experimental personal wake-phrase candidate: phonetic templates from the
+# bundled keyword spotter's encoder, run through the ONNX Runtime that
+# sherpa-onnx already ships (pinned-header C shim). Diagnostic only.
+personal-phonetic = ["wake"]
 # Generator for the Swift/Kotlin bindings (development only).
 bindgen = ["uniffi/cli"]
 [dependencies]
@@ -30,6 +34,9 @@ tokio = { workspace = true }
 thiserror = "2"
 [build-dependencies]
 notdot-orb-gen = { path = "../notdot-orb-gen" }
+# The ONNX Runtime shim (feature `personal-phonetic`).
+cc = "1"
+sha2 = "0.10"
 [dev-dependencies]
 notdot-link = { path = "../notdot-link", features = ["test-attestation"] }
 notdot-orb-gen = { path = "../notdot-orb-gen" }

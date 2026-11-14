@@ -2430,6 +2430,7 @@ dependencies = [
 name = "notdot-mobile-core"
 version = "0.8.0"
 dependencies = [
+ "cc",
  "notdot-link",
  "notdot-orb",
  "notdot-orb-gen",

@@ -58,6 +58,11 @@ import uniffi.notdot_mobile_core.personalMatch
 import uniffi.notdot_mobile_core.personalModel
 import uniffi.notdot_mobile_core.personalModelSummary
 import uniffi.notdot_mobile_core.personalTake
+import uniffi.notdot_mobile_core.phoneticTake
+import uniffi.notdot_mobile_core.phoneticModelSummary
+import uniffi.notdot_mobile_core.phoneticModel
+import uniffi.notdot_mobile_core.phoneticMatch
+import uniffi.notdot_mobile_core.phoneticAvailable
 import java.io.File
 import java.security.GeneralSecurityException
 import java.security.KeyStore
@@ -79,18 +84,55 @@ import kotlin.concurrent.thread
 class PersonalWakeActivity : ComponentActivity() {
     private val main = Handler(Looper.getMainLooper())
     private val executor = Executors.newSingleThreadExecutor { Thread(it, "notdot-personal-lab").apply { isDaemon = true } }
-    private val coordinator by lazy {
-        PersonalLabCoordinator(
-            object : SerialWorker {
-                override fun submit(work: () -> Unit) {
-                    executor.execute(work)
-                }
-                override fun main(action: () -> Unit) {
-                    main.post { if (!isDestroyed) action() }
-                }
-            },
-            PersonalWakeStore(File(noBackupFilesDir, PersonalWakeStore.FOLDER), KeystoreSealer()),
-        )
+    private val worker = object : SerialWorker {
+        override fun submit(work: () -> Unit) {
+            executor.execute(work)
+        }
+        override fun main(action: () -> Unit) {
+            main.post { if (!isDestroyed) action() }
+        }
+    }
+
+    /** One coordinator, store and key per detector, all on the one serial worker. */
+    private val coordinators by lazy {
+        LabDetector.entries.associateWith { d ->
+            PersonalLabCoordinator(worker, PersonalWakeStore(File(noBackupFilesDir, d.folder), KeystoreSealer(d.alias), d.maxBytes))
+        }
+    }
+
+    /** The detector in use; changed only on Home with nothing in progress. */
+    private var detector by mutableStateOf(LabDetector.MFCC)
+    private val coordinator get() = coordinators.getValue(detector)
+    private val phoneticBuilt by lazy { phoneticAvailable() }
+
+    // Detector-specific core calls (on the worker thread).
+    private fun modelsDir() = WakeModels.directory(this).absolutePath
+    private fun takeFor(d: LabDetector, audio: ByteArray) = when (d) {
+        LabDetector.MFCC -> personalTake(audio, RATE.toUInt())
+        LabDetector.PHONETIC -> phoneticTake(modelsDir(), audio, RATE.toUInt())
+    }
+    private fun modelFor(d: LabDetector, phrase: String, takes: List<ByteArray>, contrasts: List<ContrastTake>) = when (d) {
+        LabDetector.MFCC -> personalModel(phrase, takes, contrasts)
+        LabDetector.PHONETIC -> phoneticModel(phrase, takes, contrasts)
+    }
+    private fun matchFor(d: LabDetector, model: ByteArray, phrase: String, audio: ByteArray) = when (d) {
+        LabDetector.MFCC -> personalMatch(model, phrase, audio, RATE.toUInt())
+        LabDetector.PHONETIC -> phoneticMatch(modelsDir(), model, phrase, audio, RATE.toUInt())
+    }
+    private fun summaryFor(d: LabDetector, model: ByteArray, phrase: String) = when (d) {
+        LabDetector.MFCC -> personalModelSummary(model, phrase)
+        LabDetector.PHONETIC -> phoneticModelSummary(model, phrase)
+    }
+
+    /** Switch detector: only on Home, with nothing recording, enrolling or saving. */
+    private fun useDetector(d: LabDetector) {
+        if (d == detector || enrolment != null || coordinators.values.any { it.busy.value } || attempts.pending.value) return
+        stopRecording()
+        detector = d
+        lastMatch = null
+        message = ""
+        saved = null
+        refreshSaved()
     }
 
     // UI state (main thread only).
@@ -121,8 +163,8 @@ class PersonalWakeActivity : ComponentActivity() {
         }
     }
 
-    private fun recordTrial(expected: String, outcome: String) {
-        val trial = WakeTrial(System.currentTimeMillis(), expected.take(120), outcome.take(1000))
+    private fun recordTrial(expected: String, outcome: String, by: LabDetector = detector) {
+        val trial = WakeTrial(System.currentTimeMillis(), expected.take(120), outcome.take(1000), by.id)
         executor.execute {
             val result = runCatching {
                 val previous = historyStore.load()?.let(WakeTrialHistory::decode) ?: emptyList()
@@ -193,15 +235,16 @@ class PersonalWakeActivity : ComponentActivity() {
     }
 
     private fun refreshSaved() {
+        val d = detector
         val id = coordinator.current()
         val forPhrase = phrase
         coordinator.load(id) { result ->
-            if (phrase != forPhrase) return@load
+            if (phrase != forPhrase || detector != d) return@load
             saved = result.fold(
                 onSuccess = { model ->
                     model?.let {
                         try {
-                            val s = personalModelSummary(it, forPhrase)
+                            val s = summaryFor(d, it, forPhrase)
                             "Saved for “$forPhrase”: ${s.phraseTakes} recordings" +
                                 if (s.contrastLabels.isEmpty()) "" else ", similar: ${s.contrastLabels.joinToString()}"
                         } catch (e: MobileException) {
@@ -384,20 +427,25 @@ class PersonalWakeActivity : ComponentActivity() {
 
     private fun checkTake(id: Long, attempt: Long, target: PersonalEnrolment.Target, audio: ByteArray) {
         message = "Checking…"
+        val d = detector
         coordinator.compute(id, {
             try {
-                personalTake(audio, RATE.toUInt())
-            } catch (_: MobileException) {
-                null
+                runCatching { takeFor(d, audio) }
             } finally {
                 audio.fill(0) // the recording itself is never kept
             }
-        }) { take: PersonalTake? ->
+        }) { result: Result<PersonalTake> ->
             attempts.finish(attempt) {
                 val e = enrolment
                 if (e == null || id != enrolmentId) return@finish
-                if (take == null || take.issue != null) {
-                    message = "Not used: ${describe(take?.issue)}. Try again."
+                val take = result.getOrElse {
+                    // A setup or runtime problem, not a bad take: say so.
+                    message = takeProblem(d, it.message)
+                    screen = Screen.Recording(target, false)
+                    return@finish
+                }
+                if (take.issue != null) {
+                    message = "Not used: ${describe(take.issue)}. Try again."
                     screen = Screen.Recording(target, false)
                     return@finish
                 }
@@ -418,8 +466,9 @@ class PersonalWakeActivity : ComponentActivity() {
         val takes = e.phraseFeatures().map { it.copyOf() }
         val contrasts = e.similarFeatures().map { (label, f) -> ContrastTake(label, f.copyOf()) }
         var inconsistent: List<UInt> = emptyList()
+        val d = detector
         val started = coordinator.save(id, {
-            val build = personalModel(savePhrase, takes, contrasts)
+            val build = modelFor(d, savePhrase, takes, contrasts)
             inconsistent = build.inconsistent
             build.model
         }) { result ->
@@ -473,6 +522,7 @@ class PersonalWakeActivity : ComponentActivity() {
         val attempt = attempts.begin()
         val id = coordinator.current()
         val forPhrase = phrase
+        val d = detector
         val expected = expectedTrial.trim().ifEmpty { "Unlabelled" }
         lastMatch = null
         screen = Screen.Recording(null, false)
@@ -483,7 +533,7 @@ class PersonalWakeActivity : ComponentActivity() {
                     try {
                         runCatching {
                             val model = store.load() ?: throw IllegalStateException("Nothing saved to try")
-                            personalMatch(model, forPhrase, audio, RATE.toUInt())
+                            matchFor(d, model, forPhrase, audio)
                         }
                     } finally {
                         audio.fill(0)
@@ -493,10 +543,10 @@ class PersonalWakeActivity : ComponentActivity() {
                         screen = Screen.Test
                         result.onSuccess {
                             lastMatch = it; message = ""
-                            recordTrial(expected, matchHeadline(it) + " Distance: ${it.nearestPhrase}; bound: ${it.phraseBound}; similar: ${it.nearestContrast}.")
+                            recordTrial(expected, matchHeadline(it) + " Distance: ${it.nearestPhrase}; bound: ${it.phraseBound}; similar: ${it.nearestContrast}.", d)
                         }.onFailure {
                             message = it.message ?: "Could not compare"
-                            recordTrial(expected, "Comparison failed.")
+                            recordTrial(expected, "Comparison failed.", d)
                         }
                     }
                 }
@@ -521,6 +571,7 @@ class PersonalWakeActivity : ComponentActivity() {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text("Personal wake phrase (experiment)", color = Color.White, style = MaterialTheme.typography.titleLarge)
+            Text("Detector: ${detector.title}", color = Color.White, style = MaterialTheme.typography.titleSmall)
             Text(
                 "Everything stays on this phone. Each recording is turned into a sound pattern straight away and the " +
                     "recording itself is thrown away. Only the patterns are kept, encrypted, and only when you tap Save. " +
@@ -548,7 +599,22 @@ class PersonalWakeActivity : ComponentActivity() {
     @Composable
     private fun Home() {
         val busy by coordinator.busy.collectAsState()
+        val pending by attempts.pending.collectAsState()
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (phoneticBuilt) {
+                for (d in LabDetector.entries) {
+                    Wide(if (d == detector) "Using: ${d.title}" else "Use ${d.title}", enabled = d != detector && !busy && !pending) { useDetector(d) }
+                }
+                if (detector == LabDetector.PHONETIC) {
+                    Text(
+                        "Separate experiment. It needs its own five new recordings: your original recordings and test " +
+                            "results are kept as they are and are not converted. It compares how the phrase sounds as " +
+                            "speech sounds rather than as a spectrum. Tested only on synthetic voices so far, where it did " +
+                            "not reach reliable wake recall; your tries are the first real evidence.",
+                        color = Color(0xFFB4C5D5), style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
             OutlinedTextField(phrase, { phrase = it.take(60); refreshSaved() }, Modifier.fillMaxWidth(),
                 label = { Text("Wake phrase") }, singleLine = true)
             OutlinedTextField(similar, { similar = it.take(120) }, Modifier.fillMaxWidth(),
@@ -633,7 +699,7 @@ class PersonalWakeActivity : ComponentActivity() {
             if (historyError.isNotEmpty()) Text(historyError, color = Color(0xFFFFB4AB))
             trials.asReversed().forEachIndexed { index, trial ->
                 val time = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(trial.time))
-                Text("${trials.size - index}. $time · ${trial.expected}\n${trial.outcome}", color = Color(0xFFB4C5D5))
+                Text("${trials.size - index}. $time · ${trial.detector} · ${trial.expected}\n${trial.outcome}", color = Color(0xFFB4C5D5))
             }
             Wide("Done") { stopRecording(); lastMatch = null; screen = Screen.Home }
         }
