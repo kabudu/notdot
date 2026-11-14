@@ -183,6 +183,39 @@ interface Sealer {
     fun destroyKey()
 }
 
+/**
+ * One recording-and-processing attempt at a time (main thread). [begin]
+ * stamps an attempt; a result is accepted only by [finish] with the current
+ * stamp, so retry, cancel, Done or hiding ([invalidate]) make any late
+ * result a no-op. [pending] is observable: Record stays unavailable while
+ * an attempt is recording or being processed.
+ */
+class Attempts {
+    private var stamp = 0L
+    private val _pending = kotlinx.coroutines.flow.MutableStateFlow(false)
+    val pending: kotlinx.coroutines.flow.StateFlow<Boolean> = _pending
+
+    fun begin(): Long {
+        _pending.value = true
+        return ++stamp
+    }
+
+    fun isCurrent(id: Long) = id == stamp && _pending.value
+
+    /** Run [accept] only if [id] is still the current attempt; ends it. */
+    fun finish(id: Long, accept: () -> Unit): Boolean {
+        if (!isCurrent(id)) return false
+        _pending.value = false
+        accept()
+        return true
+    }
+
+    fun invalidate() {
+        stamp++
+        _pending.value = false
+    }
+}
+
 /** Runs work off the main thread one task at a time, and delivers on the main thread. */
 interface SerialWorker {
     fun submit(work: () -> Unit)
@@ -200,10 +233,15 @@ interface SerialWorker {
 class PersonalLabCoordinator(private val worker: SerialWorker, private val store: PersonalWakeStore) {
     private val lock = Any()
     private var token = 0L
+    private val _busy = kotlinx.coroutines.flow.MutableStateFlow(false)
 
-    /** True while a save or delete is in progress (main thread). */
-    var busy = false
-        private set
+    /**
+     * True while a save or delete is committing. Observe this directly; it
+     * clears when the work finishes, even if its result is stale. While it
+     * is true the UI must not offer Cancel, Delete or a new enrolment: a
+     * commit in progress is not cancellable, so nothing may claim it was.
+     */
+    val busy: kotlinx.coroutines.flow.StateFlow<Boolean> = _busy
 
     fun current(): Long = synchronized(lock) { token }
 
@@ -220,8 +258,8 @@ class PersonalLabCoordinator(private val worker: SerialWorker, private val store
 
     /** Build and save for enrolment [id]; at most one at a time. False if refused. */
     fun save(id: Long, build: () -> ByteArray, done: (Result<Unit>) -> Unit): Boolean {
-        if (busy || current() != id) return false
-        busy = true
+        if (_busy.value || current() != id) return false
+        _busy.value = true
         worker.submit {
             val result = runCatching {
                 val model = build()
@@ -231,24 +269,26 @@ class PersonalLabCoordinator(private val worker: SerialWorker, private val store
                 }
             }
             worker.main {
-                busy = false
+                _busy.value = false
                 if (current() == id) done(result)
             }
         }
         return true
     }
 
-    /** Delete everything saved; queued saves can no longer write. */
-    fun delete(done: (Result<Unit>) -> Unit) {
+    /** Delete everything saved; queued saves can no longer write. False if busy. */
+    fun delete(done: (Result<Unit>) -> Unit): Boolean {
+        if (_busy.value) return false
         invalidate()
-        busy = true
+        _busy.value = true
         worker.submit {
             val result = runCatching { synchronized(lock) { store.delete() } }
             worker.main {
-                busy = false
+                _busy.value = false
                 done(result)
             }
         }
+        return true
     }
 
     /** Use the store on the worker (serialised with saves and deletes); deliver only if [id] is still current. */

@@ -100,7 +100,6 @@ class PersonalWakeActivity : ComponentActivity() {
     private var phrase by mutableStateOf("Hey Ava")
     private var similar by mutableStateOf("Hey Ada, Hey Eva, Hey Nova")
     private var saved by mutableStateOf<String?>(null)
-    private var busy by mutableStateOf(false)
     private var revision by mutableIntStateOf(0)
     private var showDetails by mutableStateOf(false)
     private var enrolment: PersonalEnrolment? = null
@@ -111,6 +110,8 @@ class PersonalWakeActivity : ComponentActivity() {
     // newer request, stop, hide or cancel makes older callbacks no-ops.
     private var generation = 0L
     private var pendingStart: Job? = null
+    /** One recording-and-processing attempt; late results of older ones are dropped. */
+    private val attempts = Attempts()
     @Volatile private var recorder: AudioRecord? = null
 
     private sealed interface Screen {
@@ -126,6 +127,11 @@ class PersonalWakeActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Debug lab builds only, whatever started this activity.
+        if (!(BuildConfig.DEBUG && BuildConfig.PERSONAL_WAKE_LAB)) {
+            finish()
+            return
+        }
         refreshSaved()
         setContent { MaterialTheme(colorScheme = darkColorScheme()) { Lab() } }
     }
@@ -175,14 +181,16 @@ class PersonalWakeActivity : ComponentActivity() {
 
     private fun withMicrophone(start: (Long) -> Unit) {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            attempts.invalidate()
             permission.launch(Manifest.permission.RECORD_AUDIO)
             return
         }
         if (NotdotState.silent) {
+            attempts.invalidate()
             message = "Silent test mode: the microphone stays off."
             return
         }
-        stopRecording()
+        releaseMicrophone()
         val request = generation
         pendingStart = lifecycleScope.launch {
             // One microphone owner: pause hands-free and wait until it has
@@ -192,7 +200,7 @@ class PersonalWakeActivity : ComponentActivity() {
                 VoiceSessionService.stop(this@PersonalWakeActivity)
                 val released = withTimeoutOrNull(3_000) { NotdotState.effects.first { !it.microphone } }
                 if (released == null) {
-                    if (generation == request) message = "Hands-free listening did not stop; nothing was recorded."
+                    if (generation == request) recordingFailed(request, "Hands-free listening did not stop; nothing was recorded.")
                     return@launch
                 }
             }
@@ -261,7 +269,7 @@ class PersonalWakeActivity : ComponentActivity() {
                     captured?.fill(0)
                     return@post
                 }
-                stopRecording()
+                releaseMicrophone() // the attempt continues into processing
                 when {
                     captured != null -> onAudio(captured)
                     noSpeech -> recordingFailed(null, "No speech heard. Try again a little closer.")
@@ -279,8 +287,14 @@ class PersonalWakeActivity : ComponentActivity() {
         screen = if (s is Screen.Recording) s.copy(listening = false) else s
     }
 
-    /** Release the microphone and cancel any pending start; older results are dropped. */
+    /** End the current attempt and release the microphone; late results are dropped. */
     private fun stopRecording() {
+        attempts.invalidate()
+        releaseMicrophone()
+    }
+
+    /** Release the microphone and cancel any pending start (the attempt may continue). */
+    private fun releaseMicrophone() {
         generation++
         pendingStart?.cancel()
         pendingStart = null
@@ -295,6 +309,8 @@ class PersonalWakeActivity : ComponentActivity() {
     // ---- Enrolment ----
 
     private fun startEnrolment() {
+        if (coordinator.busy.value) return
+        stopRecording()
         val labels = similar.split(',').map { it.trim() }.filter { it.isNotEmpty() }
         val e = try {
             PersonalEnrolment(phrase.trim(), labels)
@@ -319,13 +335,16 @@ class PersonalWakeActivity : ComponentActivity() {
     }
 
     private fun recordTarget(target: PersonalEnrolment.Target) {
+        if (coordinator.busy.value) return
+        stopRecording()
         val id = enrolmentId
+        val attempt = attempts.begin()
         withMicrophone { request ->
-            record(request, PhraseEndpointer.TAKE_MAX_MS) { audio -> checkTake(id, target, audio) }
+            record(request, PhraseEndpointer.TAKE_MAX_MS) { audio -> checkTake(id, attempt, target, audio) }
         }
     }
 
-    private fun checkTake(id: Long, target: PersonalEnrolment.Target, audio: ByteArray) {
+    private fun checkTake(id: Long, attempt: Long, target: PersonalEnrolment.Target, audio: ByteArray) {
         message = "Checking…"
         coordinator.compute(id, {
             try {
@@ -336,22 +355,25 @@ class PersonalWakeActivity : ComponentActivity() {
                 audio.fill(0) // the recording itself is never kept
             }
         }) { take: PersonalTake? ->
-            val e = enrolment
-            if (e == null || id != enrolmentId) return@compute
-            if (take == null || take.issue != null) {
-                message = "Not used: ${describe(take?.issue)}. Try again."
-                screen = Screen.Recording(target, false)
-                return@compute
+            attempts.finish(attempt) {
+                val e = enrolment
+                if (e == null || id != enrolmentId) return@finish
+                if (take == null || take.issue != null) {
+                    message = "Not used: ${describe(take?.issue)}. Try again."
+                    screen = Screen.Recording(target, false)
+                    return@finish
+                }
+                e.accept(target, take.features)
+                message = "Kept."
+                showNext()
             }
-            e.accept(target, take.features)
-            message = "Kept."
-            showNext()
         }
     }
 
     private fun save() {
         val e = enrolment ?: return
-        if (!e.canSave || busy) return
+        if (!e.canSave || coordinator.busy.value) return
+        stopRecording()
         // Snapshot on the main thread: later edits cannot leak into this save.
         val id = enrolmentId
         val savePhrase = e.phrase
@@ -363,7 +385,6 @@ class PersonalWakeActivity : ComponentActivity() {
             inconsistent = build.inconsistent
             build.model
         }) { result ->
-            busy = coordinator.busy
             result.onSuccess {
                 enrolment?.clear()
                 enrolment = null
@@ -377,39 +398,41 @@ class PersonalWakeActivity : ComponentActivity() {
                 message = "Not saved: ${it.message ?: "please try again"}. Anything saved before is unchanged."
             }
         }
-        busy = started || coordinator.busy
         if (started) message = "Saving…"
     }
 
     private fun cancelEnrolment() {
+        // A commit in progress cannot be cancelled; Cancel is not offered then.
+        if (coordinator.busy.value) return
         stopRecording()
         enrolment?.clear()
         enrolment = null
-        enrolmentId = coordinator.invalidate() // a save still building will not write
-        busy = coordinator.busy
+        enrolmentId = coordinator.invalidate()
         message = "Cancelled. Nothing new was saved."
         screen = Screen.Home
         refreshSaved()
     }
 
     private fun deleteSaved() {
+        if (coordinator.busy.value) return
         stopRecording()
         enrolment?.clear()
         enrolment = null
         lastMatch = null
         coordinator.delete { result ->
-            busy = coordinator.busy
             message = result.fold({ "Deleted from this phone." }, { "Could not delete everything: ${it.message}. Try again." })
             enrolmentId = coordinator.current()
             refreshSaved()
         }
-        busy = coordinator.busy
         screen = Screen.Home
     }
 
     // ---- Trying the phrase ----
 
     private fun tryPhrase() {
+        if (coordinator.busy.value) return
+        stopRecording()
+        val attempt = attempts.begin()
         val id = coordinator.current()
         val forPhrase = phrase
         lastMatch = null
@@ -427,9 +450,11 @@ class PersonalWakeActivity : ComponentActivity() {
                         audio.fill(0)
                     }
                 }) { result ->
-                    screen = Screen.Test
-                    result.onSuccess { lastMatch = it; message = "" }
-                        .onFailure { message = it.message ?: "Could not compare" }
+                    attempts.finish(attempt) {
+                        screen = Screen.Test
+                        result.onSuccess { lastMatch = it; message = "" }
+                            .onFailure { message = it.message ?: "Could not compare" }
+                    }
                 }
             }
         }
@@ -478,6 +503,7 @@ class PersonalWakeActivity : ComponentActivity() {
 
     @Composable
     private fun Home() {
+        val busy by coordinator.busy.collectAsState()
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(phrase, { phrase = it.take(60); refreshSaved() }, Modifier.fillMaxWidth(),
                 label = { Text("Wake phrase") }, singleLine = true)
@@ -494,6 +520,8 @@ class PersonalWakeActivity : ComponentActivity() {
 
     @Composable
     private fun Recording(s: Screen.Recording) {
+        val busy by coordinator.busy.collectAsState()
+        val pending by attempts.pending.collectAsState()
         val prompt = when (val t = s.target) {
             is PersonalEnrolment.Target.Phrase ->
                 "Say “${enrolment?.phrase}” (${t.index + 1} of ${PersonalEnrolment.PHRASE_TAKES}). Vary your tone and distance a little each time."
@@ -502,20 +530,22 @@ class PersonalWakeActivity : ComponentActivity() {
         }
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(prompt, color = Color.White, style = MaterialTheme.typography.titleMedium)
-            Text(if (s.listening) "Hearing you…" else if (recorder != null) "Listening…" else "", color = Color(0xFFB4C5D5))
-            if (recorder == null && pendingStart == null) {
-                Wide("Record", primary = true) { s.target?.let(::recordTarget) ?: tryPhrase() }
+            Text(if (s.listening) "Hearing you…" else if (recorder != null) "Listening…" else if (pending) "Checking…" else "",
+                color = Color(0xFFB4C5D5))
+            if (!pending) {
+                Wide("Record", enabled = !busy, primary = true) { s.target?.let(::recordTarget) ?: tryPhrase() }
             }
             if (s.target is PersonalEnrolment.Target.Similar) {
                 Wide("Skip similar phrases") { stopRecording(); enrolment?.skipRemainingSimilar(); showNext() }
             }
-            Wide("Cancel") { if (s.target == null) { stopRecording(); screen = Screen.Test } else cancelEnrolment() }
+            Wide("Cancel", enabled = !busy) { if (s.target == null) { stopRecording(); screen = Screen.Test } else cancelEnrolment() }
         }
     }
 
     @Composable
     private fun Review() {
         val e = enrolment ?: return
+        val busy by coordinator.busy.collectAsState()
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Recordings: ${e.phraseCount} of ${PersonalEnrolment.PHRASE_TAKES}", color = Color.White)
             for (i in 0 until PersonalEnrolment.PHRASE_TAKES) {
@@ -527,12 +557,13 @@ class PersonalWakeActivity : ComponentActivity() {
                 }
             }
             Wide(if (busy) "Saving…" else "Save", enabled = e.canSave && !busy, primary = true, onClick = ::save)
-            Wide("Cancel", onClick = ::cancelEnrolment)
+            Wide("Cancel", enabled = !busy, onClick = ::cancelEnrolment)
         }
     }
 
     @Composable
     private fun TryIt() {
+        val busy by coordinator.busy.collectAsState()
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(saved ?: "Nothing saved.", color = Color(0xFFB4C5D5))
             Wide("Try my phrase", enabled = !busy && saved != null, primary = true, onClick = ::tryPhrase)
@@ -556,7 +587,7 @@ class PersonalWakeActivity : ComponentActivity() {
                     Text("Smaller is closer; 0 is identical.", color = Color(0xFFB4C5D5))
                 }
             }
-            Wide("Done") { lastMatch = null; screen = Screen.Home }
+            Wide("Done") { stopRecording(); lastMatch = null; screen = Screen.Home }
         }
     }
 

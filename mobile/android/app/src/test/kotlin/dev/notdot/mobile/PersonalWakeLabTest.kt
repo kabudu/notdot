@@ -147,6 +147,53 @@ class PersonalWakeLabTest {
         assertEquals(listOf("new take"), delivered)
     }
 
+    /** Review regression: busy is observable and always clears, even for stale work. */
+    @Test
+    fun busyClearsAfterAStaleSaveAndBlocksDeleteMeanwhile() = lab { _, store, _ ->
+        val worker = ManualWorker()
+        val c = PersonalLabCoordinator(worker, store)
+        val seen = mutableListOf<Boolean>()
+        val id = c.invalidate()
+        var reported = false
+        assertTrue(c.save(id, { byteArrayOf(2) }) { reported = true })
+        seen += c.busy.value
+        assertFalse("no delete while committing", c.delete {})
+        c.invalidate() // e.g. a new enrolment's token moved on
+        worker.runWork()
+        worker.runMain()
+        seen += c.busy.value
+        assertEquals(listOf(true, false), seen)
+        assertFalse(reported)
+        assertTrue(c.delete {})
+        worker.runWork()
+        worker.runMain()
+        assertFalse(c.busy.value)
+    }
+
+    /** Review regression: retry, cancel, Done or hide drop late processing results. */
+    @Test
+    fun onlyTheCurrentAttemptIsAccepted() {
+        val a = Attempts()
+        assertFalse(a.pending.value)
+        val first = a.begin()
+        assertTrue(a.pending.value) // Record is unavailable while recording or checking
+        val second = a.begin() // retry before the first result arrived
+        var accepted = mutableListOf<Long>()
+        assertFalse(a.finish(first) { accepted += first })
+        assertTrue(a.pending.value)
+        assertTrue(a.finish(second) { accepted += second })
+        assertFalse(a.pending.value)
+        assertFalse("each attempt finishes once", a.finish(second) { accepted += second })
+        val third = a.begin()
+        a.invalidate() // Cancel, Done or hide while checking
+        assertFalse(a.pending.value)
+        assertFalse(a.finish(third) { accepted += third })
+        assertEquals(listOf(second), accepted)
+        accepted = mutableListOf()
+        assertTrue(a.finish(a.begin()) { accepted += 1 })
+        assertEquals(listOf(1L), accepted)
+    }
+
     @Test
     fun aCancelDuringASaveStopsTheWriteAndKeepsTheOldModel() = lab { _, store, _ ->
         store.save(byteArrayOf(1))
@@ -155,12 +202,12 @@ class PersonalWakeLabTest {
         val id = c.invalidate()
         var outcome: Result<Unit>? = null
         assertTrue(c.save(id, { byteArrayOf(2) }) { outcome = it })
-        assertTrue(c.busy)
+        assertTrue(c.busy.value)
         assertFalse("one save at a time", c.save(id, { byteArrayOf(3) }) {})
         c.invalidate() // Cancel tapped while the model was still being built
         worker.runWork()
         worker.runMain()
-        assertFalse(c.busy)
+        assertFalse(c.busy.value)
         assertNull("a stale save reports nothing", outcome)
         assertArrayEquals(byteArrayOf(1), store.load())
         // A current save does write and report.
@@ -173,14 +220,23 @@ class PersonalWakeLabTest {
     }
 
     @Test
-    fun aSaveQueuedBeforeADeleteNeverRecreatesTheModel() = lab { root, store, sealer ->
+    fun deleteWaitsForACommittingSaveAndThenRemovesEverything() = lab { root, store, sealer ->
         store.save(byteArrayOf(1))
         val worker = ManualWorker()
         val c = PersonalLabCoordinator(worker, store)
         val id = c.invalidate()
-        c.save(id, { byteArrayOf(2) }) {}
+        var saved: Result<Unit>? = null
+        assertTrue(c.save(id, { byteArrayOf(2) }) { saved = it })
         var deleted: Result<Unit>? = null
-        c.delete { deleted = it }
+        // A commit is not cancellable: delete is refused, not silently raced.
+        assertFalse(c.delete { deleted = it })
+        worker.runWork()
+        worker.runMain()
+        assertTrue(saved!!.isSuccess)
+        assertArrayEquals(byteArrayOf(2), store.load())
+        assertTrue(c.delete { deleted = it })
+        // A save attempted for the old enrolment after the delete cannot write.
+        assertFalse(c.save(id, { byteArrayOf(3) }) {})
         worker.runWork()
         worker.runMain()
         assertTrue(deleted!!.isSuccess)

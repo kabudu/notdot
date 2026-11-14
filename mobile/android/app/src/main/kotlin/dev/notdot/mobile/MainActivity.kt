@@ -122,7 +122,7 @@ private fun Home(start: () -> Unit, permissions: () -> Unit, scenario: String?) 
             Button(start, Modifier.heightIn(min = 48.dp)) { Text("Start hands-free") }
         }
         OutlinedButton({ linking = !linking }, Modifier.heightIn(min = 48.dp)) { Text("Linked computer") }
-        if (BuildConfig.PERSONAL_WAKE_LAB && !linking) {
+        if (BuildConfig.DEBUG && BuildConfig.PERSONAL_WAKE_LAB && !linking) {
             OutlinedButton(
                 { context.startActivity(android.content.Intent(context, PersonalWakeActivity::class.java)) },
                 Modifier.heightIn(min = 48.dp),
