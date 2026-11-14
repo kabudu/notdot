@@ -23,35 +23,40 @@ import kotlin.concurrent.withLock
 
 /**
  * Wake detection with the phone's own on-device speech recogniser
- * (Android's `SpeechRecognizer.createOnDeviceSpeechRecognizer`), fed audio
- * the app has already captured. No model is bundled, and there is no cloud
- * fallback: `createSpeechRecognizer` is never used, and the recogniser is
- * only started when the requested language is installed on the device.
+ * (`SpeechRecognizer.createOnDeviceSpeechRecognizer`), fed audio the app
+ * has already captured. No model is bundled and there is no cloud fallback:
+ * `createSpeechRecognizer` is never used, and listening starts only when the
+ * language is installed on the device. Nothing is downloaded.
  *
- * Contract:
- * - [start], [finishAudio] and [stop] are called on the main thread; so are
- *   all [Listener] callbacks. [feedPcm16] may be called from any thread and
- *   never blocks: it queues at most [PcmPipeWriter.DEFAULT_MAX_BYTES] of audio
- *   and drops the oldest audio beyond that (counted in [stats]).
+ * Contract (the logic lives in [WakeRecognizerCore]):
+ * - [start], [finishAudio], [stop] and [stats] are called on the main
+ *   thread, and every [Listener] callback arrives there. [feedPcm16] may be
+ *   called from any thread and never blocks (at most two seconds queued;
+ *   older audio is dropped and counted).
  * - Audio is 16-bit little-endian PCM, 16 kHz, mono; the caller converts.
- * - A wake is reported only for a final (segment or end) result whose best
- *   hypothesis starts with the whole wake phrase ([WakePhraseMatcher]).
- *   Partial results never wake.
- * - Nothing is retried automatically. When a session ends or fails, the
- *   listener is told why and the caller decides whether to [start] again.
- * - After [stop], or a new [start] (for example a name change), no callback
- *   from the earlier session is delivered.
+ * - A wake is a final segment whose best hypothesis starts with the whole
+ *   phrase ([WakePhraseMatcher]). Partial results never wake, and the
+ *   session's closing result never repeats a segment's wake.
+ * - The language must be listed as installed, unless the service cannot
+ *   say (an error, or all lists empty): then listening starts unverified.
+ * - The language check and the recogniser's start are each bounded
+ *   ([WakeRecognizerCore.SUPPORT_TIMEOUT_MS], [WakeRecognizerCore.READY_TIMEOUT_MS]).
+ * - Nothing restarts automatically. A session ends with [Listener.onStatus]
+ *   `Ended` or [Listener.onError]; the caller restarts, if at all, as
+ *   [WakeRestartPolicy] describes.
+ * - After [stop] or a new [start] (a name change, say), nothing from the
+ *   earlier session is delivered or can affect the new one, even when a
+ *   listener callback itself stops or restarts.
  * - Speech and transcripts are never stored or logged; [stats] holds counts.
  *
- * Needs Android 13 (API 33) for an app-supplied audio source, segmented
- * sessions and biasing strings; below that, [start] reports
- * [WakeRecognizerError.Unsupported]. The foreground microphone service and
- * RECORD_AUDIO permission remain the caller's responsibility.
+ * Needs Android 13 (API 33): app-supplied audio, segmented sessions and
+ * biasing strings. The foreground microphone service and RECORD_AUDIO
+ * permission remain the caller's responsibility.
  */
 class OnDeviceWakeRecognizer(
-    private val context: Context,
-    private val listener: Listener,
-    private val language: String = "en-US",
+    context: Context,
+    listener: Listener,
+    language: String = "en-US",
 ) {
     interface Listener {
         fun onStatus(status: WakeRecognizerStatus)
@@ -59,238 +64,29 @@ class OnDeviceWakeRecognizer(
         fun onError(error: WakeRecognizerError)
     }
 
-    private val main = Handler(Looper.getMainLooper())
-    private var generation = 0L
-    private var recognizer: SpeechRecognizer? = null
-    private var source: ParcelFileDescriptor? = null
-    @Volatile private var writer: PcmPipeWriter? = null
-    private var matcher: WakePhraseMatcher? = null
-    private var counts = WakeRecognizerStats()
+    private val core = WakeRecognizerCore(
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) AndroidRecognizerPort(context) else null,
+        MainScheduler(),
+        listener,
+        language,
+    )
 
-    /** Recognition counts for this recogniser (never audio or text). */
-    fun stats(): WakeRecognizerStats = counts.copy(droppedBytes = counts.droppedBytes + (writer?.droppedBytes ?: 0))
-
-    /**
-     * Start listening for "Hey [name]" (or [name] alone). Stops any current
-     * session first. Reports progress through [Listener.onStatus], and any
-     * reason it cannot listen through [Listener.onError].
-     */
-    fun start(name: String, nameOnly: Boolean = false) {
-        requireMain()
-        stop()
-        val session = generation
-        val phrase = WakePhraseMatcher.phrase(name, nameOnly)
-        if (phrase == null) {
-            listener.onError(WakeRecognizerError.InvalidName)
-            return
-        }
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            listener.onError(WakeRecognizerError.Unsupported("Android 13 or later is needed to recognise app-supplied audio on the device"))
-            return
-        }
-        startOnDevice(session, phrase)
-    }
-
-    /**
-     * Queue captured audio (16-bit little-endian PCM, 16 kHz, mono). Any
-     * thread; never blocks. False if nothing is listening, the chunk is not
-     * whole samples, or the queue was full (oldest audio dropped).
-     */
-    fun feedPcm16(bytes: ByteArray): Boolean = writer?.offer(bytes) ?: false
-
-    /**
-     * End the audio stream: the recogniser finishes the last segment, then
-     * reports the session's end. For feeding a recording through the same
-     * path as live audio.
-     */
-    fun finishAudio() {
-        requireMain()
-        writer?.finish()
-    }
-
-    /** Stop listening and release the recogniser and audio pipe. */
-    fun stop() {
-        requireMain()
-        generation++
-        release()
-    }
-
-    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
-    private fun startOnDevice(session: Long, phrase: String) {
-        if (!SpeechRecognizer.isOnDeviceRecognitionAvailable(context)) {
-            listener.onError(WakeRecognizerError.Unsupported("This device has no on-device speech recogniser"))
-            return
-        }
-        val created = try {
-            SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-        } catch (_: UnsupportedOperationException) {
-            listener.onError(WakeRecognizerError.Unsupported("This device has no on-device speech recogniser"))
-            return
-        }
-        recognizer = created
-        matcher = WakePhraseMatcher(phrase)
-        counts = WakeRecognizerStats()
-        created.setRecognitionListener(Callbacks(session))
-        listener.onStatus(WakeRecognizerStatus.CheckingLanguage)
-        created.checkRecognitionSupport(
-            baseIntent(phrase),
-            context.mainExecutor,
-            object : RecognitionSupportCallback {
-                override fun onSupportResult(support: RecognitionSupport) {
-                    if (session != generation) return
-                    when {
-                        support.installedOnDeviceLanguages.any { it.matches(language) } -> listen(session, phrase, verified = true)
-                        else -> fail(
-                            WakeRecognizerError.LanguageNotInstalled(
-                                language,
-                                downloadable = support.supportedOnDeviceLanguages.any { it.matches(language) },
-                                pending = support.pendingOnDeviceLanguages.any { it.matches(language) },
-                            ),
-                        )
-                    }
-                }
-
-                override fun onError(error: Int) {
-                    if (session != generation) return
-                    // Some services cannot answer; the start itself then
-                    // reports a missing language (ERROR_LANGUAGE_*).
-                    if (error == SpeechRecognizer.ERROR_CANNOT_CHECK_SUPPORT) {
-                        listen(session, phrase, verified = false)
-                    } else {
-                        fail(WakeRecognizerError.Recognizer(error))
-                    }
-                }
-            },
-        )
-    }
-
-    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
-    private fun listen(session: Long, phrase: String, verified: Boolean) {
-        val pipe = try {
-            ParcelFileDescriptor.createPipe()
-        } catch (_: IOException) {
-            fail(WakeRecognizerError.AudioPipe)
-            return
-        }
-        source = pipe[0]
-        writer = PcmPipeWriter(ParcelFileDescriptor.AutoCloseOutputStream(pipe[1])) {
-            main.post { if (session == generation) fail(WakeRecognizerError.AudioPipe) }
-        }
-        val intent = baseIntent(phrase).apply {
-            putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE, pipe[0])
-            putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
-            putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, SAMPLE_RATE)
-            putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, 1)
-            // One session until the audio is closed, reported per segment.
-            putExtra(RecognizerIntent.EXTRA_SEGMENTED_SESSION, RecognizerIntent.EXTRA_AUDIO_SOURCE)
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-        }
-        recognizer?.startListening(intent)
-        listener.onStatus(WakeRecognizerStatus.Listening(languageVerified = verified))
-    }
-
-    private fun baseIntent(phrase: String) = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
-        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            putStringArrayListExtra(RecognizerIntent.EXTRA_BIASING_STRINGS, arrayListOf(phrase))
-            putExtra(RecognizerIntent.EXTRA_ENABLE_BIASING_DEVICE_CONTEXT, false)
-        }
-    }
-
-    private fun String.matches(tag: String) = equals(tag, ignoreCase = true) ||
-        replace('_', '-').equals(tag.replace('_', '-'), ignoreCase = true)
-
-    /** End this session after a failure; no retry. */
-    private fun fail(error: WakeRecognizerError) {
-        generation++
-        release()
-        listener.onError(error)
-    }
-
-    private fun release() {
-        writer?.let { counts = counts.copy(droppedBytes = counts.droppedBytes + it.droppedBytes) }
-        writer?.close()
-        writer = null
-        recognizer?.let {
-            it.cancel()
-            it.destroy()
-        }
-        recognizer = null
-        try {
-            source?.close()
-        } catch (_: IOException) {
-        }
-        source = null
-        matcher = null
-    }
-
-    private fun requireMain() = check(Looper.myLooper() == Looper.getMainLooper()) {
-        "OnDeviceWakeRecognizer must be used on the main thread"
-    }
-
-    /** Callbacks for one session; anything from an older session is dropped. */
-    private inner class Callbacks(private val session: Long) : RecognitionListener {
-        private val current get() = session == generation
-
-        private fun results(bundle: Bundle?) {
-            val best = bundle?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-            counts = counts.copy(segments = counts.segments + 1)
-            if (best != null && matcher?.matches(best) == true) {
-                counts = counts.copy(wakes = counts.wakes + 1)
-                listener.onWake()
-            }
-        }
-
-        override fun onSegmentResults(segmentResults: Bundle) {
-            if (current) results(segmentResults)
-        }
-
-        override fun onResults(results: Bundle?) {
-            if (!current) return
-            results(results)
-            ended("results")
-        }
-
-        override fun onEndOfSegmentedSession() {
-            if (current) ended("audio ended")
-        }
-
-        override fun onPartialResults(partialResults: Bundle?) {
-            // Never a wake: a partial name may still change.
-            if (current) counts = counts.copy(partials = counts.partials + 1)
-        }
-
-        override fun onError(error: Int) {
-            if (current) fail(WakeRecognizerError.Recognizer(error))
-        }
-
-        private fun ended(reason: String) {
-            generation++
-            release()
-            listener.onStatus(WakeRecognizerStatus.Ended(reason))
-        }
-
-        override fun onReadyForSpeech(params: Bundle?) = Unit
-        override fun onBeginningOfSpeech() = Unit
-        override fun onRmsChanged(rmsdB: Float) = Unit
-        override fun onBufferReceived(buffer: ByteArray?) = Unit
-        override fun onEndOfSpeech() = Unit
-        override fun onEvent(eventType: Int, params: Bundle?) = Unit
-    }
-
-    companion object {
-        const val SAMPLE_RATE = 16_000
-    }
+    fun start(name: String, nameOnly: Boolean = false) = core.start(name, nameOnly)
+    fun feedPcm16(bytes: ByteArray): Boolean = core.feedPcm16(bytes)
+    fun finishAudio() = core.finishAudio()
+    fun stop() = core.stop()
+    fun stats(): WakeRecognizerStats = core.stats()
 }
 
 sealed interface WakeRecognizerStatus {
     data object CheckingLanguage : WakeRecognizerStatus
-    /** `languageVerified` is false when the service could not report support. */
+    /**
+     * `languageVerified` is false when the service could not report support,
+     * or reported nothing (all lists empty); a missing language then shows
+     * as `Recognizer` error 12 or 13.
+     */
     data class Listening(val languageVerified: Boolean) : WakeRecognizerStatus
-    /** The session ended (audio finished, or the service ended it). */
+    /** The session ended: the audio finished, or the service ended it. */
     data class Ended(val reason: String) : WakeRecognizerStatus
 }
 
@@ -303,6 +99,10 @@ sealed interface WakeRecognizerError {
     data class Recognizer(val code: Int) : WakeRecognizerError {
         val name: String get() = errorName(code)
     }
+    /** The service gave no sign of life in time ("language check" or "start"). */
+    data class Timeout(val stage: String) : WakeRecognizerError
+    /** The platform refused a call (for example a missing permission). */
+    data class Platform(val reason: String) : WakeRecognizerError
     data object AudioPipe : WakeRecognizerError
 }
 
@@ -331,6 +131,288 @@ fun errorName(code: Int): String = when (code) {
     14 -> "cannot check support"
     15 -> "cannot listen to download events"
     else -> "error $code"
+}
+
+/** What the recogniser service reports for a language. */
+data class LanguageSupport(val installed: List<String>, val supported: List<String>, val pending: List<String>)
+
+/** Events from one recogniser session, already unpacked from Bundles. */
+interface RecognizerEvents {
+    /** The service is alive: ready, hearing speech, or reporting levels. */
+    fun onReady()
+    fun onPartial()
+    fun onSegment(best: String?)
+    fun onResults(best: String?)
+    fun onEndOfSession()
+    fun onError(code: Int)
+}
+
+/**
+ * The platform recogniser, one session at a time. Calls may throw (a
+ * missing permission, a dead service); the core treats that as a failure.
+ */
+interface RecognizerPort {
+    fun available(): Boolean
+    /** Create the recogniser and route its events to [events]. */
+    fun create(events: RecognizerEvents)
+    fun checkSupport(language: String, phrase: String, onResult: (LanguageSupport) -> Unit, onError: (Int) -> Unit)
+    /** Start listening to app audio; returns the stream to write PCM to. */
+    fun start(language: String, phrase: String): OutputStream
+    /** Cancel and destroy the recogniser and close the audio source. */
+    fun release()
+}
+
+/** Main-thread scheduling, so tests can drive time. */
+interface WakeScheduler {
+    fun isMainThread(): Boolean
+    fun post(action: () -> Unit)
+    fun postDelayed(delayMs: Long, token: Any, action: () -> Unit)
+    fun cancel(token: Any)
+}
+
+/**
+ * The adapter's state machine, free of Android types. Every method except
+ * [feedPcm16] runs on the main thread; every port and timer callback is
+ * tagged with its session and ignored once that session is over.
+ */
+class WakeRecognizerCore(
+    private val port: RecognizerPort?,
+    private val scheduler: WakeScheduler,
+    private val listener: OnDeviceWakeRecognizer.Listener,
+    private val language: String,
+    private val writerFactory: (OutputStream, () -> Unit) -> PcmPipeWriter = { out, failed -> PcmPipeWriter(out, onFailure = failed) },
+) {
+    private var session = 0L
+    private var active = false
+    private var matcher: WakePhraseMatcher? = null
+    @Volatile private var writer: PcmPipeWriter? = null
+    private var counts = WakeRecognizerStats()
+    /** Cancels this session's timers (schedulers match tokens by identity). */
+    private var timers = Any()
+
+    fun stats(): WakeRecognizerStats {
+        requireMain()
+        return counts.copy(droppedBytes = counts.droppedBytes + (writer?.droppedBytes ?: 0))
+    }
+
+    fun start(name: String, nameOnly: Boolean = false) {
+        requireMain()
+        stop()
+        val phrase = WakePhraseMatcher.phrase(name, nameOnly) ?: return listener.onError(WakeRecognizerError.InvalidName)
+        if (port == null) {
+            return listener.onError(WakeRecognizerError.Unsupported("Android 13 or later is needed to recognise app-supplied audio on the device"))
+        }
+        val id = session
+        val unavailable = WakeRecognizerError.Unsupported("This device has no on-device speech recogniser")
+        if (!guard(id) { port.available() }.let { it == true }) {
+            if (id == session) fail(id, unavailable)
+            return
+        }
+        active = true
+        matcher = WakePhraseMatcher(phrase)
+        counts = WakeRecognizerStats()
+        if (guard(id) { port.create(Events(id)) } == null) return
+        listener.onStatus(WakeRecognizerStatus.CheckingLanguage)
+        if (id != session) return
+        scheduler.postDelayed(SUPPORT_TIMEOUT_MS, timers) { if (id == session) fail(id, WakeRecognizerError.Timeout("language check")) }
+        guard(id) {
+            port.checkSupport(
+                language,
+                phrase,
+                onResult = { support -> scheduler.post { supportResult(id, phrase, support) } },
+                onError = { code -> scheduler.post { supportError(id, phrase, code) } },
+            )
+        }
+    }
+
+    fun feedPcm16(bytes: ByteArray): Boolean = writer?.offer(bytes) ?: false
+
+    fun finishAudio() {
+        requireMain()
+        writer?.finish()
+    }
+
+    fun stop() {
+        requireMain()
+        end(session)
+    }
+
+    private fun supportResult(id: Long, phrase: String, support: LanguageSupport) {
+        if (id != session) return
+        scheduler.cancel(timers)
+        if (support.installed.any { it.sameLanguage(language) }) {
+            listen(id, phrase, verified = true)
+        } else if (support.installed.isEmpty() && support.supported.isEmpty() && support.pending.isEmpty()) {
+            // All lists empty: the reference defines each list only by what
+            // it contains, not an empty answer, and a provider has been seen
+            // to answer this way yet recognise. Treat it as unknown, like
+            // ERROR_CANNOT_CHECK_SUPPORT: start, and let the recogniser report
+            // ERROR_LANGUAGE_* if the language is really missing.
+            listen(id, phrase, verified = false)
+        } else {
+            fail(
+                id,
+                WakeRecognizerError.LanguageNotInstalled(
+                    language,
+                    downloadable = support.supported.any { it.sameLanguage(language) },
+                    pending = support.pending.any { it.sameLanguage(language) },
+                ),
+            )
+        }
+    }
+
+    private fun supportError(id: Long, phrase: String, code: Int) {
+        if (id != session) return
+        scheduler.cancel(timers)
+        // Some services cannot answer; the start then reports a missing
+        // language itself (ERROR_LANGUAGE_*).
+        if (code == CANNOT_CHECK_SUPPORT) listen(id, phrase, verified = false) else fail(id, WakeRecognizerError.Recognizer(code))
+    }
+
+    private fun listen(id: Long, phrase: String, verified: Boolean) {
+        val out = guard(id) { port!!.start(language, phrase) } ?: return
+        writer = writerFactory(out) { scheduler.post { if (id == session) fail(id, WakeRecognizerError.AudioPipe) } }
+        scheduler.postDelayed(READY_TIMEOUT_MS, timers) { if (id == session) fail(id, WakeRecognizerError.Timeout("start")) }
+        listener.onStatus(WakeRecognizerStatus.Listening(languageVerified = verified))
+    }
+
+    /** Run a port call; on an exception end the session and report it. */
+    private fun <T> guard(id: Long, call: () -> T): T? = try {
+        call()
+    } catch (e: SecurityException) {
+        fail(id, WakeRecognizerError.Platform("Not permitted: ${e.javaClass.simpleName}"))
+        null
+    } catch (e: RuntimeException) {
+        // IllegalStateException, IllegalArgumentException, Unsupported..., or
+        // a dead service: never crash the capture service over the recogniser.
+        fail(id, WakeRecognizerError.Platform("Recogniser call failed: ${e.javaClass.simpleName}"))
+        null
+    } catch (_: IOException) {
+        fail(id, WakeRecognizerError.AudioPipe)
+        null
+    }
+
+    /** End session [id] if it is still current. True if it was. */
+    private fun end(id: Long): Boolean {
+        if (id != session) return false
+        session++
+        scheduler.cancel(timers)
+        timers = Any()
+        writer?.let {
+            counts = counts.copy(droppedBytes = counts.droppedBytes + it.droppedBytes)
+            it.close()
+        }
+        writer = null
+        matcher = null
+        if (active) {
+            active = false
+            runCatching { port?.release() }
+        }
+        return true
+    }
+
+    private fun fail(id: Long, error: WakeRecognizerError) {
+        if (end(id)) listener.onError(error)
+    }
+
+    private fun ended(id: Long, reason: String) {
+        if (end(id)) listener.onStatus(WakeRecognizerStatus.Ended(reason))
+    }
+
+    private fun requireMain() = check(scheduler.isMainThread()) { "OnDeviceWakeRecognizer must be used on the main thread" }
+
+    private inner class Events(private val id: Long) : RecognizerEvents {
+        private var wokeInSession = false
+        private val current get() = id == session
+
+        override fun onReady() {
+            if (current) scheduler.cancel(timers)
+        }
+
+        override fun onPartial() {
+            if (!current) return
+            scheduler.cancel(timers)
+            // Never a wake: a partial name may still change.
+            counts = counts.copy(partials = counts.partials + 1)
+        }
+
+        override fun onSegment(best: String?) {
+            if (!current) return
+            scheduler.cancel(timers)
+            counts = counts.copy(segments = counts.segments + 1)
+            wake(best)
+        }
+
+        override fun onResults(best: String?) {
+            if (!current) return
+            // The closing result repeats speech already given as segments:
+            // it can wake only if no segment has.
+            if (!wokeInSession) wake(best)
+            if (current) ended(id, "results")
+        }
+
+        override fun onEndOfSession() {
+            if (current) ended(id, "audio ended")
+        }
+
+        override fun onError(code: Int) {
+            if (current) fail(id, WakeRecognizerError.Recognizer(code))
+        }
+
+        private fun wake(best: String?) {
+            if (best != null && matcher?.matches(best) == true) {
+                wokeInSession = true
+                counts = counts.copy(wakes = counts.wakes + 1)
+                // May stop or restart the recogniser; nothing here runs after.
+                listener.onWake()
+            }
+        }
+    }
+
+    companion object {
+        const val SUPPORT_TIMEOUT_MS = 5_000L
+        const val READY_TIMEOUT_MS = 5_000L
+        const val CANNOT_CHECK_SUPPORT = 14
+
+        private fun String.sameLanguage(tag: String) = replace('_', '-').equals(tag.replace('_', '-'), ignoreCase = true)
+    }
+}
+
+/**
+ * When the caller should start again after a session ends. The official
+ * reference says SpeechRecognizer "is not intended to be used for continuous
+ * recognition", and a provider may end a segmented session at any time, so a
+ * long listen is a series of sessions:
+ * - restart after [WakeRecognizerStatus.Ended] or a [retryable] error, after
+ *   [nextDelayMs]; never on a terminal error (permission, language, name,
+ *   unsupported device), which needs the user or a setting to change;
+ * - delays double from 1 s to 60 s, and reset once a session has listened
+ *   for a minute, so a provider that ends sessions immediately is retried
+ *   at most once a minute rather than in a loop.
+ */
+class WakeRestartPolicy(
+    private val initialMs: Long = 1_000,
+    private val maxMs: Long = 60_000,
+    private val stableMs: Long = 60_000,
+) {
+    private var delay = initialMs
+
+    /** The wait before restarting, given how long the session listened. */
+    fun nextDelayMs(sessionMs: Long): Long {
+        if (sessionMs >= stableMs) delay = initialMs
+        val now = delay
+        delay = (delay * 2).coerceAtMost(maxMs)
+        return now
+    }
+
+    companion object {
+        fun retryable(error: WakeRecognizerError): Boolean = when (error) {
+            is WakeRecognizerError.Recognizer -> error.code !in setOf(9, 12, 13)
+            is WakeRecognizerError.Timeout, WakeRecognizerError.AudioPipe -> true
+            is WakeRecognizerError.Platform, is WakeRecognizerError.Unsupported,
+            is WakeRecognizerError.LanguageNotInstalled, WakeRecognizerError.InvalidName -> false
+        }
+    }
 }
 
 /**
@@ -388,12 +470,14 @@ class PcmPipeWriter(
     @Volatile var droppedBytes = 0L
         private set
 
-    private val thread = Thread({ run() }, "notdot-wake-pipe").apply {
-        isDaemon = true
-        start()
+    init {
+        Thread({ run() }, "notdot-wake-pipe").apply {
+            isDaemon = true
+            start()
+        }
     }
 
-    /** Queue a copy of [bytes]; never blocks. */
+    /** Queue a copy of [bytes]; never blocks. False if anything was dropped or refused. */
     fun offer(bytes: ByteArray): Boolean {
         if (bytes.isEmpty() || bytes.size % 2 != 0 || bytes.size > maxBytes) return false
         lock.withLock {
@@ -451,5 +535,103 @@ class PcmPipeWriter(
     companion object {
         /** Two seconds of 16 kHz 16-bit mono audio. */
         const val DEFAULT_MAX_BYTES = 64_000
+    }
+}
+
+private class MainScheduler : WakeScheduler {
+    private val handler = Handler(Looper.getMainLooper())
+    override fun isMainThread() = Looper.myLooper() == Looper.getMainLooper()
+    override fun post(action: () -> Unit) {
+        handler.post { action() }
+    }
+    override fun postDelayed(delayMs: Long, token: Any, action: () -> Unit) {
+        handler.postDelayed({ action() }, token, delayMs)
+    }
+    override fun cancel(token: Any) = handler.removeCallbacksAndMessages(token)
+}
+
+/** The OS on-device recogniser, fed through a pipe. API 33+. */
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+private class AndroidRecognizerPort(private val context: Context) : RecognizerPort {
+    private var recognizer: SpeechRecognizer? = null
+    private var source: ParcelFileDescriptor? = null
+
+    override fun available() = SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
+
+    override fun create(events: RecognizerEvents) {
+        val created = SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+        recognizer = created
+        created.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) = events.onReady()
+            override fun onPartialResults(partialResults: Bundle?) = events.onPartial()
+            override fun onSegmentResults(segmentResults: Bundle) = events.onSegment(best(segmentResults))
+            override fun onResults(results: Bundle?) = events.onResults(best(results))
+            override fun onEndOfSegmentedSession() = events.onEndOfSession()
+            override fun onError(error: Int) = events.onError(error)
+            // Any sign of life ends the start timeout: some providers may
+            // not send onReadyForSpeech for an app-supplied source.
+            override fun onBeginningOfSpeech() = events.onReady()
+            override fun onRmsChanged(rmsdB: Float) = events.onReady()
+            override fun onBufferReceived(buffer: ByteArray?) = Unit
+            override fun onEndOfSpeech() = Unit
+            override fun onEvent(eventType: Int, params: Bundle?) = Unit
+        })
+    }
+
+    private fun best(bundle: Bundle?) = bundle?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+
+    override fun checkSupport(language: String, phrase: String, onResult: (LanguageSupport) -> Unit, onError: (Int) -> Unit) {
+        recognizer!!.checkRecognitionSupport(
+            intent(language, phrase),
+            context.mainExecutor,
+            object : RecognitionSupportCallback {
+                override fun onSupportResult(support: RecognitionSupport) = onResult(
+                    LanguageSupport(support.installedOnDeviceLanguages, support.supportedOnDeviceLanguages, support.pendingOnDeviceLanguages),
+                )
+                override fun onError(error: Int) = onError(error)
+            },
+        )
+    }
+
+    override fun start(language: String, phrase: String): OutputStream {
+        val pipe = ParcelFileDescriptor.createPipe()
+        source = pipe[0]
+        val out = ParcelFileDescriptor.AutoCloseOutputStream(pipe[1])
+        try {
+            recognizer!!.startListening(
+                intent(language, phrase).apply {
+                    putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE, pipe[0])
+                    putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
+                    putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, 16_000)
+                    putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, 1)
+                    // One session until the audio is closed, reported per segment.
+                    putExtra(RecognizerIntent.EXTRA_SEGMENTED_SESSION, RecognizerIntent.EXTRA_AUDIO_SOURCE)
+                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                },
+            )
+        } catch (e: RuntimeException) {
+            runCatching { out.close() }
+            throw e
+        }
+        return out
+    }
+
+    private fun intent(language: String, phrase: String) = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
+        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+        putStringArrayListExtra(RecognizerIntent.EXTRA_BIASING_STRINGS, arrayListOf(phrase))
+        putExtra(RecognizerIntent.EXTRA_ENABLE_BIASING_DEVICE_CONTEXT, false)
+    }
+
+    override fun release() {
+        recognizer?.let {
+            runCatching { it.cancel() }
+            runCatching { it.destroy() }
+        }
+        recognizer = null
+        runCatching { source?.close() }
+        source = null
     }
 }
