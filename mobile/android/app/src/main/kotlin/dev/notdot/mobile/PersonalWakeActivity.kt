@@ -105,6 +105,42 @@ class PersonalWakeActivity : ComponentActivity() {
     private var enrolment: PersonalEnrolment? = null
     private var enrolmentId = 0L
     private var lastMatch by mutableStateOf<PersonalMatch?>(null)
+    private var trials by mutableStateOf<List<WakeTrial>>(emptyList())
+    private var expectedTrial by mutableStateOf("Hey Ava")
+    private var historyError by mutableStateOf("")
+    private val historyStore by lazy {
+        PersonalWakeStore(File(noBackupFilesDir, "personal-wake-history"), KeystoreSealer("notdot-personal-wake-history"))
+    }
+
+    private fun refreshHistory() {
+        executor.execute {
+            val result = runCatching { historyStore.load()?.let(WakeTrialHistory::decode) ?: emptyList() }
+            main.post {
+                if (!isDestroyed) result.onSuccess { trials = it }.onFailure { historyError = "Test history could not be read. Your saved enrolment is unchanged." }
+            }
+        }
+    }
+
+    private fun recordTrial(expected: String, outcome: String) {
+        val trial = WakeTrial(System.currentTimeMillis(), expected.take(120), outcome.take(1000))
+        executor.execute {
+            val result = runCatching {
+                val previous = historyStore.load()?.let(WakeTrialHistory::decode) ?: emptyList()
+                WakeTrialHistory.append(previous, trial).also { historyStore.save(WakeTrialHistory.encode(it)) }
+            }
+            main.post {
+                if (!isDestroyed) result.onSuccess { trials = it; historyError = "" }
+                    .onFailure { historyError = "This test result could not be saved. Your enrolment is unchanged." }
+            }
+        }
+    }
+
+    private fun matchHeadline(m: PersonalMatch): String = when {
+        m.issue != null -> "Not compared: ${describe(m.issue)}."
+        m.matched -> "Sounded like your phrase."
+        !m.withinBound -> "Did not sound like your phrase."
+        else -> "Sounded closer to “${m.contrastLabel}” than to your phrase."
+    }
 
     // The one microphone owner. A request generation guards every step: a
     // newer request, stop, hide or cancel makes older callbacks no-ops.
@@ -133,6 +169,7 @@ class PersonalWakeActivity : ComponentActivity() {
             return
         }
         refreshSaved()
+        refreshHistory()
         setContent { MaterialTheme(colorScheme = darkColorScheme()) { Lab() } }
     }
 
@@ -284,6 +321,7 @@ class PersonalWakeActivity : ComponentActivity() {
         stopRecording()
         message = text
         val s = screen
+        if (s is Screen.Recording && s.target == null) recordTrial(expectedTrial.trim().ifEmpty { "Unlabelled" }, "Not compared: $text")
         screen = if (s is Screen.Recording) s.copy(listening = false) else s
     }
 
@@ -435,6 +473,7 @@ class PersonalWakeActivity : ComponentActivity() {
         val attempt = attempts.begin()
         val id = coordinator.current()
         val forPhrase = phrase
+        val expected = expectedTrial.trim().ifEmpty { "Unlabelled" }
         lastMatch = null
         screen = Screen.Recording(null, false)
         withMicrophone { request ->
@@ -452,8 +491,13 @@ class PersonalWakeActivity : ComponentActivity() {
                 }) { result ->
                     attempts.finish(attempt) {
                         screen = Screen.Test
-                        result.onSuccess { lastMatch = it; message = "" }
-                            .onFailure { message = it.message ?: "Could not compare" }
+                        result.onSuccess {
+                            lastMatch = it; message = ""
+                            recordTrial(expected, matchHeadline(it) + " Distance: ${it.nearestPhrase}; bound: ${it.phraseBound}; similar: ${it.nearestContrast}.")
+                        }.onFailure {
+                            message = it.message ?: "Could not compare"
+                            recordTrial(expected, "Comparison failed.")
+                        }
                     }
                 }
             }
@@ -566,14 +610,12 @@ class PersonalWakeActivity : ComponentActivity() {
         val busy by coordinator.busy.collectAsState()
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(saved ?: "Nothing saved.", color = Color(0xFFB4C5D5))
+            OutlinedTextField(expectedTrial, { expectedTrial = it.take(120) }, Modifier.fillMaxWidth(),
+                label = { Text("What you will say (test label)") }, singleLine = true)
+            Text("This label does not influence recognition. The latest 100 results stay encrypted on this phone; no audio is saved.", color = Color(0xFFB4C5D5))
             Wide("Try my phrase", enabled = !busy && saved != null, primary = true, onClick = ::tryPhrase)
             lastMatch?.let { m ->
-                val headline = when {
-                    m.issue != null -> "Not compared: ${describe(m.issue)}."
-                    m.matched -> "Sounded like your phrase."
-                    !m.withinBound -> "Did not sound like your phrase."
-                    else -> "Sounded closer to “${m.contrastLabel}” than to your phrase."
-                }
+                val headline = matchHeadline(m)
                 Text(headline, color = Color.White, style = MaterialTheme.typography.titleMedium)
                 Text("One try proves nothing on its own. Wake listening is unchanged.", color = Color(0xFFB4C5D5))
                 TextButton({ showDetails = !showDetails }) { Text(if (showDetails) "Hide details" else "Details") }
@@ -586,6 +628,12 @@ class PersonalWakeActivity : ComponentActivity() {
                     } ?: Text("No similar phrases recorded.", color = Color(0xFFB4C5D5))
                     Text("Smaller is closer; 0 is identical.", color = Color(0xFFB4C5D5))
                 }
+            }
+            Text("Test history (${trials.size}/100)", color = Color.White, style = MaterialTheme.typography.titleMedium)
+            if (historyError.isNotEmpty()) Text(historyError, color = Color(0xFFFFB4AB))
+            trials.asReversed().forEachIndexed { index, trial ->
+                val time = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(trial.time))
+                Text("${trials.size - index}. $time · ${trial.expected}\n${trial.outcome}", color = Color(0xFFB4C5D5))
             }
             Wide("Done") { stopRecording(); lastMatch = null; screen = Screen.Home }
         }

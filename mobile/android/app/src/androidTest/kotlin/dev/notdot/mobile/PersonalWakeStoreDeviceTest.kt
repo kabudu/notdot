@@ -120,6 +120,27 @@ class PersonalWakeStoreDeviceTest {
     }
 
     @Test
+    fun historySurvivesReloadWithoutChangingEnrolment() {
+        val enrolment = PersonalWakeStore(dir, KeystoreSealer(alias))
+        val model = syntheticModel("Hey Ava")
+        enrolment.save(model)
+        val historyDir = File(dir, "history-test")
+        val history = PersonalWakeStore(historyDir, KeystoreSealer("$alias-history"))
+        try {
+            var trials = emptyList<WakeTrial>()
+            repeat(107) { trials = WakeTrialHistory.append(trials, WakeTrial(it.toLong(), "Hey Ava", "Accepted")) }
+            history.save(WakeTrialHistory.encode(trials))
+            val reopened = PersonalWakeStore(historyDir, KeystoreSealer("$alias-history"))
+            assertEquals(trials, WakeTrialHistory.decode(reopened.load()!!))
+            assertArrayEquals(model, enrolment.load())
+            history.delete()
+            assertArrayEquals(model, enrolment.load())
+        } finally {
+            history.delete()
+        }
+    }
+
+    @Test
     fun oversizedFilesAreRefusedBeforeDecrypting() {
         val store = PersonalWakeStore(dir, KeystoreSealer(alias))
         dir.mkdirs()
