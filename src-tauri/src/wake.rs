@@ -4,8 +4,9 @@ mod fallback;
 pub(crate) mod speech;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use notdot_core::settings::Settings;
+pub use notdot_wake_kws::phrase;
+use notdot_wake_kws::{Spotter, energy};
 use serde::Serialize;
-use sherpa_onnx::{KeywordSpotter, KeywordSpotterConfig, OnlineStream};
 use std::{
     io::Cursor,
     path::{Path, PathBuf},
@@ -17,27 +18,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub fn phrase(name: &str, name_only: bool) -> Result<String, String> {
-    if name
-        .chars()
-        .any(|c| !c.is_ascii_alphabetic() && !c.is_whitespace() && c != '-' && c != '\'')
-    {
-        return Err("Wake phrases currently support English names using letters, spaces, apostrophes and hyphens. Turn wake listening off to use another name.".into());
-    }
-    let name = name
-        .replace('-', " ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    if name.is_empty() || name.len() > 80 {
-        return Err("Choose a name for the wake phrase".into());
-    }
-    Ok(if name_only {
-        name
-    } else {
-        format!("Hey {name}")
-    })
-}
 pub enum CaptureEvent {
     Start {
         id: u64,
@@ -350,220 +330,32 @@ fn config(settings: &Settings) -> Config {
     }
 }
 
+/// The shared on-device spotter plus the desktop-only Whisper fallback.
 struct Detector {
     fallback: fallback::Fallback,
-    kws: KeywordSpotter,
-    stream: OnlineStream,
-    require_hey: bool,
-    /// Token count of the coarticulated variant, when the phrase has one.
-    merged: Option<usize>,
-    candidates: u64,
-    rejected_energy: u64,
-    rejected_prefix: u64,
-    elapsed: f64,
-    quiet_seconds: f64,
-    voice_gate: VoiceGate,
-    voiced: std::collections::VecDeque<(f64, f64, bool)>,
+    spotter: Spotter,
 }
 impl Detector {
     fn new(models: &Path, phrase: &str) -> Result<Self, String> {
         let fallback = fallback::Fallback::new(&models.join("ggml-tiny.en-q5_1.bin"), phrase)?;
-        let lexicon = std::fs::read_to_string(models.join("phonetic/en.phone"))
-            .map_err(|_| "Bundled wake pronunciation dictionary is unavailable")?;
-        let pronunciations: std::collections::HashMap<&str, Vec<&str>> = lexicon
-            .lines()
-            .filter_map(|l| {
-                let mut parts = l.split_whitespace();
-                Some((parts.next()?, parts.collect()))
-            })
-            .collect();
-        let upper = phrase.to_uppercase();
-        let phones: Option<Vec<_>> = upper
-            .split_whitespace()
-            .map(|word| pronunciations.get(word))
-            .collect();
-        let require_hey = phones.is_some() && upper.starts_with("HEY ");
-        let (models, tokens) = if let Some(phones) = phones {
-            (
-                models.join("phonetic"),
-                phones
-                    .into_iter()
-                    .flatten()
-                    .map(|s| (*s).to_owned())
-                    .collect::<Vec<_>>(),
-            )
-        } else {
-            let tokenizer =
-                sentencepiece_rs::SentencePieceProcessor::open(models.join("bpe.model"))
-                    .map_err(|_| "Bundled wake tokenizer is unavailable")?;
-            (
-                models.to_path_buf(),
-                tokenizer
-                    .encode(&upper)
-                    .map_err(|_| "Could not encode wake phrase")?,
-            )
-        };
-
-        let vocabulary = std::fs::read_to_string(models.join("tokens.txt"))
-            .map_err(|_| "Bundled wake vocabulary is unavailable")?;
-        if tokens.is_empty()
-            || tokens.iter().any(|t| {
-                t == "<unk>"
-                    || !vocabulary
-                        .lines()
-                        .any(|l| l.split_whitespace().next() == Some(t.as_str()))
-            })
-        {
-            return Err("This name cannot be encoded by the English wake model".into());
-        }
-        let path = |name| models.join(name).to_string_lossy().into_owned();
-        let mut c = KeywordSpotterConfig::default();
-        c.model_config.transducer.encoder = Some(path("encoder.onnx"));
-        c.model_config.transducer.decoder = Some(path("decoder.onnx"));
-        c.model_config.transducer.joiner = Some(path("joiner.onnx"));
-        c.model_config.tokens = Some(path("tokens.txt"));
-        c.model_config.provider = Some("cpu".into());
-        c.model_config.num_threads = 1;
-        let mut keywords = format!("{} :3.0 #0.20 @wake\n", tokens.join(" "));
-        // Hey Ava shares the EY vowel across the word boundary. Model both
-        // separated and coarticulated vowels without dropping other phonemes.
-        let mut merged = None;
-        if require_hey && tokens.get(1) == tokens.get(2) {
-            let mut joined = tokens.clone();
-            joined.remove(2);
-            merged = Some(joined.len());
-            keywords.push_str(&format!("{} :3.0 #0.20 @wake\n", joined.join(" ")));
-        }
-        c.keywords_buf = Some(keywords);
-        let kws = KeywordSpotter::create(&c).ok_or("Could not load the bundled wake model")?;
-        let stream = kws.create_stream();
-        Ok(Self {
-            fallback,
-            kws,
-            stream,
-            require_hey,
-            merged,
-            candidates: 0,
-            rejected_energy: 0,
-            rejected_prefix: 0,
-            elapsed: 0.,
-            quiet_seconds: 0.,
-            voice_gate: VoiceGate::default(),
-            voiced: Default::default(),
-        })
+        let spotter = Spotter::new(models, phrase)?;
+        Ok(Self { fallback, spotter })
     }
     fn accept(&mut self, rate: u32, samples: &[f32]) -> bool {
         if self.fallback.accept(rate, samples) {
             return true;
         }
-        let voiced = self.voice_gate.observe(energy(samples));
-        let seconds = samples.len() as f64 / f64::from(rate);
-        self.quiet_seconds = if voiced {
-            0.
-        } else {
-            self.quiet_seconds + seconds
-        };
-        // Sherpa 2.0 resets decoder offsets after 1.5 s of trailing blanks,
-        // without rebasing its feature stream. Recreate the stream in quiet
-        // audio first, so token times and acoustic-support times stay aligned.
-        // Keep both the Hey-prefix and speech-support guards unchanged.
-        if self.elapsed >= 120. || self.quiet_seconds >= 1. {
-            self.reset_keyword();
+        let hit = self.spotter.accept(rate, samples);
+        if hit && matches!(self.fallback.backend(), "generic" | "accelerated") {
+            self.fallback.error = None;
         }
-        let start = self.elapsed;
-        self.elapsed += seconds;
-        self.voiced.push_back((start, self.elapsed, voiced));
-        while self
-            .voiced
-            .front()
-            .is_some_and(|(_, end, _)| *end < self.elapsed - 8.)
-        {
-            self.voiced.pop_front();
-        }
-        self.stream.accept_waveform(rate as i32, samples);
-        while self.kws.is_ready(&self.stream) {
-            self.kws.decode(&self.stream);
-            if let Some(result) = self
-                .kws
-                .get_result(&self.stream)
-                .filter(|r| !r.keyword.is_empty())
-            {
-                // H is unvoiced and often aligned before its acoustic onset.
-                // Check speech across the explicit Hey prefix, not only at H.
-                let first = result
-                    .timestamps
-                    .first()
-                    .map(|t| f64::from(result.start_time + t));
-                let prefix_end = result
-                    .timestamps
-                    .get(usize::from(self.require_hey))
-                    .map(|t| f64::from(result.start_time + t));
-                let supported = first.zip(prefix_end).is_some_and(|(first, end)| {
-                    self.voiced.iter().any(|(start, stop, voice)| {
-                        *voice && *start <= end + 0.10 && *stop >= first - 0.04
-                    })
-                });
-
-                self.kws.reset(&self.stream);
-                // An inserted H can stretch across the name's opening vowel.
-                // Require the short H-to-EY transition for the explicit Hey prefix.
-                let prefix = (!self.require_hey
-                    || result
-                        .timestamps
-                        .get(1)
-                        .zip(result.timestamps.first())
-                        .is_some_and(|(ey, h)| *ey > *h && ey - h <= 0.16))
-                    && merged_vowel_is_held(&result.timestamps, self.merged);
-                #[cfg(test)]
-                eprintln!(
-                    "wake candidate: supported={supported} prefix={prefix} timestamps={:?}",
-                    result.timestamps
-                );
-                self.candidates = self.candidates.saturating_add(1);
-                if !supported {
-                    self.rejected_energy = self.rejected_energy.saturating_add(1);
-                }
-                if !prefix {
-                    self.rejected_prefix = self.rejected_prefix.saturating_add(1);
-                }
-                if supported && prefix {
-                    if matches!(self.fallback.backend(), "generic" | "accelerated") {
-                        self.fallback.error = None;
-                    }
-                    return true;
-                }
-            }
-        }
-        false
+        hit
     }
 
     fn reset(&mut self) {
         self.fallback.reset();
-        self.reset_keyword();
+        self.spotter.reset();
     }
-    fn reset_keyword(&mut self) {
-        self.stream = self.kws.create_stream();
-        self.elapsed = 0.;
-        self.quiet_seconds = 0.;
-        self.voiced.clear();
-    }
-}
-
-/// The coarticulated "Hey Ava" variant drops the second EY, which leaves it one
-/// vowel away from everyday speech such as "have a" or "heavy". A spoken
-/// "Hey Ava" holds that shared vowel; "have a" moves on almost at once. In 176
-/// synthetic clips the merged vowel lasted 0.24-0.28 s in true wakes and
-/// 0.04-0.08 s in every false accept, so require 0.16 s, midway between them.
-/// Timestamps arrive in 0.04 s steps; the tolerance keeps 0.16 itself held.
-const MIN_MERGED_VOWEL_SECONDS: f32 = 0.16 - 0.005;
-fn merged_vowel_is_held(timestamps: &[f32], merged: Option<usize>) -> bool {
-    if merged != Some(timestamps.len()) {
-        return true;
-    }
-    timestamps
-        .get(2)
-        .zip(timestamps.get(1))
-        .is_some_and(|(next, vowel)| next - vowel >= MIN_MERGED_VOWEL_SECONDS)
 }
 
 // Two seconds of bounded headroom tolerate batched remote-audio callbacks.
@@ -737,38 +529,6 @@ where
     Ok(())
 }
 
-/// Sample-time endpointing keeps working independently of webview animation frames.
-/// Estimate a quiet floor from a bounded two-second window of 20 ms packets.
-/// Keep the old upper threshold in loud environments, but support quiet inputs.
-struct VoiceGate {
-    levels: [f32; 100],
-    count: usize,
-    cursor: usize,
-}
-impl Default for VoiceGate {
-    fn default() -> Self {
-        Self {
-            levels: [0.; 100],
-            count: 0,
-            cursor: 0,
-        }
-    }
-}
-impl VoiceGate {
-    fn observe(&mut self, rms: f32) -> bool {
-        let rms = if rms.is_finite() { rms.max(0.) } else { 0. };
-        self.levels[self.cursor] = rms;
-        self.cursor = (self.cursor + 1) % 100;
-        self.count = (self.count + 1).min(100);
-        let floor = self.levels[..self.count]
-            .iter()
-            .copied()
-            .fold(f32::INFINITY, f32::min);
-        let threshold = (floor * 4.).clamp(0.00015, 0.015);
-        rms >= threshold
-    }
-}
-
 #[derive(Default)]
 struct Capture {
     samples: Vec<f32>,
@@ -831,13 +591,6 @@ impl Capture {
             writer.finalize().map_err(|e| e.to_string())?;
         }
         Ok(cursor.into_inner())
-    }
-}
-fn energy(samples: &[f32]) -> f32 {
-    if samples.is_empty() {
-        0.
-    } else {
-        (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
     }
 }
 #[derive(Default)]
@@ -1313,9 +1066,9 @@ impl Worker {
         i.status.audio_frames = i.status.audio_frames.saturating_add(1);
         i.status.peak_rms = i.status.peak_rms.max(rms);
         if let Some(detector) = &self.detector {
-            i.status.candidates = detector.candidates;
-            i.status.rejected_energy = detector.rejected_energy;
-            i.status.rejected_prefix = detector.rejected_prefix;
+            i.status.candidates = detector.spotter.candidates;
+            i.status.rejected_energy = detector.spotter.rejected_energy;
+            i.status.rejected_prefix = detector.spotter.rejected_prefix;
             i.status.fallback_decoder = detector.fallback.backend().into();
             i.status.fallback_failures = detector.fallback.failures;
             i.status.fallback_warning = detector.fallback.error.clone();
@@ -1673,9 +1426,9 @@ mod tests {
             eprintln!(
                 "fixture rejected: rate={rate} elapsed_ms={} candidates={} rejected_energy={} rejected_prefix={} fallback_busy={} initial_backend={initial_backend} final_backend={} fallback_error={:?}",
                 fixture_started.elapsed().as_millis(),
-                detector.candidates,
-                detector.rejected_energy,
-                detector.rejected_prefix,
+                detector.spotter.candidates,
+                detector.spotter.rejected_energy,
+                detector.spotter.rejected_prefix,
                 detector.fallback.is_busy(),
                 detector.fallback.backend(),
                 detector.fallback.error
@@ -1805,6 +1558,116 @@ mod tests {
         );
     }
 
+    /// Acoustic diagnostic for the mobile wake gate (W1) on a Mac: plays each
+    /// synthetic clip in NOTDOT_WAKE_ACOUSTIC_DIR through the default output
+    /// (`afplay`, one at a time) while the production native microphone path
+    /// feeds two detectors: the full desktop detector and the spotter alone.
+    /// Clips named `pos*` should wake. Audio is processed in memory only.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "plays audio and opens the microphone; set NOTDOT_WAKE_ACOUSTIC_DIR"]
+    fn macos_speaker_to_microphone_synthetic_clip_diagnostic() {
+        let Ok(dir) = std::env::var("NOTDOT_WAKE_ACOUSTIC_DIR") else {
+            return;
+        };
+        let _models = model_fixture_guard();
+        let mut clips: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "wav"))
+            .collect();
+        clips.sort();
+        let mut full = Detector::new(&models(), "Hey Ava").unwrap();
+        let fallback_dir = tempfile::tempdir().unwrap();
+        let mut spotter = Detector::new(&models(), "Hey Ava").unwrap();
+        spotter.fallback =
+            fallback::Fallback::new(&fallback_dir.path().join("missing.bin"), "Hey Ava").unwrap();
+        let microphone = Microphone::open().unwrap();
+        let rate = microphone.rate;
+        let (window_send, window_receive) = mpsc::channel();
+        let started = Instant::now();
+        let player = std::thread::spawn({
+            let clips = clips.clone();
+            move || {
+                std::thread::sleep(Duration::from_millis(1500));
+                for clip in clips {
+                    let start = started.elapsed();
+                    assert!(
+                        std::process::Command::new("/usr/bin/afplay")
+                            .arg(&clip)
+                            .status()
+                            .unwrap()
+                            .success()
+                    );
+                    window_send.send((clip, start, started.elapsed())).unwrap();
+                    // Long enough for the fallback's end-of-speech decode.
+                    std::thread::sleep(Duration::from_millis(3500));
+                }
+            }
+        });
+        let (mut full_hits, mut spotter_hits) = (Vec::new(), Vec::new());
+        let mut peak = 0f32;
+        while !player.is_finished() {
+            if let Ok(samples) = microphone.receiver.recv_timeout(Duration::from_millis(50)) {
+                peak = peak.max(energy(&samples));
+                let at = started.elapsed();
+                if full.accept(rate, &samples) {
+                    full_hits.push(at);
+                    full.reset();
+                }
+                if spotter.accept(rate, &samples) {
+                    spotter_hits.push(at);
+                    spotter.reset();
+                }
+            }
+        }
+        player.join().unwrap();
+        assert_eq!(
+            microphone.failed.load(Ordering::Relaxed),
+            0,
+            "microphone failed"
+        );
+        let windows: Vec<_> = window_receive.try_iter().collect();
+        let hit = |hits: &[Duration], start: Duration, end: Duration| {
+            hits.iter()
+                .any(|at| *at >= start && *at <= end + Duration::from_millis(3000))
+        };
+        let (mut full_ok, mut spotter_ok) = (0, 0);
+        for (clip, start, end) in &windows {
+            let expect = clip
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("pos");
+            let (f, s) = (
+                hit(&full_hits, *start, *end),
+                hit(&spotter_hits, *start, *end),
+            );
+            full_ok += usize::from(f == expect);
+            spotter_ok += usize::from(s == expect);
+            eprintln!(
+                "acoustic clip {}: expected={expect} full={f} spotter_only={s}",
+                clip.file_name().unwrap().to_string_lossy()
+            );
+        }
+        let stray = |hits: &[Duration]| {
+            hits.iter()
+                .filter(|at| {
+                    !windows.iter().any(|(_, start, end)| {
+                        **at >= *start && **at <= *end + Duration::from_millis(3000)
+                    })
+                })
+                .count()
+        };
+        eprintln!(
+            "acoustic synthetic clips: {} played at {rate} Hz, peak frame rms {peak:.4}; full detector correct {full_ok} (stray {}); spotter only correct {spotter_ok} (stray {}); fallback backend {}",
+            windows.len(),
+            stray(&full_hits),
+            stray(&spotter_hits),
+            full.fallback.backend()
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     #[ignore = "explicit local microphone lease; aggregate diagnostics only, no audio retention or providers"]
@@ -1861,9 +1724,9 @@ mod tests {
                     (sum_squares / total_samples.max(1) as f64).sqrt(),
                     peak_rms,
                     max_gap_ms,
-                    detector.candidates,
-                    detector.rejected_energy,
-                    detector.rejected_prefix,
+                    detector.spotter.candidates,
+                    detector.spotter.rejected_energy,
+                    detector.spotter.rejected_prefix,
                     detector.fallback.is_busy(),
                     detector.fallback.backend(),
                     detector.fallback.error.is_some(),
@@ -1884,9 +1747,9 @@ mod tests {
             utc_ms(),
             frames,
             matches,
-            detector.candidates,
-            detector.rejected_energy,
-            detector.rejected_prefix,
+            detector.spotter.candidates,
+            detector.spotter.rejected_energy,
+            detector.spotter.rejected_prefix,
             detector.fallback.is_busy(),
             detector.fallback.error.is_some()
         );
@@ -1929,7 +1792,7 @@ mod tests {
             let _ = detector.accept(16000, frame);
         }
         assert!(
-            detector.elapsed > 0.,
+            detector.spotter.elapsed() > 0.,
             "primary inference must continue after unavailable backup setup"
         );
         assert!(
@@ -1973,25 +1836,6 @@ mod tests {
             "wake recognition must still activate after a backup failure"
         );
         assert!(worker.detector.as_ref().unwrap().fallback.error.is_none());
-    }
-    #[test]
-    fn merged_hey_ava_vowel_must_be_held_unlike_have_a() {
-        // Timestamps of HH EY V AH from the merged keyword variant (seconds).
-        let have_a = [0.16, 0.20, 0.24, 0.32];
-        let heavy = [0.16, 0.24, 0.32, 0.36];
-        let hey_ava = [0.20, 0.24, 0.52, 0.60];
-        let boundary = [0.20, 0.24, 0.40, 0.48];
-        assert!(merged_vowel_is_held(&boundary, Some(4)));
-        assert!(!merged_vowel_is_held(&[0.20, 0.24, 0.36, 0.44], Some(4)));
-        assert!(!merged_vowel_is_held(&have_a, Some(4)));
-        assert!(!merged_vowel_is_held(&heavy, Some(4)));
-        assert!(merged_vowel_is_held(&hey_ava, Some(4)));
-        // The full keyword and phrases without a merged variant are unaffected.
-        assert!(merged_vowel_is_held(
-            &[0.0, 0.04, 0.08, 0.12, 0.16],
-            Some(4)
-        ));
-        assert!(merged_vowel_is_held(&have_a, None));
     }
     #[test]
     fn quiet_wake_phrases_and_confusable_speech() {
@@ -2126,9 +1970,58 @@ mod tests {
             let kws_only = detects_unchecked(&mut kws, &samples);
             eprintln!(
                 "{label}: full={both} kws_only={kws_only} kws_candidates={} rejected_energy={} rejected_prefix={}",
-                kws.candidates, kws.rejected_energy, kws.rejected_prefix
+                kws.spotter.candidates, kws.spotter.rejected_energy, kws.spotter.rejected_prefix
             );
         }
+    }
+    /// Diagnostic for the mobile wake gate (W1): the full desktop detector
+    /// (spotter + Whisper fallback) versus the spotter alone on a folder of
+    /// 16 kHz 16-bit WAV clips; names starting `pos` should wake. Clips are
+    /// generated locally (e.g. macOS `say`); nothing is played or recorded.
+    #[test]
+    #[ignore = "set NOTDOT_WAKE_CLIP_DIR to a folder of synthetic clips"]
+    fn synthetic_clip_folder_full_versus_spotter_diagnostic() {
+        let Ok(dir) = std::env::var("NOTDOT_WAKE_CLIP_DIR") else {
+            return;
+        };
+        let _models = model_fixture_guard();
+        let mut clips: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "wav"))
+            .collect();
+        clips.sort();
+        let (mut full_ok, mut spotter_ok) = (0, 0);
+        for clip in &clips {
+            let mut reader = hound::WavReader::open(clip).unwrap();
+            assert_eq!(reader.spec().sample_rate, 16000);
+            let samples: Vec<f32> = reader
+                .samples::<i16>()
+                .map(|v| v.unwrap() as f32 / 32768.)
+                .collect();
+            let expect = clip
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("pos");
+            let mut full = Detector::new(&models(), "Hey Ava").unwrap();
+            let both = detects(&mut full, &samples);
+            let dir = tempfile::tempdir().unwrap();
+            let mut kws = Detector::new(&models(), "Hey Ava").unwrap();
+            kws.fallback =
+                fallback::Fallback::new(&dir.path().join("missing.bin"), "Hey Ava").unwrap();
+            let spotter = detects_unchecked(&mut kws, &samples);
+            full_ok += usize::from(both == expect);
+            spotter_ok += usize::from(spotter == expect);
+            eprintln!(
+                "clip {}: expected={expect} full={both} spotter_only={spotter}",
+                clip.file_name().unwrap().to_string_lossy()
+            );
+        }
+        eprintln!(
+            "synthetic clips: {} total; full detector correct {full_ok}; spotter only correct {spotter_ok}",
+            clips.len()
+        );
     }
     /// Like `detects`, without requiring a working fallback decoder.
     fn detects_unchecked(detector: &mut Detector, samples: &[f32]) -> bool {
@@ -2179,7 +2072,7 @@ mod tests {
             // Sherpa resets decoder offsets after 1.5 s of blanks. Our acoustic
             // support timeline must restart with a fresh feature stream earlier.
             assert!(
-                detector.elapsed < 1.5,
+                detector.spotter.elapsed() < 1.5,
                 "primary and acoustic clocks can diverge after quiet idle"
             );
         }
@@ -2693,13 +2586,5 @@ mod tests {
         wake.inner.lock().unwrap().pending.as_mut().unwrap().2 =
             Instant::now() - Duration::from_secs(11);
         assert!(wake.take(42).is_err());
-    }
-    #[test]
-    fn phrase_validation_prevents_keyword_directive_injection() {
-        assert_eq!(phrase(" Ava ", false).unwrap(), "Hey Ava");
-        assert_eq!(phrase("Mary-Jane", true).unwrap(), "Mary Jane");
-        for name in ["", "Ava #0.01", "Ava @other", "Ava\0", "艾娃"] {
-            assert!(phrase(name, false).is_err());
-        }
     }
 }

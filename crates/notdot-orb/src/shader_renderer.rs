@@ -1,4 +1,5 @@
 //! GPU fluid light over an opaque ink core. Canvas remains the fallback.
+use crate::contract;
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use web_sys::{HtmlCanvasElement, WebGlProgram, WebGlRenderingContext as Gl, WebGlShader};
 
@@ -48,12 +49,8 @@ impl Shader {
         Ok(shader)
     }
     fn setup(gl: Gl) -> Result<Self, JsValue> {
-        let vertex = Self::compile(
-            &gl,
-            Gl::VERTEX_SHADER,
-            "attribute vec2 position;void main(){gl_Position=vec4(position,0.,1.);}",
-        )?;
-        let fragment = match Self::compile(&gl, Gl::FRAGMENT_SHADER, include_str!("orb.frag")) {
+        let vertex = Self::compile(&gl, Gl::VERTEX_SHADER, contract::VERTEX_SHADER)?;
+        let fragment = match Self::compile(&gl, Gl::FRAGMENT_SHADER, contract::FRAGMENT_SHADER) {
             Ok(fragment) => fragment,
             Err(error) => {
                 gl.delete_shader(Some(&vertex));
@@ -85,9 +82,7 @@ impl Shader {
             return Err(JsValue::from_str("Buffer allocation failed"));
         };
         gl.bind_buffer(Gl::ARRAY_BUFFER, Some(&buffer));
-        let vertices = js_sys::Float32Array::from(
-            &[-1_f32, -1., 1., -1., -1., 1., -1., 1., 1., -1., 1., 1.][..],
-        );
+        let vertices = js_sys::Float32Array::from(&contract::QUAD[..]);
         gl.buffer_data_with_array_buffer_view(Gl::ARRAY_BUFFER, &vertices, Gl::STATIC_DRAW);
         let position = gl.get_attrib_location(&program, "position");
         if position < 0 {
@@ -97,20 +92,7 @@ impl Shader {
         }
         gl.enable_vertex_attrib_array(position as u32);
         gl.vertex_attrib_pointer_with_i32(position as u32, 2, Gl::FLOAT, false, 0, 0);
-        let uniforms = [
-            "resolution",
-            "tint",
-            "phase",
-            "energy",
-            "listening",
-            "thinking",
-            "speaking",
-            "still",
-            "task_kind",
-            "task_time",
-            "task_strength",
-        ]
-        .map(|name| gl.get_uniform_location(&program, name));
+        let uniforms = contract::UNIFORMS.map(|name| gl.get_uniform_location(&program, name));
         Ok(Self {
             gl,
             program,
@@ -120,11 +102,7 @@ impl Shader {
             uniforms,
         })
     }
-    pub fn draw(
-        &mut self,
-        canvas: &HtmlCanvasElement,
-        frame: &super::orb_renderer::Frame<'_>,
-    ) -> bool {
+    pub fn draw(&mut self, canvas: &HtmlCanvasElement, uniforms: &contract::Uniforms) -> bool {
         if self.failed {
             return false;
         }
@@ -144,31 +122,11 @@ impl Shader {
         let gl = &self.gl;
         gl.viewport(0, 0, canvas.width() as i32, canvas.height() as i32);
         gl.use_program(Some(&self.program));
-        gl.uniform2f(
-            self.uniforms[0].as_ref(),
-            canvas.width() as f32,
-            canvas.height() as f32,
-        );
-        let tint = tint(frame.hue);
-        let error = frame.motion.error as f32;
-        let tint = [
-            tint[0] * (1. - error) + error,
-            tint[1] * (1. - error) + 0.3 * error,
-            tint[2] * (1. - error) + 0.3 * error,
-        ];
-        gl.uniform3f(self.uniforms[1].as_ref(), tint[0], tint[1], tint[2]);
-        for (index, value) in [
-            (2, frame.motion.phase),
-            (3, frame.energy),
-            (4, frame.motion.listening + frame.motion.followup),
-            (5, frame.motion.thinking),
-            (6, frame.motion.speaking),
-            (7, f64::from(frame.reduced)),
-            (8, frame.task.kind as u8 as f64),
-            (9, frame.task.elapsed),
-            (10, frame.task.strength),
-        ] {
-            gl.uniform1f(self.uniforms[index].as_ref(), value as f32);
+        let packed = uniforms.packed(canvas.width() as f32, canvas.height() as f32);
+        gl.uniform2f(self.uniforms[0].as_ref(), packed[0], packed[1]);
+        gl.uniform3f(self.uniforms[1].as_ref(), packed[2], packed[3], packed[4]);
+        for (location, value) in self.uniforms[2..].iter().zip(&packed[5..]) {
+            gl.uniform1f(location.as_ref(), *value);
         }
         gl.draw_arrays(Gl::TRIANGLES, 0, 6);
         true
@@ -181,31 +139,6 @@ impl Drop for Shader {
         if !self.lost {
             self.gl.delete_buffer(Some(&self.buffer));
             self.gl.delete_program(Some(&self.program));
-        }
-    }
-}
-fn tint(hue: f64) -> [f32; 3] {
-    let h = hue.rem_euclid(360.) / 60.;
-    let x = 1. - (h.rem_euclid(2.) - 1.).abs();
-    let rgb = match h as u32 {
-        0 => [1., x, 0.],
-        1 => [x, 1., 0.],
-        2 => [0., 1., x],
-        3 => [0., x, 1.],
-        4 => [x, 0., 1.],
-        _ => [1., 0., x],
-    };
-    rgb.map(|v| (0.42 + v * 0.58) as f32)
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn themes_wrap_and_stay_bounded() {
-        assert_eq!(tint(0.), tint(360.));
-        assert_eq!(tint(-120.), tint(240.));
-        for hue in 0..360 {
-            assert!(tint(f64::from(hue)).iter().all(|v| (0.42..=1.).contains(v)));
         }
     }
 }

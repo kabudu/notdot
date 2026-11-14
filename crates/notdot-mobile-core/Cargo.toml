@@ -1,0 +1,41 @@
+[package]
+publish = false
+name = "notdot-mobile-core"
+description = "Shared Rust core for the notdot iOS and Android apps (UniFFI)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[lib]
+crate-type = ["lib"]
+name = "notdot_mobile_core"
+[features]
+default = ["wake", "whisper"]
+# On-device keyword spotting (sherpa-onnx native libraries).
+wake = ["dep:notdot-wake-kws"]
+# The desktop's Whisper backup decoder (whisper.cpp, CPU only) on top of the
+# keyword spotter. Adds the 32 MB ggml-tiny.en-q5_1 model to the app bundle.
+whisper = ["wake", "dep:notdot-wake-runtime", "dep:whisper-rs"]
+# Generator for the Swift/Kotlin bindings (development only).
+bindgen = ["uniffi/cli"]
+[dependencies]
+uniffi = { version = "0.32", features = ["tokio"] }
+notdot-orb = { path = "../notdot-orb", default-features = false }
+notdot-link = { path = "../notdot-link" }
+sha2 = "0.10"
+serde_json.workspace = true
+notdot-wake-kws = { path = "../notdot-wake-kws", optional = true }
+notdot-wake-runtime = { path = "../notdot-wake-runtime", optional = true }
+whisper-rs = { version = "=0.16.0", default-features = false, optional = true }
+tokio = { workspace = true }
+thiserror = "2"
+[build-dependencies]
+notdot-orb-gen = { path = "../notdot-orb-gen" }
+[dev-dependencies]
+notdot-link = { path = "../notdot-link", features = ["test-attestation"] }
+notdot-orb-gen = { path = "../notdot-orb-gen" }
+hound = "3"
+p256 = { version = "0.13", features = ["ecdsa"] }
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]

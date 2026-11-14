@@ -1,7 +1,7 @@
 //! Settings review for spoken notes and the encrypted backup controls.
 //! Every action is checked natively against the active person; this view
 //! only shows what the native side returns.
-use crate::{call, document, element, input, js_error, on};
+use super::{call, document, element, input, js_error, on};
 use serde_json::{Value, json};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
@@ -82,7 +82,7 @@ fn focus(node: &web_sys::Element) {
 }
 
 pub async fn review() -> Result<(), String> {
-    crate::settings_navigation::reveal("voice-notes-section");
+    super::settings_navigation::reveal("voice-notes-section");
     let started = generation();
     let value = call("notes_list", json!({})).await?;
     if !current(started) {

@@ -1,5 +1,5 @@
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum Mode {
+pub enum Mode {
     #[default]
     Idle,
     Listening,
@@ -9,15 +9,44 @@ pub(crate) enum Mode {
     Error,
 }
 /// Background task cues yield to every foreground conversation state.
-pub(crate) fn task_cue(mode: Mode, cue: &str) -> &str {
-    if mode == Mode::Idle && matches!(cue, "working" | "attention" | "review" | "finished") {
-        cue
-    } else {
+pub fn task_cue(mode: Mode, cue: &str) -> &str {
+    if visible_task(mode, TaskKind::from_cue(cue)) == TaskKind::None {
         "none"
+    } else {
+        cue
+    }
+}
+/// The task light shown for `mode`: only an idle orb carries a task cue.
+pub fn visible_task(mode: Mode, kind: TaskKind) -> TaskKind {
+    if mode == Mode::Idle {
+        kind
+    } else {
+        TaskKind::None
+    }
+}
+/// Target speech energy for a mode. `level` is a metered RMS (0-1); `None`
+/// means the platform cannot meter this audio, so a calm fixed level is used.
+pub fn speech_target(mode: Mode, level: Option<f64>) -> f64 {
+    if !matches!(mode, Mode::Speaking | Mode::Listening | Mode::Followup) {
+        return 0.;
+    }
+    match level {
+        Some(rms) if rms.is_finite() => (rms.max(0.) * 4.5).min(1.),
+        Some(_) => 0.,
+        None => 0.25,
     }
 }
 impl Mode {
-    pub(crate) fn resolve(status: &str, playing: bool, waiting: bool) -> Self {
+    /// Every mode, in contract order.
+    pub const ALL: [Self; 6] = [
+        Self::Idle,
+        Self::Listening,
+        Self::Followup,
+        Self::Thinking,
+        Self::Speaking,
+        Self::Error,
+    ];
+    pub fn resolve(status: &str, playing: bool, waiting: bool) -> Self {
         if playing {
             return Self::Speaking;
         }
@@ -34,7 +63,7 @@ impl Mode {
             _ => Self::Idle,
         }
     }
-    pub(crate) fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::Idle => "idle",
             Self::Listening => "listening",
@@ -47,10 +76,10 @@ impl Mode {
 }
 /// Whether a native wake capture should still show as listening. After the UI
 /// ends a capture, status can report that same capture for one more poll.
-pub(crate) fn native_capture_live(phase: &str, token: Option<&str>, ended: Option<&str>) -> bool {
+pub fn native_capture_live(phase: &str, token: Option<&str>, ended: Option<&str>) -> bool {
     phase == "capturing" && ended.is_none_or(|ended| token != Some(ended))
 }
-pub(crate) fn rms(bytes: &[u8]) -> f64 {
+pub fn rms(bytes: &[u8]) -> f64 {
     if bytes.is_empty() {
         return 0.;
     }
@@ -118,6 +147,29 @@ mod tests {
         assert!(!native_capture_live("ready", Some("b"), None));
     }
     #[test]
+    fn task_names_round_trip_and_only_idle_shows_a_task() {
+        for kind in TaskKind::ALL {
+            assert_eq!(TaskKind::from_cue(kind.name()), kind);
+            assert_eq!(visible_task(Mode::Idle, kind), kind);
+            for mode in &Mode::ALL[1..] {
+                assert_eq!(visible_task(*mode, kind), TaskKind::None);
+            }
+        }
+        for (index, kind) in TaskKind::ALL.iter().enumerate() {
+            assert_eq!(*kind as usize, index);
+        }
+    }
+    #[test]
+    fn speech_target_meters_voiced_modes_only_and_rejects_bad_levels() {
+        assert_eq!(speech_target(Mode::Idle, Some(1.)), 0.);
+        assert_eq!(speech_target(Mode::Thinking, None), 0.);
+        assert_eq!(speech_target(Mode::Speaking, None), 0.25);
+        assert_eq!(speech_target(Mode::Listening, Some(0.1)), 0.45);
+        assert_eq!(speech_target(Mode::Followup, Some(9.)), 1.);
+        assert_eq!(speech_target(Mode::Speaking, Some(-1.)), 0.);
+        assert_eq!(speech_target(Mode::Speaking, Some(f64::NAN)), 0.);
+    }
+    #[test]
     fn audio_meter_distinguishes_silence_from_known_waveform() {
         assert_eq!(rms(&[128; 256]), 0.);
         assert_eq!(rms(&[96, 160, 96, 160]), 0.25);
@@ -126,7 +178,7 @@ mod tests {
 }
 
 /// Follow speech energy with a soft attack and a longer release, in seconds.
-pub(crate) fn smooth_speech(current: f64, target: f64, seconds: f64) -> f64 {
+pub fn smooth_speech(current: f64, target: f64, seconds: f64) -> f64 {
     let current = if current.is_finite() {
         current.clamp(0., 1.)
     } else {
@@ -137,8 +189,13 @@ pub(crate) fn smooth_speech(current: f64, target: f64, seconds: f64) -> f64 {
     } else {
         0.
     };
+    let seconds = if seconds.is_finite() {
+        seconds.clamp(0., 0.1)
+    } else {
+        0.
+    };
     let tau = if target > current { 0.10 } else { 0.32 };
-    current + (target - current) * (1. - (-seconds.clamp(0., 0.1) / tau).exp())
+    current + (target - current) * (1. - (-seconds / tau).exp())
 }
 #[cfg(test)]
 mod speech_tests {
@@ -155,13 +212,16 @@ mod speech_tests {
             assert!((0. ..=1.).contains(&value));
         }
         assert!((value - 1.).abs() < 1e-9);
+        // A bad frame interval holds the envelope rather than poisoning it.
+        assert_eq!(smooth_speech(0.5, 1., f64::NAN), 0.5);
+        assert_eq!(smooth_speech(0.5, 1., f64::INFINITY), 0.5);
     }
 }
 
 /// Smooth transitions share one bounded clock, so returning from a hidden
 /// window never jumps a surface ribbon or changes the orb's size abruptly.
 #[derive(Default)]
-pub(crate) struct OrbMotion {
+pub struct OrbMotion {
     pub phase: f64,
     pub listening: f64,
     pub followup: f64,
@@ -218,7 +278,7 @@ mod motion_tests {
 /// Keep a rendering deadline rather than sleeping a full interval after each
 /// delivered frame. The latter halves cadence on 30-32 Hz remote displays.
 #[derive(Default)]
-pub(crate) struct FrameClock {
+pub struct FrameClock {
     deadline: Option<f64>,
     previous: Option<f64>,
     reduced: bool,
@@ -288,12 +348,12 @@ mod frame_clock_tests {
 /// A single acknowledgement inside the opaque core, independent of desktop
 /// contrast. Remaining in capture never retriggers the entry bloom.
 #[derive(Default)]
-pub(crate) struct ListeningCue {
+pub struct ListeningCue {
     active: bool,
     elapsed: f64,
 }
 impl ListeningCue {
-    pub(crate) fn advance(&mut self, mode: Mode, seconds: f64, reduced: bool) -> f64 {
+    pub fn advance(&mut self, mode: Mode, seconds: f64, reduced: bool) -> f64 {
         let active = matches!(mode, Mode::Listening | Mode::Followup);
         if !active {
             self.active = false;
@@ -301,7 +361,11 @@ impl ListeningCue {
             return 0.;
         }
         if self.active {
-            self.elapsed += seconds.clamp(0., 0.1);
+            self.elapsed += if seconds.is_finite() {
+                seconds.clamp(0., 0.1)
+            } else {
+                0.
+            };
         } else {
             self.active = true;
             self.elapsed = 0.;
@@ -327,6 +391,8 @@ mod listening_cue_tests {
         assert!((0.15..0.21).contains(&settled));
         assert_eq!(cue.advance(Mode::Speaking, 0.033, false), 0.);
         assert!(cue.advance(Mode::Followup, 0.033, false) > 0.65);
+        assert!(cue.advance(Mode::Followup, f64::NAN, false).is_finite());
+        assert!(cue.advance(Mode::Followup, 0.033, false).is_finite());
     }
     #[test]
     fn reduced_motion_is_steady_and_ends_with_listening() {
@@ -340,7 +406,7 @@ mod listening_cue_tests {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u8)]
-pub(crate) enum TaskKind {
+pub enum TaskKind {
     #[default]
     None = 0,
     Working = 1,
@@ -349,6 +415,19 @@ pub(crate) enum TaskKind {
     Review = 4,
 }
 impl TaskKind {
+    /// Every task cue, in shader `task_kind` order.
+    pub const ALL: [Self; 5] = [
+        Self::None,
+        Self::Working,
+        Self::Attention,
+        Self::Finished,
+        Self::Review,
+    ];
+    /// The cue string `from_cue` accepts, indexed by discriminant.
+    pub fn name(self) -> &'static str {
+        const NAMES: [&str; 5] = ["none", "working", "attention", "finished", "review"];
+        NAMES[self as usize]
+    }
     pub fn from_cue(cue: &str) -> Self {
         match cue {
             "working" => Self::Working,
@@ -360,14 +439,16 @@ impl TaskKind {
     }
 }
 #[derive(Default)]
-pub(crate) struct TaskMotion {
+pub struct TaskMotion {
     pub kind: TaskKind,
     pub elapsed: f64,
     pub strength: f64,
 }
 impl TaskMotion {
     pub fn advance(&mut self, cue: &str, seconds: f64, reduced: bool) {
-        let kind = TaskKind::from_cue(cue);
+        self.advance_kind(TaskKind::from_cue(cue), seconds, reduced);
+    }
+    pub fn advance_kind(&mut self, kind: TaskKind, seconds: f64, reduced: bool) {
         if kind != self.kind {
             self.kind = kind;
             self.elapsed = 0.;

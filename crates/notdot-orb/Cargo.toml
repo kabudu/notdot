@@ -7,14 +7,21 @@ license.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 [dependencies]
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-js-sys = "0.3"
-serde.workspace = true
-serde_json.workspace = true
-serde-wasm-bindgen = "0.6"
-web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "CanvasRenderingContext2d", "CanvasGradient", "WebGlRenderingContext", "WebGlProgram", "WebGlShader", "WebGlBuffer", "WebGlUniformLocation", "EventTarget", "MouseEvent", "KeyboardEvent", "HtmlInputElement", "HtmlTextAreaElement", "HtmlDialogElement", "HtmlButtonElement", "HtmlSelectElement", "Performance", "MediaQueryList", "MediaDevices", "Navigator", "MediaStream", "MediaStreamConstraints", "MediaStreamTrack", "MediaRecorder", "MediaRecorderOptions", "RecordingState", "BlobEvent", "Blob", "BlobPropertyBag", "Url", "HtmlAudioElement", "HtmlMediaElement", "MediaError", "AudioContext", "AudioContextState", "AudioNode", "AudioDestinationNode", "AnalyserNode", "MediaElementAudioSourceNode", "MediaStreamAudioSourceNode", "GainNode", "AudioParam", "OscillatorNode", "OscillatorType", "AudioScheduledSourceNode", "Node", "NodeList", "Event", "console"] }
+# Desktop web UI only, behind the default `web` feature.
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3", optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+serde-wasm-bindgen = { version = "0.6", optional = true }
+web-sys = { optional = true, version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "CanvasRenderingContext2d", "CanvasGradient", "WebGlRenderingContext", "WebGlProgram", "WebGlShader", "WebGlBuffer", "WebGlUniformLocation", "EventTarget", "MouseEvent", "KeyboardEvent", "HtmlInputElement", "HtmlTextAreaElement", "HtmlDialogElement", "HtmlButtonElement", "HtmlSelectElement", "Performance", "MediaQueryList", "MediaDevices", "Navigator", "MediaStream", "MediaStreamConstraints", "MediaStreamTrack", "MediaRecorder", "MediaRecorderOptions", "RecordingState", "BlobEvent", "Blob", "BlobPropertyBag", "Url", "HtmlAudioElement", "HtmlMediaElement", "MediaError", "AudioContext", "AudioContextState", "AudioNode", "AudioDestinationNode", "AnalyserNode", "MediaElementAudioSourceNode", "MediaStreamAudioSourceNode", "GainNode", "AudioParam", "OscillatorNode", "OscillatorType", "AudioScheduledSourceNode", "Node", "NodeList", "Event", "console"] }
 
 [features]
-default = []
-debug-ui = []
+# `web` is the desktop Tauri UI (WASM). Mobile builds use
+# `default-features = false` and get only the platform-neutral orb contract.
+default = ["web"]
+web = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:serde", "dep:serde_json", "dep:serde-wasm-bindgen", "dep:web-sys"]
+debug-ui = ["web"]
+[dev-dependencies]
+serde_json.workspace = true
+sha2 = "0.10"

@@ -41,8 +41,10 @@ fn report(app: &tauri::AppHandle) {
     }
 }
 fn main() {
+    eprintln!("input host: entry");
     let mut context = tauri::generate_context!();
     context.config_mut().identifier = "local.notdot.input-acceptance".into();
+    eprintln!("input host: context ready");
     let address =
         std::env::var("NOTDOT_INPUT_TEST_URL").unwrap_or_else(|_| "http://localhost:8107".into());
     let url: tauri::Url = address.parse().expect("local fixture URL");
@@ -61,6 +63,7 @@ fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![record_orb_input_mode,record_visual_report])
         .setup(move |app| {
+            eprintln!("input host: setting up windows");
             app.add_capability(serde_json::json!({
                 "identifier":"local-input-acceptance",
                 "windows":["main","orb-input"],

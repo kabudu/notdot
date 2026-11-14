@@ -1,0 +1,732 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 60;
+	objects = {
+		00411A92D374C52B3489F430 = {
+			isa = PBXBuildFile;
+			fileRef = A0409E8EFFFDD9F75A3B85DF;
+		};
+		0219F477F9B32FB07F19941B = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Notdot/AppModel.swift;
+			sourceTree = "<group>";
+		};
+		090863D2EA454472E99FDDDA = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = "2147483647";
+			files = (
+				"4B06BD5F292D89B61458AFF7",
+			);
+			runOnlyForDeploymentPostprocessing = "0";
+			dstPath = "";
+			dstSubfolderSpec = "13";
+			name = "Embed Foundation Extensions";
+		};
+		0EDC5FAF4AC6AEDF6E68FAD6 = {
+			isa = PBXBuildFile;
+			fileRef = "7EFA18806B75A734F8771AF6";
+		};
+		11AC5AD63742B388AA84E3F9 = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = "2147483647";
+			files = (
+				"8F820C747891B5908AA160C9",
+				"37FF23F01A3374DE415DDC64",
+			);
+			runOnlyForDeploymentPostprocessing = "0";
+		};
+		1A460A6A76B11C4B211CAF1C = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = "2147483647";
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Embed wake library and models";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = "0";
+			shellPath = /bin/sh;
+			shellScript = "\"$SRCROOT/scripts/embed-native.sh\"
+";
+			alwaysOutOfDate = "1";
+		};
+		1C86A7F0B60182EBBDFC43DB = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Notdot/SensitiveActionsView.swift;
+			sourceTree = "<group>";
+		};
+		1E4AFA8650E48298CE9F04EF = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = NotdotWidgets/NotdotWidgets.swift;
+			sourceTree = "<group>";
+		};
+		230C7BACC486753105570DD8 = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D5730BA0339AEF99727B4401;
+			buildPhases = (
+				"2DE7AE0E686380CFD9FA5570",
+				D4F2A19016A9B20E1059600E,
+				FE9802C233AB193FEC417DF7,
+				"70317B8AF73E0F9D3E89EEC8",
+				"090863D2EA454472E99FDDDA",
+				"1A460A6A76B11C4B211CAF1C",
+			);
+			buildRules = (
+			);
+			dependencies = (
+				"85DCEF43ED63F277244C885E",
+			);
+			name = Notdot;
+			productName = Notdot;
+			productReference = "553C93E01A3AD6EE5B8E5AD0";
+			productType = "com.apple.product-type.application";
+		};
+		2657E0FBBE7EDE5AF9CC4AFA = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = "2147483647";
+			files = (
+				D6754F587A27222A0110CD35,
+				"3E863B157EFA6A044B54CD04",
+			);
+			runOnlyForDeploymentPostprocessing = "0";
+		};
+		2DE7AE0E686380CFD9FA5570 = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = "2147483647";
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Build Rust core";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = "0";
+			shellPath = /bin/sh;
+			shellScript = "\"$SRCROOT/scripts/build-core.sh\" \"$PLATFORM_NAME\" \"$CONFIGURATION\"
+";
+			alwaysOutOfDate = "1";
+		};
+		2F490D45043662B45427798D = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Notdot/StepUpKeyStore.swift;
+			sourceTree = "<group>";
+		};
+		31188BE9CE6998210C4976A4 = {
+			isa = PBXFileReference;
+			lastKnownFileType = folder;
+			name = "wake-fixtures";
+			path = "../../src-tauri/tests/fixtures";
+			sourceTree = "<group>";
+		};
+		3446C34BD12AE41001D720D9 = {
+			isa = PBXBuildFile;
+			fileRef = "3B040D781D2C520785CD636A";
+		};
+		3466831553EACE5502B0E711 = {
+			isa = PBXBuildFile;
+			fileRef = FC02B6EAD518CDB4CBBA27D2;
+		};
+		37014A893511D2C901CC0CD8 = {
+			isa = PBXBuildFile;
+			fileRef = "2F490D45043662B45427798D";
+		};
+		37FF23F01A3374DE415DDC64 = {
+			isa = PBXBuildFile;
+			fileRef = "3B040D781D2C520785CD636A";
+		};
+		3B040D781D2C520785CD636A = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = NotdotShared/SessionActivity.swift;
+			sourceTree = "<group>";
+		};
+		3E863B157EFA6A044B54CD04 = {
+			isa = PBXBuildFile;
+			fileRef = "31188BE9CE6998210C4976A4";
+		};
+		43327175E3C0E96DAA29407D = {
+			isa = PBXGroup;
+			children = (
+				"553C93E01A3AD6EE5B8E5AD0",
+				"4F887486BC1950AD0DAC6810",
+				"481A9B6A85A544EB05DA1820",
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		481A9B6A85A544EB05DA1820 = {
+			isa = PBXFileReference;
+			explicitFileType = wrapper.cfbundle;
+			includeInIndex = "0";
+			path = NotdotTests.xctest;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+		4B06BD5F292D89B61458AFF7 = {
+			isa = PBXBuildFile;
+			fileRef = "4F887486BC1950AD0DAC6810";
+			settings = {
+				ATTRIBUTES = (
+					RemoveHeadersOnCopy,
+				);
+			};
+		};
+		4B6D035A9DD7144007843650 = {
+			isa = PBXBuildFile;
+			fileRef = "1C86A7F0B60182EBBDFC43DB";
+		};
+		4D5F697D8AE6E0FD5DE50542 = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E29D80E930911E1BF2B9D271,
+				"86888F8E4F51DFBD890A5C9E",
+			);
+			defaultConfigurationIsVisible = "0";
+			defaultConfigurationName = Release;
+		};
+		4F4074DAD65C6F9D3BA0482F = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Notdot/OrbView.swift;
+			sourceTree = "<group>";
+		};
+		4F887486BC1950AD0DAC6810 = {
+			isa = PBXFileReference;
+			explicitFileType = "wrapper.app-extension";
+			includeInIndex = "0";
+			path = NotdotWidgets.appex;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+		532F439FCA5BAB50AB5DB0FD = {
+			isa = PBXFileReference;
+			lastKnownFileType = folder;
+			name = "orb-golden";
+			path = "../../crates/notdot-orb/fixtures/orb-golden";
+			sourceTree = "<group>";
+		};
+		54306368E02B1CF7DE9836D5 = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = "2147483647";
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = "0";
+		};
+		546B6F27FD9B41EC83141BD8 = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				IPHONEOS_DEPLOYMENT_TARGET = "18.0";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = "5.0";
+				TARGETED_DEVICE_FAMILY = "1";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = "1";
+				MARKETING_VERSION = "0.1";
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/build/generated";
+				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/build/lib/$(PLATFORM_NAME)";
+				PRODUCT_NAME = NotdotTests;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.notdot.mobile.prototype.tests;
+				GENERATE_INFOPLIST_FILE = YES;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Notdot.app/Notdot";
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				DEBUG_INFORMATION_FORMAT = dwarf;
+			};
+			name = Debug;
+		};
+		553C93E01A3AD6EE5B8E5AD0 = {
+			isa = PBXFileReference;
+			explicitFileType = wrapper.application;
+			includeInIndex = "0";
+			path = Notdot.app;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+		55F2A54BC134610C23CA1760 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Notdot/IdentityStore.swift;
+			sourceTree = "<group>";
+		};
+		56030A522E2313D0590B0AB6 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Notdot/SensitiveActions.swift;
+			sourceTree = "<group>";
+		};
+		577B2E971B047CFEA9E155AD = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = "18.0";
+				SDKROOT = iphoneos;
+				ONLY_ACTIVE_ARCH = YES;
+				ENABLE_TESTABILITY = YES;
+			};
+			name = Debug;
+		};
+		5DF6E2C456B50FD7FAF349D1 = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				IPHONEOS_DEPLOYMENT_TARGET = "18.0";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = "5.0";
+				TARGETED_DEVICE_FAMILY = "1";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = "1";
+				MARKETING_VERSION = "0.1";
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/build/generated";
+				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/build/lib/$(PLATFORM_NAME)";
+				PRODUCT_NAME = Notdot;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.notdot.mobile.prototype;
+				INFOPLIST_FILE = Notdot/Info.plist;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = notdot;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				OTHER_LDFLAGS = "-lnotdot_mobile_core -framework SherpaOnnxC -framework SystemConfiguration -framework Security -framework Network -framework Accelerate -lc++";
+				FRAMEWORK_SEARCH_PATHS = "$(SRCROOT)/build/lib/$(PLATFORM_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = NOTDOT_WAKE;
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+			};
+			name = Release;
+		};
+		5FA8E011D222575765E48AFF = {
+			isa = PBXBuildFile;
+			fileRef = A72DD61519D69947DC99A873;
+		};
+		6023058347F28E299420B8DE = {
+			isa = PBXBuildFile;
+			fileRef = "55F2A54BC134610C23CA1760";
+		};
+		643AF0863947E1FBCB15FEDC = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				IPHONEOS_DEPLOYMENT_TARGET = "18.0";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = "5.0";
+				TARGETED_DEVICE_FAMILY = "1";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = "1";
+				MARKETING_VERSION = "0.1";
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/build/generated";
+				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/build/lib/$(PLATFORM_NAME)";
+				PRODUCT_NAME = Notdot;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.notdot.mobile.prototype;
+				INFOPLIST_FILE = Notdot/Info.plist;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = notdot;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				OTHER_LDFLAGS = "-lnotdot_mobile_core -framework SherpaOnnxC -framework SystemConfiguration -framework Security -framework Network -framework Accelerate -lc++";
+				FRAMEWORK_SEARCH_PATHS = "$(SRCROOT)/build/lib/$(PLATFORM_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "NOTDOT_WAKE DEBUG";
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				DEBUG_INFORMATION_FORMAT = dwarf;
+			};
+			name = Debug;
+		};
+		66ADC382DA4DC6DC7D4A96AB = {
+			isa = PBXGroup;
+			children = (
+				"9F14436C013D5496523FD7D8",
+				"0219F477F9B32FB07F19941B",
+				A72DD61519D69947DC99A873,
+				FC02B6EAD518CDB4CBBA27D2,
+				"55F2A54BC134610C23CA1760",
+				"8B66A17399C9987A162EAFBF",
+				E59E2004A91DBF7B2B4386CC,
+				A0409E8EFFFDD9F75A3B85DF,
+				D60735A49F41FC2FBB72E799,
+				"8FF85A8516627E740F74A2C8",
+				"4F4074DAD65C6F9D3BA0482F",
+				"56030A522E2313D0590B0AB6",
+				"1C86A7F0B60182EBBDFC43DB",
+				"2F490D45043662B45427798D",
+				"3B040D781D2C520785CD636A",
+				CCB33F6B06E79FCCE29E7A2E,
+				E3AD32E17A3970FDD1E8B9CE,
+				"1E4AFA8650E48298CE9F04EF",
+				"7EFA18806B75A734F8771AF6",
+				"532F439FCA5BAB50AB5DB0FD",
+				"31188BE9CE6998210C4976A4",
+				"43327175E3C0E96DAA29407D",
+			);
+			sourceTree = "<group>";
+		};
+		66CCCD48162ECEE2FBD80A58 = {
+			isa = PBXContainerItemProxy;
+			containerPortal = "98F54143AB4E86B28C3AFEE0";
+			proxyType = "1";
+			remoteGlobalIDString = AC2F0271DE2B91B1DE98CF6D;
+			remoteInfo = NotdotWidgets;
+		};
+		6E02751F28A095BE5126A4C2 = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = "18.0";
+				SDKROOT = iphoneos;
+			};
+			name = Release;
+		};
+		70317B8AF73E0F9D3E89EEC8 = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = "2147483647";
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = "0";
+		};
+		74394F862F0230E38A3CAF45 = {
+			isa = PBXBuildFile;
+			fileRef = CCB33F6B06E79FCCE29E7A2E;
+		};
+		7EFA18806B75A734F8771AF6 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = build/generated/notdot_mobile_core.swift;
+			sourceTree = "<group>";
+		};
+		85DCEF43ED63F277244C885E = {
+			isa = PBXTargetDependency;
+			target = AC2F0271DE2B91B1DE98CF6D;
+			targetProxy = "66CCCD48162ECEE2FBD80A58";
+		};
+		86888F8E4F51DFBD890A5C9E = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				IPHONEOS_DEPLOYMENT_TARGET = "18.0";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = "5.0";
+				TARGETED_DEVICE_FAMILY = "1";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = "1";
+				MARKETING_VERSION = "0.1";
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				PRODUCT_NAME = NotdotWidgets;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.notdot.mobile.prototype.widgets;
+				INFOPLIST_FILE = NotdotWidgets/Info.plist;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = notdot;
+				SKIP_INSTALL = YES;
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+			};
+			name = Release;
+		};
+		8B10D2B922BD7D4632CC2727 = {
+			isa = PBXBuildFile;
+			fileRef = "0219F477F9B32FB07F19941B";
+		};
+		8B66A17399C9987A162EAFBF = {
+			isa = PBXFileReference;
+			lastKnownFileType = text.plist.xml;
+			path = Notdot/Info.plist;
+			sourceTree = "<group>";
+		};
+		8F820C747891B5908AA160C9 = {
+			isa = PBXBuildFile;
+			fileRef = "1E4AFA8650E48298CE9F04EF";
+		};
+		8FF85A8516627E740F74A2C8 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Notdot/OrbRenderer.swift;
+			sourceTree = "<group>";
+		};
+		92056CDA3F3B90FECF8D0EE7 = {
+			isa = PBXBuildFile;
+			fileRef = "4F4074DAD65C6F9D3BA0482F";
+		};
+		95DA144CE8E7D5D373232B72 = {
+			isa = PBXBuildFile;
+			fileRef = "56030A522E2313D0590B0AB6";
+		};
+		98F54143AB4E86B28C3AFEE0 = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = "1";
+				LastUpgradeCheck = "2700";
+			};
+			buildConfigurationList = BFEC26E428B1CE6CDD0DDA4F;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = "0";
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = "66ADC382DA4DC6DC7D4A96AB";
+			productRefGroup = "43327175E3C0E96DAA29407D";
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				"230C7BACC486753105570DD8",
+				AC2F0271DE2B91B1DE98CF6D,
+				BFF8D4F05E66371D929D09EC,
+			);
+		};
+		9F14436C013D5496523FD7D8 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Notdot/AppAttest.swift;
+			sourceTree = "<group>";
+		};
+		A0409E8EFFFDD9F75A3B85DF = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Notdot/LinkModel.swift;
+			sourceTree = "<group>";
+		};
+		A0F5328A118E562121500F74 = {
+			isa = PBXBuildFile;
+			fileRef = "9F14436C013D5496523FD7D8";
+		};
+		A39EADAC204209AD3987956C = {
+			isa = PBXBuildFile;
+			fileRef = "8FF85A8516627E740F74A2C8";
+		};
+		A59414BA6A68D81B075DBE85 = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = "2147483647";
+			files = (
+				"74394F862F0230E38A3CAF45",
+			);
+			runOnlyForDeploymentPostprocessing = "0";
+		};
+		A72DD61519D69947DC99A873 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Notdot/AudioCapture.swift;
+			sourceTree = "<group>";
+		};
+		AC2F0271DE2B91B1DE98CF6D = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = "4D5F697D8AE6E0FD5DE50542";
+			buildPhases = (
+				"11AC5AD63742B388AA84E3F9",
+				"54306368E02B1CF7DE9836D5",
+				F2CFED08E609FEAC28FE81BD,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = NotdotWidgets;
+			productName = NotdotWidgets;
+			productReference = "4F887486BC1950AD0DAC6810";
+			productType = "com.apple.product-type.app-extension";
+		};
+		ACBF2248890D7DBF3328D0A6 = {
+			isa = PBXBuildFile;
+			fileRef = E59E2004A91DBF7B2B4386CC;
+		};
+		B214AD0135F43643E7591E81 = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				IPHONEOS_DEPLOYMENT_TARGET = "18.0";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = "5.0";
+				TARGETED_DEVICE_FAMILY = "1";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = "1";
+				MARKETING_VERSION = "0.1";
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/build/generated";
+				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/build/lib/$(PLATFORM_NAME)";
+				PRODUCT_NAME = NotdotTests;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.notdot.mobile.prototype.tests;
+				GENERATE_INFOPLIST_FILE = YES;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Notdot.app/Notdot";
+				BUNDLE_LOADER = "$(TEST_HOST)";
+			};
+			name = Release;
+		};
+		BFEC26E428B1CE6CDD0DDA4F = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				"577B2E971B047CFEA9E155AD",
+				"6E02751F28A095BE5126A4C2",
+			);
+			defaultConfigurationIsVisible = "0";
+			defaultConfigurationName = Release;
+		};
+		BFF8D4F05E66371D929D09EC = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D1E8EC617730DA32D339A29E;
+			buildPhases = (
+				A59414BA6A68D81B075DBE85,
+				FF953A58CDED9CB814EA7E4C,
+				"2657E0FBBE7EDE5AF9CC4AFA",
+			);
+			buildRules = (
+			);
+			dependencies = (
+				C05BCCEEC4FCA4D10CB7CC06,
+			);
+			name = NotdotTests;
+			productName = NotdotTests;
+			productReference = "481A9B6A85A544EB05DA1820";
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		C05BCCEEC4FCA4D10CB7CC06 = {
+			isa = PBXTargetDependency;
+			target = "230C7BACC486753105570DD8";
+			targetProxy = D7C28D8CE61346954C2231C1;
+		};
+		C844E2C1F2DD2AE6A8253D8D = {
+			isa = PBXBuildFile;
+			fileRef = D60735A49F41FC2FBB72E799;
+		};
+		CCB33F6B06E79FCCE29E7A2E = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = NotdotTests/NotdotTests.swift;
+			sourceTree = "<group>";
+		};
+		D1E8EC617730DA32D339A29E = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				"546B6F27FD9B41EC83141BD8",
+				B214AD0135F43643E7591E81,
+			);
+			defaultConfigurationIsVisible = "0";
+			defaultConfigurationName = Release;
+		};
+		D4F2A19016A9B20E1059600E = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = "2147483647";
+			files = (
+				C844E2C1F2DD2AE6A8253D8D,
+				"3466831553EACE5502B0E711",
+				"92056CDA3F3B90FECF8D0EE7",
+				A39EADAC204209AD3987956C,
+				"8B10D2B922BD7D4632CC2727",
+				"00411A92D374C52B3489F430",
+				"6023058347F28E299420B8DE",
+				"37014A893511D2C901CC0CD8",
+				A0F5328A118E562121500F74,
+				"95DA144CE8E7D5D373232B72",
+				"4B6D035A9DD7144007843650",
+				"5FA8E011D222575765E48AFF",
+				ACBF2248890D7DBF3328D0A6,
+				"3446C34BD12AE41001D720D9",
+				"0EDC5FAF4AC6AEDF6E68FAD6",
+			);
+			runOnlyForDeploymentPostprocessing = "0";
+		};
+		D5730BA0339AEF99727B4401 = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				"643AF0863947E1FBCB15FEDC",
+				"5DF6E2C456B50FD7FAF349D1",
+			);
+			defaultConfigurationIsVisible = "0";
+			defaultConfigurationName = Release;
+		};
+		D60735A49F41FC2FBB72E799 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Notdot/NotdotApp.swift;
+			sourceTree = "<group>";
+		};
+		D6754F587A27222A0110CD35 = {
+			isa = PBXBuildFile;
+			fileRef = "532F439FCA5BAB50AB5DB0FD";
+		};
+		D7C28D8CE61346954C2231C1 = {
+			isa = PBXContainerItemProxy;
+			containerPortal = "98F54143AB4E86B28C3AFEE0";
+			proxyType = "1";
+			remoteGlobalIDString = "230C7BACC486753105570DD8";
+			remoteInfo = Notdot;
+		};
+		E29D80E930911E1BF2B9D271 = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				IPHONEOS_DEPLOYMENT_TARGET = "18.0";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = "5.0";
+				TARGETED_DEVICE_FAMILY = "1";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = "1";
+				MARKETING_VERSION = "0.1";
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				PRODUCT_NAME = NotdotWidgets;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.notdot.mobile.prototype.widgets;
+				INFOPLIST_FILE = NotdotWidgets/Info.plist;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = notdot;
+				SKIP_INSTALL = YES;
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				DEBUG_INFORMATION_FORMAT = dwarf;
+			};
+			name = Debug;
+		};
+		E3AD32E17A3970FDD1E8B9CE = {
+			isa = PBXFileReference;
+			lastKnownFileType = text.plist.xml;
+			path = NotdotWidgets/Info.plist;
+			sourceTree = "<group>";
+		};
+		E59E2004A91DBF7B2B4386CC = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Notdot/Intents.swift;
+			sourceTree = "<group>";
+		};
+		F2CFED08E609FEAC28FE81BD = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = "2147483647";
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = "0";
+		};
+		FC02B6EAD518CDB4CBBA27D2 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Notdot/ContentView.swift;
+			sourceTree = "<group>";
+		};
+		FE9802C233AB193FEC417DF7 = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = "2147483647";
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = "0";
+		};
+		FF953A58CDED9CB814EA7E4C = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = "2147483647";
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = "0";
+		};
+	};
+	rootObject = 98F54143AB4E86B28C3AFEE0;
+}

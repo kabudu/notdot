@@ -11,6 +11,11 @@ on:
         default: true
 permissions:
   contents: read
+# A newer PR revision supersedes unfinished checks of the same PR. Keep
+# branch and release runs, which may own distinct release evidence.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   changes:
     name: Classify changes
@@ -51,6 +56,7 @@ jobs:
       - run: python3 scripts/check_site.py
       - run: python3 scripts/check_content_links.py
       - run: python3 scripts/distribution_notices.py
+      - run: python3 scripts/check_mobile_lock.py
       - run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - run: node scripts/test_orb_input.mjs
       - run: node scripts/test_interrupt_lifecycle.mjs
@@ -67,6 +73,101 @@ jobs:
           else:
               subprocess.run(['git', 'diff', '--check'], check=True)
           PY
+  mobile-foundations:
+    name: Mobile foundations (orb contract, link, wake)
+    needs: changes
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.97.0
+          components: clippy
+      # Mobile cores build the orb without the desktop web UI. Golden vectors
+      # in crates/notdot-orb/fixtures are shared with the native adapters.
+      - run: cargo test -p notdot-orb --no-default-features --locked
+      - run: cargo clippy -p notdot-orb --no-default-features --all-targets --locked -- -D warnings
+      - run: cargo test -p notdot-orb-gen --locked
+      - name: No hand-copied or committed generated orb shaders
+        run: cargo run -q -p notdot-orb-gen --locked -- lint
+      # Pairing, protocol and Iroh transport, including a local relay.
+      - run: cargo test -p notdot-link --features test-relay --locked
+      # UniFFI mobile core: orb, session lifecycle, link (wake needs native libs).
+      # Each link lifecycle fixture owns a complete desktop/phone runtime.
+      # Run one at a time, matching app lifecycle and bounding CI contention.
+      - run: cargo test -p notdot-mobile-core --no-default-features --locked -- --test-threads=1
+      - run: cargo clippy -p notdot-mobile-core --no-default-features --all-targets --locked -- -D warnings
+      # The full wake detector (keyword spotter + Whisper backup) on the
+      # desktop corpus, offline, as the apps run it.
+      - run: cargo test -p notdot-mobile-core --locked -- --test-threads=1
+      - run: cargo clippy -p notdot-mobile-core --all-targets --locked -- -D warnings
+      - run: cargo clippy -p notdot-link -p notdot-orb-gen --all-targets --features notdot-link/test-relay --locked -- -D warnings
+      - name: Contract build has no web dependencies
+        run: |
+          if cargo tree -p notdot-orb --no-default-features -e normal --locked | grep -E 'web-sys|wasm-bindgen|js-sys'; then
+            echo 'notdot-orb without the web feature must not depend on web crates' >&2
+            exit 1
+          fi
+  mobile-app-library:
+    name: Mobile app library (${{ matrix.target }})
+    needs: changes
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-ios-sim
+          - os: ubuntu-22.04
+            target: aarch64-linux-android
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.97.0
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      # mobile/rust pins libc for iOS; this proves its lockfile builds and
+      # stays in step with the desktop lock (see mobile/README.md).
+      - run: python3 scripts/check_mobile_lock.py
+      - name: Build the app library without native wake libraries
+        working-directory: mobile/rust
+        shell: bash
+        run: |
+          if [ "${{ matrix.target }}" = aarch64-linux-android ]; then
+            bin="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+            export CC_aarch64_linux_android="$bin/aarch64-linux-android29-clang"
+            export AR_aarch64_linux_android="$bin/llvm-ar"
+            export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$bin/aarch64-linux-android29-clang"
+            cargo rustc --locked --lib --crate-type cdylib --target ${{ matrix.target }}
+          else
+            IPHONEOS_DEPLOYMENT_TARGET=18.0 cargo rustc --locked --lib --crate-type staticlib --target ${{ matrix.target }}
+          fi
+      - name: Build the app library with the wake detector (spotter + Whisper)
+        working-directory: mobile/rust
+        shell: bash
+        run: |
+          if [ "${{ matrix.target }}" = aarch64-linux-android ]; then
+            ndk="$ANDROID_NDK_LATEST_HOME"
+            bin="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+            export ANDROID_NDK_HOME="$ndk" CMAKE_ANDROID_NDK="$ndk" CMAKE_ANDROID_ARCH_ABI=arm64-v8a CMAKE_SYSTEM_VERSION=29
+            export CC_aarch64_linux_android="$bin/aarch64-linux-android29-clang"
+            export CXX_aarch64_linux_android="$bin/aarch64-linux-android29-clang++"
+            export AR_aarch64_linux_android="$bin/llvm-ar"
+            export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$bin/../sysroot"
+            export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$bin/aarch64-linux-android29-clang"
+            cargo rustc --locked --lib --crate-type cdylib --target ${{ matrix.target }} --features whisper
+          else
+            IPHONEOS_DEPLOYMENT_TARGET=18.0 cargo rustc --locked --lib --crate-type staticlib --target ${{ matrix.target }} --features whisper
+          fi
   release-tools:
     needs: changes
     if: github.event.repository.private == false && needs.changes.outputs.full == 'true'
@@ -136,30 +237,56 @@ jobs:
         run: cargo clippy -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-speakers -p notdot --all-targets --locked -- -D warnings
       - name: Build isolated Windows input acceptance host
         run: cargo build -p notdot --example orb-input-acceptance --release --target x86_64-pc-windows-msvc --locked
+      - name: Test experimental desktop phone integration
+        run: |
+          cargo test -p notdot --features phones --release --target x86_64-pc-windows-msvc --locked phones:: -- --test-threads=1
       - name: Check isolated input host loads on Windows
         shell: pwsh
         run: |
-          $env:NOTDOT_INPUT_TEST_URL = 'http://127.0.0.1:9'
+          $portFile = Join-Path $env:RUNNER_TEMP 'input-smoke.port'
           $log = Join-Path $env:RUNNER_TEMP 'input-host-startup.log'
-          $process = Start-Process -FilePath 'target/x86_64-pc-windows-msvc/release/examples/orb-input-acceptance.exe' -PassThru -RedirectStandardError $log
+          $serverLog = Join-Path $env:RUNNER_TEMP 'input-smoke-server.log'
+          $stdout = Join-Path $env:RUNNER_TEMP 'input-host-stdout.log'
+          Remove-Item -LiteralPath $portFile -ErrorAction SilentlyContinue
+          $process = $null
+          $server = Start-Process -FilePath python -ArgumentList @('scripts/serve_input_smoke.py', '--port-file', $portFile) -PassThru -RedirectStandardError $serverLog
           try {
+            $deadline = (Get-Date).AddSeconds(10)
+            while (-not (Test-Path $portFile) -and -not $server.HasExited -and (Get-Date) -lt $deadline) {
+              Start-Sleep -Milliseconds 100
+            }
+            if (-not (Test-Path $portFile)) { throw "Local input fixture did not start: $(Get-Content $serverLog -Raw -ErrorAction SilentlyContinue)" }
+            $port = (Get-Content $portFile -Raw).Trim()
+            $env:NOTDOT_INPUT_TEST_URL = "http://127.0.0.1:$port"
+            $null = Invoke-WebRequest -Uri $env:NOTDOT_INPUT_TEST_URL -TimeoutSec 5
+            $process = Start-Process -FilePath 'target/x86_64-pc-windows-msvc/release/examples/orb-input-acceptance.exe' -PassThru -RedirectStandardError $log -RedirectStandardOutput $stdout
             $deadline = (Get-Date).AddSeconds(30)
             do {
               Start-Sleep -Milliseconds 250
+              $process.Refresh()
               $output = Get-Content $log -Raw -ErrorAction SilentlyContinue
               $ready = $output -match 'geometry core=Ok'
             } while (-not $ready -and -not $process.HasExited -and (Get-Date) -lt $deadline)
-            if (-not $ready) { throw "Input host did not create its native windows: $output" }
+            if (-not $ready) {
+              $exit = if ($process.HasExited) { $process.ExitCode } else { 'still running' }
+              throw "Input host did not create its native windows (process=$exit): stderr=$output; stdout=$(Get-Content $stdout -Raw -ErrorAction SilentlyContinue)"
+            }
           } finally {
-            if (-not $process.HasExited) { Stop-Process -Id $process.Id }
-            Remove-Item Env:NOTDOT_INPUT_TEST_URL
+            if ($null -ne $process -and -not $process.HasExited) { Stop-Process -Id $process.Id }
+            if (-not $server.HasExited) { Stop-Process -Id $server.Id }
+            Remove-Item Env:NOTDOT_INPUT_TEST_URL -ErrorAction SilentlyContinue
           }
       - name: Retain isolated Windows input acceptance host
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: windows-input-acceptance
-          path: target/x86_64-pc-windows-msvc/release/examples/orb-input-acceptance.exe
-          if-no-files-found: error
+          path: |
+            target/x86_64-pc-windows-msvc/release/examples/orb-input-acceptance.exe
+            ${{ runner.temp }}/input-host-startup.log
+            ${{ runner.temp }}/input-host-stdout.log
+            ${{ runner.temp }}/input-smoke-server.log
+          if-no-files-found: warn
           retention-days: 7
       - name: Install verified prebuilt release tools
         run: python scripts/install_release_tools.py
@@ -237,6 +364,11 @@ jobs:
           python3 scripts/repair_sherpa_cache.py --target "$NOTDOT_NATIVE_TARGET"
       - name: Verify native archives before Cargo profiles
         run: python3 scripts/prepare_sherpa_archives.py --output "${{ runner.temp }}/notdot-sherpa-archives"
+      - name: Test experimental desktop phone integration
+        run: |
+          cargo test -p notdot --features phones --release --locked phones:: -- --test-threads=1
+      - name: Check experimental desktop phone integration
+        run: cargo clippy -p notdot --features phones --all-targets --locked -- -D warnings
       - name: Run complete local validation
         run: sh scripts/ci-local.sh
       # macOS ships the in-process decoder, not the Windows helper executable.
@@ -278,6 +410,11 @@ jobs:
         run: cargo clean -p whisper-rs-sys
       - name: Test Linux code and the bundled wake models
         run: cargo test -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-speakers -p notdot-orb -p notdot --release --locked -- --test-threads=1
+      - name: Test experimental desktop phone integration
+        run: |
+          cargo test -p notdot --features phones --release --locked phones:: -- --test-threads=1
+      - name: Check experimental desktop phone integration
+        run: cargo clippy -p notdot --features phones --all-targets --locked -- -D warnings
       - name: Check Linux-specific Rust code
         run: cargo clippy -p notdot-core -p notdot-voice -p notdot-wake-runtime -p notdot-speakers -p notdot --all-targets --locked -- -D warnings
       # Isolate one known accuracy case under the maintainer 0.1 Linux policy.
