@@ -11,6 +11,11 @@ on:
         default: true
 permissions:
   contents: read
+# A newer PR revision supersedes unfinished checks of the same PR. Keep
+# branch and release runs, which may own distinct release evidence.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   changes:
     name: Classify changes
@@ -91,7 +96,9 @@ jobs:
       # Pairing, protocol and Iroh transport, including a local relay.
       - run: cargo test -p notdot-link --features test-relay --locked
       # UniFFI mobile core: orb, session lifecycle, link (wake needs native libs).
-      - run: cargo test -p notdot-mobile-core --no-default-features --locked
+      # Each link lifecycle fixture owns a complete desktop/phone runtime.
+      # Run one at a time, matching app lifecycle and bounding CI contention.
+      - run: cargo test -p notdot-mobile-core --no-default-features --locked -- --test-threads=1
       - run: cargo clippy -p notdot-mobile-core --no-default-features --all-targets --locked -- -D warnings
       # The full wake detector (keyword spotter + Whisper backup) on the
       # desktop corpus, offline, as the apps run it.
