@@ -87,6 +87,12 @@ impl WakeEngine {
     }
 }
 
+fn pcm16_samples(pcm: &[u8]) -> Vec<f32> {
+    pcm.chunks_exact(2)
+        .map(|pair| f32::from(i16::from_le_bytes([pair[0], pair[1]])) / 32768.)
+        .collect()
+}
+
 #[uniffi::export]
 impl WakeEngine {
     /// The full detector. `models` is the directory holding the bundled wake
@@ -144,10 +150,7 @@ impl WakeEngine {
         {
             return false;
         }
-        let samples = pcm
-            .chunks_exact(2)
-            .map(|pair| f32::from(i16::from_le_bytes([pair[0], pair[1]])) / 32768.)
-            .collect();
+        let samples = pcm16_samples(&pcm);
         self.accept(samples, rate)
     }
 
@@ -289,28 +292,47 @@ mod tests {
     }
 
     #[test]
-    fn pcm16_transport_preserves_wake_decisions_and_rejects_bad_buffers() {
+    fn pcm16_transport_matches_float_input_and_rejects_bad_buffers() {
+        assert_eq!(
+            pcm16_samples(&[0, 0, 0, 128, 255, 127, 0, 64]),
+            vec![0., -1., 32767. / 32768., 0.5]
+        );
         let engine = WakeEngine::spotter_only(models(), "Ava".into(), false).unwrap();
-        for name in ["hey-ava.wav", "ava.wav", "negative.wav"] {
+        let reference = WakeEngine::spotter_only(models(), "Ava".into(), false).unwrap();
+        for name in [
+            "hey-ava.wav",
+            "hey-ava-uk.wav",
+            "hey-ava-us.wav",
+            "ava.wav",
+            "negative.wav",
+        ] {
+            // Source WAV is PCM16, so the original floats are exactly
+            // representable by this transport, with no lossy gain step.
             let (samples, rate) = clip(name);
             engine.reset();
-            let (before, _) = clip("negative.wav");
-            let mut audio: Vec<f32> = before.iter().map(|sample| sample * 0.3).collect();
-            audio.extend(vec![0.; rate as usize / 5]);
-            audio.extend(samples.iter().map(|sample| sample * 0.35));
+            reference.reset();
+            let mut audio = vec![0.; rate as usize];
+            audio.extend(samples);
             audio.extend(vec![0.; rate as usize]);
-            let hit = audio.chunks(320).any(|packet| {
-                // Encode signed 16-bit PCM, as AudioRecord does.
+            for packet in audio.chunks(320) {
                 let pcm: Vec<u8> = packet
                     .iter()
                     .flat_map(|sample| {
                         ((sample * 32768.).round().clamp(-32768., 32767.) as i16).to_le_bytes()
                     })
                     .collect();
-                engine.accept_pcm16(pcm, rate)
-            });
-            assert_eq!(hit, name == "hey-ava.wav", "{name}");
+                assert_eq!(
+                    engine.accept_pcm16(pcm, rate),
+                    reference.accept(packet.to_vec(), rate),
+                    "{name}"
+                );
+            }
+            assert_eq!(
+                engine.lock().spotter.elapsed(),
+                reference.lock().spotter.elapsed()
+            );
         }
+        let before = engine.lock().spotter.elapsed();
         for (pcm, rate) in [
             (vec![0], 16_000),
             (vec![0; 64_002], 16_000),
@@ -318,6 +340,11 @@ mod tests {
         ] {
             assert!(!engine.accept_pcm16(pcm, rate));
         }
+        assert_eq!(
+            engine.lock().spotter.elapsed(),
+            before,
+            "bad input never reaches the detector"
+        );
     }
 
     const POSITIVES: [&str; 3] = ["hey-ava.wav", "hey-ava-uk.wav", "hey-ava-us.wav"];

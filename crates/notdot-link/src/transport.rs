@@ -27,7 +27,10 @@ use iroh::{
 };
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use tokio::sync::watch;
@@ -172,6 +175,7 @@ struct DesktopState {
     live: Mutex<HashMap<DeviceId, Vec<Connection>>>,
     /// Every connection and stream task, aborted on close.
     tasks: Mutex<tokio::task::JoinSet<()>>,
+    closing: AtomicBool,
     changed: watch::Sender<u64>,
     service: Service,
     clock: Clock,
@@ -194,6 +198,9 @@ impl DesktopState {
     }
     fn spawn(&self, task: impl std::future::Future<Output = ()> + Send + 'static) {
         let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
+        if self.closing.load(Ordering::Acquire) {
+            return;
+        }
         while tasks.try_join_next().is_some() {}
         tasks.spawn(task);
     }
@@ -311,6 +318,7 @@ impl Desktop {
             epoch_source: options.epochs,
             live: Mutex::new(HashMap::new()),
             tasks: Mutex::new(tokio::task::JoinSet::new()),
+            closing: AtomicBool::new(false),
             changed: watch::channel(0).0,
             service,
             clock,
@@ -491,6 +499,7 @@ impl Desktop {
     /// that was running stays written down as running, so after a restart
     /// it reads as interrupted.
     pub async fn close(self) {
+        self.state.closing.store(true, Ordering::Release);
         self.accept.abort();
         self.state.service.shutdown();
         // Wait for the accepting task's endpoint clone to be dropped before
@@ -501,7 +510,16 @@ impl Desktop {
             std::mem::take(&mut *owned)
         };
         tasks.shutdown().await;
+        // Aborting serve_link skips its normal live-map cleanup. These
+        // connections retain Endpoint clones and therefore its UDP sockets.
+        self.state
+            .live
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         self.endpoint.close().await;
+        drop(self.endpoint);
+        drop(self.state);
     }
 }
 
@@ -1000,10 +1018,15 @@ mod lifecycle_tests {
                 .unwrap(),
                 crate::protocol::ServerFrame::Done { .. }
             ));
-            link.close();
+            // Keep the authenticated connection open across desktop close.
+            // A late observer must not retain transport sockets through the
+            // live connection registry after shutdown.
+            let observer = desktop.state.clone();
             tokio::time::timeout(Duration::from_secs(5), desktop.close())
                 .await
                 .unwrap();
+            assert!(observer.live.lock().unwrap().is_empty());
+            drop(observer);
         }
         phone.close().await;
         std::fs::remove_dir_all(dir).unwrap();
