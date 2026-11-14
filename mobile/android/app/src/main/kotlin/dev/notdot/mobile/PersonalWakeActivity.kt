@@ -610,7 +610,11 @@ class PersonalWakeActivity : ComponentActivity() {
  * AES-GCM with a Keystore key (no user authentication), as IdentityStore.
  * Opening never creates a key; deleting reports failure.
  */
-private class KeystoreSealer(private val alias: String = "notdot-personal-wake") : Sealer {
+internal class KeystoreSealer(private val alias: String = DEFAULT_ALIAS) : Sealer {
+    companion object {
+        const val DEFAULT_ALIAS = "notdot-personal-wake"
+    }
+
     private fun keystore() = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
 
     private fun existing(): SecretKey? = keystore().getKey(alias, null) as SecretKey?
