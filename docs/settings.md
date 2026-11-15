@@ -54,6 +54,12 @@ Open the single Intelligence card to choose a model, then its **thinking level**
 
 The choices come from your installed Codex tool and account. notdot checks them again before saving and sending a request. If a choice disappears, it asks you to choose another instead of switching silently. The same choice is used for replies and background memory checks.
 
+## Web search
+
+notdot can look things up with Codex web search. By default it uses your Codex search setting, which normally searches an index of published pages and cannot open a particular site's current page.
+
+Turn on **Live web search** to let your own companion read current web pages for an answer, for example **“Open example.com and tell me its main heading.”** It is off by default. It is search only: notdot cannot open a browser, sign in, fill in forms, act on websites or control your computer. Web pages are treated as untrusted, and nothing on a page can tell notdot to use a tool or change anything. It is not used while other people are set up or trusted voices are on; their conversations keep web search off. Voice requests cannot change this setting.
+
 ## Other Codex chats
 
 Ask something like **“Find my Codex chat about the website and remind me what we decided.”** notdot can find saved local chats by title and read relevant messages. If several match, it can ask which one you mean.
