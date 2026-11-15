@@ -1915,7 +1915,11 @@ async fn transcribe_audio(
     quota::finish(state, &provider, generation, "stt", result).await
 }
 #[tauri::command]
-async fn speak(state: State<'_, Arc<AppState>>, text: String) -> Result<EncodedAudio, String> {
+async fn speak(
+    state: State<'_, Arc<AppState>>,
+    text: String,
+    previous: Option<String>,
+) -> Result<EncodedAudio, String> {
     let _permit = state
         .voice_gate
         .try_acquire()
@@ -1926,7 +1930,7 @@ async fn speak(state: State<'_, Arc<AppState>>, text: String) -> Result<EncodedA
     let generation = state.quota.generation();
     let result = backend(&state, Some(provider.clone()))
         .await?
-        .synthesize(&text, &voice)
+        .synthesize_after(&text, &voice, previous.as_deref())
         .await;
     quota::finish(&state, &provider, generation, "tts", result)
         .await

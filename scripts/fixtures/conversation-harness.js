@@ -15,7 +15,7 @@
   window.notebooks=notebooks;
   let enrolIndex=0,enrolProfile=null,enrolToken=null;
   const phrase=()=>({step:enrolIndex===4?"ready":"prompt",index:enrolIndex+1,of:4,phrase:"Synthetic enrollment phrase."});
-  const log = [], callbacks = [], timers = new Set(), cancelled = new Set(), settingsProposals = new Map();
+  const log = [];window.harnessLog=log;const callbacks = [], timers = new Set(), cancelled = new Set(), settingsProposals = new Map();
   function queueSettings(id, changes, delay=0) {settingsProposals.set(id,{base:copy(settings),changes,delay,offered:false,cancelled:false});state.settings_pending=id;}
   function cancelSettings(id) {for(const [key,p] of settingsProposals){if(!id || key===id){p.cancelled=true;settingsProposals.delete(key);record('settings-cancel',{id:key});}}if(!id || state.settings_pending===id)state.settings_pending=null;}
   let audioDuration = 200;
@@ -27,17 +27,36 @@
   class Node {connect(){return this;} disconnect(){} getByteTimeDomainData(a){a.fill(128);} }
   const parameter = () => ({value:0,cancelScheduledValues(){},setValueAtTime(){},linearRampToValueAtTime(){}});
   class Context {constructor(){this.state='running';this.destination=new Node();}get currentTime(){return performance.now()/1000;}resume(){return Promise.resolve();}createGain(){return Object.assign(new Node(),{gain:parameter()});}createAnalyser(){return Object.assign(new Node(),{fftSize:256,frequencyBinCount:128});}createMediaElementSource(){record('output-graph');return new Node();}createOscillator(){return Object.assign(new Node(),{frequency:parameter(),start(){},stop(){}});} }
-  class Audio extends EventTarget {removeAttribute(name){if(name==='src'){this.src='';record('audio-source-cleared');}}load(){this.pause();this.ended=false;this.error=null;}constructor(){super();this.paused=true;this.ended=false;this.error=null;this.currentTime=0;}play(){this.paused=false;this.ended=false;active++;record('play');this.dispatchEvent(new Event('playing'));this.timer=later(audioDuration,()=>{this.paused=true;this.ended=true;active--;lastEnd=performance.now();record('ended');this.dispatchEvent(new Event('ended'));});return Promise.resolve();}pause(){if(!this.paused){clearTimeout(this.timer);timers.delete(this.timer);active--;this.paused=true;record('paused');}}}
+  // A media element model: one clip per source, remaining time kept across
+  // pause/resume, and a source change while playing is recorded as an override.
+  // Clip ids come from the blob size (see `clip` below), so order is checkable.
+  const urlClip=new Map(),clipText=new Map();let maxActive=0,clipSeq=0;
+  const createUrl=URL.createObjectURL.bind(URL);URL.createObjectURL=b=>{const u=createUrl(b);urlClip.set(u,b.size-46);return u;};
+  class Audio extends EventTarget {
+    constructor(){super();this.paused=true;this.ended=false;this.error=null;this.currentTime=0;this._src='';this.left=0;}
+    // Like a real element, `onended`/`onplaying` handlers run for dispatched events.
+    dispatchEvent(event){const handler=this['on'+event.type];if(typeof handler==='function')handler.call(this,event);return super.dispatchEvent(event);}
+    get src(){return this._src;}
+    set src(u){if(!this.paused){this.halt();record('src-replaced-while-playing',{clip:this.clip});}this._src=u;this.clip=urlClip.get(u);this.ended=false;this.left=window.clipDuration?window.clipDuration(this.clip):audioDuration;if(u)record('src',{clip:this.clip});}
+    removeAttribute(name){if(name==='src'){if(!this.paused)this.halt();this._src='';this.clip=undefined;record('audio-source-cleared');}}
+    load(){this.pause();this.ended=false;this.error=null;}
+    halt(){clearTimeout(this.timer);timers.delete(this.timer);active--;this.left=Math.max(0,this.left-(performance.now()-this.startedAt));this.paused=true;}
+    play(){if(!this.paused)return Promise.resolve();if(!this._src)return Promise.reject(Error('No source'));this.paused=false;this.ended=false;active++;maxActive=Math.max(maxActive,active);this.startedAt=performance.now();record('play',{clip:this.clip,text:clipText.get(this.clip)});this.dispatchEvent(new Event('playing'));this.timer=later(this.left,()=>{this.paused=true;this.ended=true;this.left=0;active--;lastEnd=performance.now();record('ended',{clip:this.clip});this.dispatchEvent(new Event('ended'));});return Promise.resolve();}
+    pause(){if(!this.paused){this.halt();record('paused',{clip:this.clip});this.dispatchEvent(new Event('pause'));}}
+  }
   // Replacements are installed before WASM loads; no physical audio API is used.
   window.Audio=Audio;window.AudioContext=Context;window.webkitAudioContext=Context;
   if(navigator.mediaDevices) navigator.mediaDevices.getUserMedia=()=>Promise.reject(Error('Microphone forbidden in silent harness'));
   // Interruption scenarios: a fake echo-cancelled track and worklet. Detections
   // are injected after "capture" and are SYNTHETIC, not acoustic evidence.
-  const interruptMode=location.hash.startsWith('#interrupt');
+  const interruptMode=location.hash.startsWith('#interrupt')||location.hash==='#speech-stream';
   let fakeAec=location.hash!=='#interrupt-unsupported',injectDetection=false,interruptResult=null,interruptPending=null,micTracks=0,sessions=0;
+  // WebKit keeps calling its own getUserMedia through the real MediaDevices
+  // object even when the method is shadowed, so replace the object itself.
+  if(interruptMode&&navigator.mediaDevices)Object.defineProperty(navigator,'mediaDevices',{configurable:true,value:{}});
   if(interruptMode&&navigator.mediaDevices){
     navigator.mediaDevices.getSupportedConstraints=()=>({echoCancellation:true});
-    navigator.mediaDevices.getUserMedia=async c=>{record('mic-request');if(location.hash==='#interrupt-start-failure'&&count('mic-request')>1)throw Error('Microphone denied');const ec=c&&c.audio&&c.audio.echoCancellation;if(window.gumDelay)await sleep(window.gumDelay);micTracks++;record('mic-open',{ec});const track={stopped:false,getSettings:()=>({echoCancellation:fakeAec&&ec===true}),stop(){if(!this.stopped){this.stopped=true;micTracks--;record('mic-stop');}}};return {getAudioTracks:()=>[track],getTracks:()=>[track]};};
+    navigator.mediaDevices.getUserMedia=async c=>{record('mic-request');if(location.hash==='#interrupt-start-failure'&&count('mic-request')>1)throw Error('Microphone denied');const ec=c&&c.audio&&c.audio.echoCancellation;if(window.gumDelay)await sleep(window.gumDelay);micTracks++;record('mic-open',{ec,listen:!!(c&&c.audio&&c.audio.noiseSuppression)});const track={stopped:false,getSettings:()=>({echoCancellation:fakeAec&&ec===true}),stop(){if(!this.stopped){this.stopped=true;micTracks--;record('mic-stop');}}};return {getAudioTracks:()=>[track],getTracks:()=>[track]};};
   }
   Context.prototype.audioWorklet={addModule:async()=>{record('worklet');}};
   Context.prototype.createMediaStreamSource=function(){return new Node();};
@@ -47,6 +66,7 @@
   const wav=new Uint8Array(46),v=new DataView(wav.buffer),put=(n,s)=>[...s].forEach((c,i)=>wav[n+i]=c.charCodeAt(0));
   put(0,'RIFF');v.setUint32(4,38,true);put(8,'WAVEfmt ');v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);v.setUint32(24,16000,true);v.setUint32(28,32000,true);v.setUint16(32,2,true);v.setUint16(34,16,true);put(36,'data');v.setUint32(40,2,true);
   const audio={data:btoa(String.fromCharCode(...wav)),mime:'audio/wav'};
+  const clip=text=>{const id=++clipSeq;clipText.set(id,text);const bytes=new Uint8Array(46+id);bytes.set(wav);return {id,data:btoa(String.fromCharCode(...bytes)),mime:'audio/wav'};};
   const windowApi={startDragging:async()=>{},setSize:async()=>{},outerPosition:async()=>({x:0,y:0}),outerSize:async()=>({width:360,height:360}),setPosition:async()=>{}};
   window.__TAURI__={event:{emitTo:async()=>{},listen:async(name,cb)=>{if(name==='voice-capture')callbacks.push(cb);if(name==='speaker-enrol-progress')speakerCallbacks.push(cb);return()=>{};}},window:{getCurrentWindow:()=>windowApi,currentMonitor:async()=>null},dpi:{LogicalSize:class{},PhysicalSize:class{},PhysicalPosition:class{}},core:{invoke:async(cmd,args={})=>{
     if(cmd==='speaker_forget_all_voices'){for(const p of people.people)p.voice_enrolled=false;people.mode='open';people.health={state:'idle'};record('speaker-reset');return null;}
@@ -105,6 +125,12 @@
     if(cmd==='cancel_capture'){cancelled.add(args.token);record('cancel',{token:args.token});if(state.wake.capture_token===args.token)state.wake={phase:'paused'};return null;}
     if(cmd==='transcribe_wake'&&interruptResult){const r=interruptResult;interruptResult=null;if(window.transcribeDelay){const d=window.transcribeDelay;window.transcribeDelay=0;await sleep(d);}record('transcribe');state.wake={phase:'paused'};return r;}
     if(cmd==='transcribe_wake'){record('transcribe');state.wake={phase:'paused'};return transcript;}
+    if(cmd==='send_message'&&window.replyScript){
+      // Streamed multi-sentence reply: [delay ms, cumulative text, done].
+      turn++;const id='turn-'+turn,script=window.replyScript(args.text);record('message',{text:args.text,turn:id});state.phase='thinking';state.speech={turn:id,text:'',done:false,failed:false};
+      for(const [at,text,done] of script)later(at,()=>{if(state.speech.turn===id&&!state.speech.failed){state.speech={turn:id,text,done,failed:false};if(done){state.phase='idle';record('model-done',{turn:id});}}});
+      return id;
+    }
     if(cmd==='send_message'){
       turn++;const id='turn-'+turn;record('message',{text:args.text});state.phase='thinking';state.speech={turn:id,text:'The first sentence.',done:false,failed:false};
       later(1200,()=>{if(state.speech.turn===id){state.speech={turn:id,text:'The first sentence. The second sentence.',done:true,failed:false};state.phase='idle';record('model-done');}});
@@ -133,7 +159,7 @@
       if(generation!==noticeGeneration){record('notice-interrupted');throw Error('Follow-up cancelled');}
       record('notice-end');return null;
     }
-    if(cmd==='speak'){record('synthesize');return audio;}
+    if(cmd==='speak'){const n=count('synthesize');record('synthesize',{text:args.text});const delay=window.synthDelay?window.synthDelay(args.text,n):0;if(delay)await sleep(delay);const c=clip(args.text);record('synthesized',{clip:c.id,text:args.text});if(window.onSynthesized)window.onSynthesized(args.text);return {data:c.data,mime:c.mime};}
     if(cmd==='save_settings'){cancelSettings();Object.assign(settings,args.settings);record('saved');return null;}
     if(cmd==='set_microphone_muted'){settings.microphone_muted=args.muted;return null;}
     if(cmd==='stop'&&window.stopKeepsBusy){record('stop');state.phase='thinking';return null;}
@@ -255,6 +281,98 @@
         ok('a late microphone from an older start is released and the newer one kept',micTracks===1&&count('mic-stop')>=1);
         output.textContent=JSON.stringify({status:'passed',passed,adapters:'production WASM; fake echo-cancelled track; detections injected after capture (synthetic, not acoustic); no microphone or providers'},null,2);return;
       }
+      if(location.hash==='#speech-stream'){
+        // Long streamed replies with variable model, synthesis and clip timing.
+        // SYNTHETIC audio: element timing and order, not decoded sound.
+        // Every check is reported (not only the first failure), so a run is a full trace.
+        const report={},failed=[];window.speechFailed=failed;window.speechReport=report;const check=(name,condition)=>{if(condition)passed.push(name);else failed.push(name);output.textContent=JSON.stringify({status:'running',passed,failed},null,2);};
+        const sentences=tag=>['First','Second','Third','Fourth','Fifth','Sixth','Seventh'].map(w=>tag+' '+w+' sentence.');
+        const durations=[700,400,1100,500,900,300,800],delays=[120,600,50,3000,80,900,200];
+        const reset=()=>{window.replyScript=null;window.synthDelay=null;window.clipDuration=null;window.onSynthesized=null;window.stopKeepsBusy=false;injectDetection=false;interruptResult=null;window.transcribeDelay=0;maxActive=0;};
+        const script=tag=>{const all=sentences(tag);return all.map((_,i)=>[300+i*250,all.slice(0,i+1).join(' '),i===all.length-1]);};
+        let tagFor=text=>/Manchester/.test(text)?'M':'R'+(count('message')+1);
+        const streaming=()=>{window.replyScript=text=>script(tagFor(text));window.clipDuration=id=>durations[(id-1)%durations.length];window.synthDelay=(text,n)=>delays[n%delays.length];};
+        const since=(from,name)=>log.filter(e=>e.at>=from&&e.event===name);
+        // Cancellation checks use log order: WebKit coarsens performance.now()
+        // to 1 ms, so a play in the same millisecond is not necessarily after.
+        const playedAfter=(mark,tag)=>log.slice(mark).filter(e=>e.event==='play'&&e.text&&e.text.startsWith(tag+' ')).map(e=>e.text);
+        const played=(from,tag)=>since(from,'play').filter(e=>e.text&&e.text.startsWith(tag+' ')).map(e=>e.text);
+        const finished=tag=>()=>log.some(e=>e.event==='ended'&&clipText.get(e.clip)===tag+' Seventh sentence.');
+        const quiet=async()=>{await until(()=>active===0&&document.getElementById('orb').dataset.state==='idle',9000);};
+        function gaps(from){
+          // Time from the end of one clip until the next starts, beyond the time
+          // the next clip's synthesis still needed (provider delay, not ours).
+          const out=[];const ends=since(from,'ended');
+          for(const end of ends){const next=log.find(e=>e.event==='play'&&e.at>=end.at&&e.clip!==end.clip);if(!next)continue;const ready=log.find(e=>e.event==='synthesized'&&e.clip===next.clip);out.push({gap:next.at-end.at,excess:next.at-Math.max(end.at,ready?ready.at:end.at),underrun:!!ready&&ready.at>end.at});}
+          return out;
+        }
+        await clean();reset();Object.assign(settings,{followup_enabled:false,interrupt_enabled:false,wake_enabled:false});
+        // 1. Long reply, interruption off.
+        streaming();let from=performance.now();await initial();await until(finished('R1'),20000);await quiet();
+        check('every sentence of a long streamed reply plays once, in order',JSON.stringify(played(from,'R1'))===JSON.stringify(sentences('R1')));
+        check('only one clip ever plays at a time',maxActive===1&&since(from,'src-replaced-while-playing').length===0);
+        let g=gaps(from);report.gapsInterruptOff=g.map(x=>Math.round(x.excess));
+        check('a ready next sentence starts without a polling or IPC gap (<= 40 ms)',g.length===6&&g.every(x=>x.excess<=40));
+        check('a synthesis underrun resumes as soon as the clip is ready',g.some(x=>x.underrun));
+        // 2. Same reply with interruption listening: one capture for the whole reply.
+        Object.assign(settings,{interrupt_enabled:true});await sleep(300);
+        from=performance.now();let mics=since(0,'mic-open').length;await initial();await until(finished('R2'),20000);await quiet();await sleep(300);
+        const opens=since(from,'mic-open').filter(e=>e.listen);report.listeningOpensPerReply=opens.length;
+        check('interruption listening opens the microphone once per reply, not per sentence',opens.length===1);
+        check('listening is released after the reply',micTracks===0);
+        check('listening reply still plays in order without overlap',JSON.stringify(played(from,'R2'))===JSON.stringify(sentences('R2'))&&maxActive===1);
+        g=gaps(from);report.gapsInterruptOn=g.map(x=>Math.round(x.excess));
+        check('listening adds no inter-sentence gap',g.every(x=>x.excess<=40));
+        // 3. Rapid successive turns: Escape then a new request at once.
+        from=performance.now();await initial();await until(()=>played(from,'R3').length>=1);
+        let escaped=log.length;pressEscape();await initial();await until(finished('R4'),20000);await quiet();
+        check('no sentence of a cancelled turn plays after Escape',playedAfter(escaped,'R3').length===0);
+        check('the next turn plays completely, in order, alone',JSON.stringify(played(from,'R4'))===JSON.stringify(sentences('R4'))&&maxActive===1);
+        // 4. Cancellation at every boundary.
+        const boundaries={
+          'while thinking':async()=>{await until(()=>count('message')>0&&state.phase==='thinking');},
+          'while the first sentence is synthesizing':async(tag)=>{await until(()=>log.some(e=>e.event==='synthesize'&&e.text.startsWith(tag)));},
+          'after synthesis, before playback':tag=>new Promise(resolve=>{window.onSynthesized=text=>{if(text.startsWith(tag+' Second')){window.onSynthesized=null;pressEscape();resolve('pressed');}};}),
+          'during a clip':async(tag)=>{await until(()=>log.some(e=>e.event==='play'&&e.text===tag+' Second sentence.'));},
+          'in an underrun gap':async(tag)=>{await until(()=>log.some(e=>e.event==='ended'&&clipText.get(e.clip)===tag+' Fourth sentence.'));},
+          'during the final clip':async(tag)=>{await until(()=>log.some(e=>e.event==='play'&&e.text===tag+' Seventh sentence.'),20000);},
+        };
+        report.cancelled=[];
+        for(const [name,wait] of Object.entries(boundaries)){
+          await quiet();const tag='R'+(count('message')+1);from=performance.now();await initial();
+          const pressed=await wait(tag);escaped=log.length;if(pressed!=='pressed')pressEscape();
+          await sleep(1800);
+          check('cancellation '+name+' leaves nothing playing or queued',playedAfter(escaped,tag).length===0&&active===0&&micTracks===0);
+          report.cancelled.push(name);
+        }
+        // 5. "Actually, ..." replaces the reply: one capture, one new request.
+        await quiet();await sleep(300);from=performance.now();const before=count('message');await initial();
+        await until(()=>played(from,'R'+(before+1)).length>=2);
+        const detections=count('synthetic-detection');injectDetection=true;await until(()=>count('synthetic-detection')>detections);
+        const held=log.length;await until(()=>interruptPending);
+        const stops=count('stop');interruptResult={interrupt:'request',text:'Actually, tell me about Manchester instead.'};submit('ignored');
+        await until(()=>count('message')>before+1);await until(finished('M'),20000);await quiet();await sleep(400);
+        const replacement=since(from,'message');
+        check('the replacement request is captured once and sent once',replacement.length===2&&replacement[1].text==='Actually, tell me about Manchester instead.');
+        check('the interrupted reply is cancelled through the normal stop path',count('stop')>stops);
+        check('no old or queued sentence resumes after the interruption',playedAfter(held,'R'+(before+1)).length===0);
+        check('the replacement reply plays completely, in order',JSON.stringify(played(from,'M'))===JSON.stringify(sentences('M'))&&maxActive===1);
+        check('the replacement reply is not self-interrupted',count('synthetic-detection')===detections+1&&count('interrupt-capture')===since(0,'interrupt-capture').length);
+        // 6. Speech detected in the gap between sentences holds the next one.
+        await quiet();await sleep(300);tagFor=text=>'R'+(count('message')+1);from=performance.now();const tag='R'+(count('message')+1);
+        window.synthDelay=(text,n)=>text.startsWith(tag+' Third')?2500:60;await initial();
+        await until(()=>log.some(e=>e.event==='ended'&&clipText.get(e.clip)===tag+' Second sentence.'));
+        const gapDetections=count('synthetic-detection');injectDetection=true;
+        const heardInGap=await until(()=>count('synthetic-detection')>gapDetections,3000).then(()=>true,()=>false);
+        check('speech in an inter-sentence gap is heard (listening continues between sentences)',heardInGap);
+        const gapHeld=log.length;if(heardInGap)await until(()=>interruptPending);await until(()=>log.some(e=>e.event==='synthesized'&&e.text===tag+' Third sentence.'),6000);await sleep(500);
+        check('a held reply does not start its next sentence',playedAfter(gapHeld,tag).length===0);
+        injectDetection=false;interruptResult={interrupt:'resume',line:'I didn’t hear a request, so I’ll carry on.'};if(heardInGap)submit('ignored');
+        await until(finished(tag),20000);await quiet();
+        check('the held reply carries on from the next sentence, once each',JSON.stringify(played(from,tag))===JSON.stringify(sentences(tag)));
+        reset();
+        output.textContent=JSON.stringify({status:failed.length?'failed':'passed',passed,failed,report,adapters:'production WASM; synthetic IPC, model, synthesis, media element and echo-cancelled microphone; no audio output, microphone or providers'},null,2);return;
+      }
       if(location.hash==='#profile-only'){
         await clean();settings.followup_enabled=false;audioDuration=2000;let played=count('play'),paused=count('paused');await initial();await until(()=>count('play')===played+1);state.profile_id='member';state.speech={turn:'',text:'',done:false,failed:false};state.phase='idle';await until(()=>count('paused')>paused);played=count('play');let captures=count('capture');await sleep(1500);ok('profile switch stops old audio and drops queued old sentences',count('play')===played && count('capture')===captures);output.textContent=JSON.stringify({status:'passed',passed,adapters:'synthetic IPC/model/audio; no microphone or providers'},null,2);return;
       }
@@ -336,7 +454,7 @@
       ok('speech keeps direct WebKit output or reuses the metered output graph',count('play')>2 && count('output-graph')===(/Linux|Macintosh/.test(navigator.userAgent)?0:1));
       ok('cancellation clears the previous speech source',count('audio-source-cleared')>0);
       output.textContent=JSON.stringify({status:'passed',passed,modelMessages:count('message'),automaticCaptures:auto.length,minimumEchoGapMs:Math.min(...auto.map(x=>x.gap)),adapters:'synthetic IPC, model, STT and audio; no real microphone, speaker, credentials or provider calls'},null,2);
-    }catch(error){pressEscape();output.textContent=JSON.stringify({status:'failed',error:String(error),passed,lastEvents:log.filter(x=>x.event!=='lease').slice(-24)},null,2);}
+    }catch(error){pressEscape();output.textContent=JSON.stringify({status:'failed',error:String(error),passed,failed:window.speechFailed,report:window.speechReport,lastEvents:log.filter(x=>x.event!=='lease').slice(-24)},null,2);}
   }
   document.addEventListener('DOMContentLoaded',()=>{const box=document.createElement('aside');box.style='position:fixed;z-index:9999;right:4px;top:4px;background:#132333;color:white;padding:10px;max-width:500px;font:12px monospace;max-height:90vh;overflow:auto';box.innerHTML='<button id="run-silent-checks">Run silent integration checks</button><pre id="harness-results">Ready. All audio and services are synthetic.</pre>';document.body.append(box);document.getElementById('run-silent-checks').onclick=run;});
 })();

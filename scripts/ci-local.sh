@@ -24,6 +24,8 @@ rustc --edition 2024 --test crates/notdot-orb/src/interaction.rs -o .local/gestu
 rustc --edition 2024 --test crates/notdot-orb/src/visual_state.rs -o .local/visual-tests
 .local/visual-tests
 rustc --edition 2024 --test crates/notdot-orb/src/speech_queue.rs -o .local/speech-queue-tests
+rustc --edition 2024 --test crates/notdot-orb/src/speech_pipeline.rs -o .local/speech-pipeline-tests
+.local/speech-pipeline-tests
 .local/speech-queue-tests
 "$NOTDOT_TEST_PYTHON" -m unittest discover -s scripts -p 'test_*.py'
 git diff --check

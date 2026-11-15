@@ -147,7 +147,15 @@ pub fn wanted(view: &Shared) -> bool {
         && v.confirmation_listening.is_none()
         && v.update_listening.is_none()
         && !crate::dialog("panel").open()
-        && v.audio.as_ref().is_some_and(|a| !a.paused() && !a.ended())
+        && speaking(&v)
+}
+/// A reply is being spoken: from its first sentence until its last ends,
+/// including the gaps between sentences, or a single clip is playing.
+/// Listening for the whole reply opens the echo-cancelled microphone once,
+/// instead of reopening it (and re-converging echo cancellation) per sentence.
+fn speaking(v: &crate::View) -> bool {
+    (v.speech_worker && v.speech_started == Some(v.generation))
+        || v.audio.as_ref().is_some_and(|a| !a.paused() && !a.ended())
 }
 
 /// Start, keep or stop listening to match the current state. Called each tick.
@@ -367,6 +375,8 @@ pub fn resume(view: &Shared, line: Option<&str>) {
             let _ = JsFuture::from(promise).await;
         });
     }
+    // A hold in the gap between sentences kept the next one waiting.
+    crate::wake_speech(view);
 }
 
 /// Handle the recognised request after the wake phrase. `token` and

@@ -11,6 +11,7 @@ mod orb_renderer;
 mod settings_navigation;
 mod shader_renderer;
 mod speakers;
+mod speech_pipeline;
 mod speech_queue;
 mod update_panel;
 mod visual_state;
@@ -192,6 +193,17 @@ struct View {
     reply_turn: String,
     request_id: Option<String>,
     speech_queue: speech_queue::SpeechQueue,
+    /// Synthesized sentences (blob URL, text) waiting to play, in order.
+    speech_pipeline: speech_pipeline::Pipeline<(String, String)>,
+    /// A synthesis failure for the current reply, reported by its request.
+    speech_error: Option<String>,
+    /// Wakes the speech loop early: a clip ended or a synthesis finished.
+    speech_wake: Option<js_sys::Function>,
+    /// The generation whose reply has started speaking. Interruption listening
+    /// spans the whole reply from here, including gaps between sentences.
+    speech_started: Option<u64>,
+    /// `ended` handler of the playback element; wakes the speech loop.
+    audio_ended: Option<Closure<dyn FnMut()>>,
     speech_worker: bool,
     polling: bool,
     native_manual: bool,
@@ -1369,6 +1381,11 @@ fn stop_audio(view: &Shared) {
     v.voice_pending = false;
     v.reply_turn.clear();
     v.speech_queue = speech_queue::SpeechQueue::default();
+    for (url, _) in v.speech_pipeline.drain() {
+        let _ = web_sys::Url::revoke_object_url(&url);
+    }
+    v.speech_error = None;
+    v.speech_started = None;
     v.speech_worker = false;
     v.speech_end = None;
     v.discard_capture = false;
@@ -1393,6 +1410,12 @@ fn stop_audio(view: &Shared) {
     }
     if let Some(url) = v.audio_url.take() {
         let _ = web_sys::Url::revoke_object_url(&url);
+    }
+    // Let a waiting speech loop see the cancellation now, not at its next tick.
+    let wake = v.speech_wake.take();
+    drop(v);
+    if let Some(wake) = wake {
+        let _ = wake.call0(&JsValue::NULL);
     }
 }
 async fn speech_tick() -> Result<(), String> {
@@ -1431,63 +1454,165 @@ async fn wait_for_audio(
         speech_tick().await?;
     }
 }
-async fn stream_speech(view: Shared, generation: u64) -> Result<(), String> {
-    let mut previous: Option<web_sys::HtmlAudioElement> = None;
-    let started = js_sys::Date::now();
-    loop {
-        let next = loop {
-            if js_sys::Date::now() - started > 240_000. {
-                return Err("The spoken response took too long. Please try again.".into());
-            }
-            let (next, finished) = {
-                let mut v = view.borrow_mut();
-                if v.generation != generation {
-                    return Ok(());
-                }
-                if v.snapshot.speech.turn == v.reply_turn
-                    && (v.snapshot.speech.failed || v.snapshot.phase == "error")
-                {
-                    return Err("The response was interrupted".into());
-                }
-                let next = v.speech_queue.next();
-                (next, v.speech_queue.finished())
-            };
-            if next.is_some() || finished {
-                break next;
-            }
-            speech_tick().await?;
-        };
-        let Some(text) = next else {
-            if let Some(audio) = previous {
-                wait_for_audio(&view, generation, &audio).await?;
-            }
-            return Ok(());
-        };
-        // At most one next clip is synthesized while the current clip plays.
-        let sentence = text.clone();
-        let value = call("speak", json!({"text":text})).await?;
-        if view.borrow().generation != generation {
-            return Ok(());
-        }
-        if let Some(audio) = previous {
-            wait_for_audio(&view, generation, &audio).await?;
-        }
-        if view.borrow().generation != generation {
-            return Ok(());
-        }
-        view.borrow_mut().playing_text = sentence;
-        play_encoded(view.clone(), value, generation).await?;
-        previous = view.borrow().audio.clone();
+/// Wake the speech loop early, when a clip ends or a synthesis completes.
+fn wake_speech(view: &Shared) {
+    let wake = view.borrow_mut().speech_wake.take();
+    if let Some(wake) = wake {
+        let _ = wake.call0(&JsValue::NULL);
     }
 }
-async fn play_encoded(view: Shared, value: JsValue, generation: u64) -> Result<(), String> {
-    call("wake_activity", json!({"ready":false})).await?;
-    if view.borrow().generation != generation {
-        return Ok(());
+/// Wait for `wake_speech` or, as a backstop for streamed text that arrives
+/// by polling, `milliseconds`.
+async fn speech_wait(view: &Shared, milliseconds: i32) -> Result<(), String> {
+    let target = view.clone();
+    let promise = js_sys::Promise::new(&mut |resolve, reject| {
+        if let Err(error) =
+            window().set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, milliseconds)
+        {
+            let _ = reject.call1(&JsValue::NULL, &error);
+        }
+        target.borrow_mut().speech_wake = Some(resolve);
+    });
+    JsFuture::from(promise).await.map_err(js_error)?;
+    Ok(())
+}
+/// The end of the previous sentence, as context for the voice service, so
+/// independently synthesized sentences keep a consistent pace and prosody.
+fn speech_context(previous: &str) -> Option<String> {
+    const LIMIT: usize = 300;
+    let previous = previous.trim();
+    if previous.is_empty() {
+        return None;
     }
+    let mut start = previous.len().saturating_sub(LIMIT);
+    while !previous.is_char_boundary(start) {
+        start += 1;
+    }
+    Some(previous[start..].to_owned())
+}
+/// Speak a streamed reply. Up to `speech_pipeline::AHEAD` sentences are
+/// synthesized ahead and decoded before they are needed; they play strictly
+/// in order, one at a time, and the next starts from the `ended` event with no
+/// polling or IPC in between. A hold (interruption) never starts a sentence.
+async fn stream_speech(view: Shared, generation: u64) -> Result<(), String> {
+    let started = js_sys::Date::now();
+    let mut previous = String::new();
+    {
+        let mut v = view.borrow_mut();
+        for (url, _) in v.speech_pipeline.drain() {
+            let _ = web_sys::Url::revoke_object_url(&url);
+        }
+        v.speech_pipeline = speech_pipeline::Pipeline::default();
+        v.speech_error = None;
+        v.speech_started = None;
+    }
+    loop {
+        if js_sys::Date::now() - started > 240_000. {
+            return Err("The spoken response took too long. Please try again.".into());
+        }
+        let (requests, next, done) = {
+            let mut v = view.borrow_mut();
+            if v.generation != generation {
+                return Ok(());
+            }
+            if v.snapshot.speech.turn == v.reply_turn
+                && (v.snapshot.speech.failed || v.snapshot.phase == "error")
+            {
+                return Err("The response was interrupted".into());
+            }
+            if let Some(error) = v.speech_error.take() {
+                return Err(error);
+            }
+            let mut requests = Vec::new();
+            while v.speech_pipeline.can_request() {
+                let Some(text) = v.speech_queue.next() else {
+                    break;
+                };
+                requests.push((v.speech_pipeline.begin(), text));
+            }
+            if let Some(audio) = v.audio.as_ref()
+                && audio.error().is_some()
+            {
+                return Err("Voice playback failed".into());
+            }
+            let playing = v.audio.as_ref().is_some_and(|a| !a.paused() && !a.ended());
+            let holding = v.interrupt_hold.is_some();
+            let next = if playing || holding {
+                None
+            } else {
+                v.speech_pipeline.take_next()
+            };
+            let done = next.is_none()
+                && !playing
+                && !holding
+                && v.speech_queue.finished()
+                && v.speech_pipeline.idle();
+            (requests, next, done)
+        };
+        for (seq, text) in requests {
+            let context = speech_context(&previous);
+            previous.clone_from(&text);
+            synthesize_sentence(view.clone(), generation, seq, text, context);
+        }
+        if let Some((url, sentence)) = next {
+            {
+                let mut v = view.borrow_mut();
+                v.playing_text = sentence;
+                v.speech_started = Some(generation);
+            }
+            start_clip(&view, url).await?;
+            // Native synthesis already paused wake listening; this keeps the
+            // lease down without putting an IPC round trip between sentences.
+            spawn_local(async {
+                let _ = call("wake_activity", json!({"ready":false})).await;
+            });
+            continue;
+        }
+        if done {
+            return Ok(());
+        }
+        speech_wait(&view, 80).await?;
+    }
+}
+/// Synthesize one sentence and decode it into a playable blob, then hand it
+/// to the pipeline at its reserved position.
+fn synthesize_sentence(
+    view: Shared,
+    generation: u64,
+    seq: u64,
+    text: String,
+    previous: Option<String>,
+) {
+    spawn_local(async move {
+        let result = async {
+            let value = call("speak", json!({"text":text,"previous":previous})).await?;
+            prepare_clip(value)
+        }
+        .await;
+        {
+            let mut v = view.borrow_mut();
+            if v.generation != generation {
+                if let Ok(url) = result {
+                    let _ = web_sys::Url::revoke_object_url(&url);
+                }
+                return;
+            }
+            match result {
+                Ok(url) => {
+                    if let Err((url, _)) = v.speech_pipeline.complete(seq, (url, text)) {
+                        let _ = web_sys::Url::revoke_object_url(&url);
+                    }
+                }
+                Err(error) => v.speech_error = Some(error),
+            }
+        }
+        wake_speech(&view);
+    });
+}
+/// Decode synthesized audio into a blob URL, ready to play.
+fn prepare_clip(value: JsValue) -> Result<String, String> {
     let clip: EncodedAudio = serde_wasm_bindgen::from_value(value).map_err(|e| e.to_string())?;
-    let encoded = clip.data;
-    let binary = window().atob(&encoded).map_err(js_error)?;
+    let binary = window().atob(&clip.data).map_err(js_error)?;
     let bytes: Vec<u8> = binary.chars().map(|c| c as u8).collect();
     let array = js_sys::Array::new();
     array.push(&js_sys::Uint8Array::from(bytes.as_slice()));
@@ -1495,7 +1620,10 @@ async fn play_encoded(view: Shared, value: JsValue, generation: u64) -> Result<(
     options.set_type(&clip.mime);
     let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&array, &options)
         .map_err(js_error)?;
-    let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(js_error)?;
+    web_sys::Url::create_object_url_with_blob(&blob).map_err(js_error)
+}
+/// Play a prepared clip on the single playback element.
+async fn start_clip(view: &Shared, url: String) -> Result<(), String> {
     let cached_audio = {
         let v = view.borrow();
         v.audio.clone().or_else(|| v.meter.playback_element())
@@ -1505,6 +1633,16 @@ async fn play_encoded(view: Shared, value: JsValue, generation: u64) -> Result<(
     } else {
         web_sys::HtmlAudioElement::new().map_err(js_error)?
     };
+    if view.borrow().audio.as_ref() != Some(&audio) {
+        let weak = Rc::downgrade(view);
+        let ended = Closure::<dyn FnMut()>::new(move || {
+            if let Some(view) = weak.upgrade() {
+                wake_speech(&view);
+            }
+        });
+        audio.set_onended(Some(ended.as_ref().unchecked_ref()));
+        view.borrow_mut().audio_ended = Some(ended);
+    }
     view.borrow_mut().meter.clear_playback();
     audio.set_src(&url);
     {
@@ -1519,6 +1657,14 @@ async fn play_encoded(view: Shared, value: JsValue, generation: u64) -> Result<(
         .await
         .map_err(js_error)?;
     Ok(())
+}
+async fn play_encoded(view: Shared, value: JsValue, generation: u64) -> Result<(), String> {
+    call("wake_activity", json!({"ready":false})).await?;
+    if view.borrow().generation != generation {
+        return Ok(());
+    }
+    let url = prepare_clip(value)?;
+    start_clip(&view, url).await
 }
 async fn submit_clip(
     view: Shared,
@@ -3376,6 +3522,10 @@ pub fn start() -> Result<(), JsValue> {
                                     let ended = v.audio.as_ref().is_some_and(|audio| audio.ended());
                                     v.conversation
                                         .after_reply(conversation_now(), enabled, ended);
+                                    drop(v);
+                                    // Release interruption listening as the
+                                    // reply ends, not at the next poll.
+                                    interruption::sync(&voice_target);
                                 }
                             }
                         });
