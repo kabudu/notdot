@@ -102,7 +102,7 @@ With wake listening off, click the orb once. A short chime tells you the microph
 
 Say **“That’s all”** while it is listening, or press **Escape**, to end the exchange. It also stops on silence, mute, opening Settings or About, hiding the window, loss of voice-service access or an error. Ending an exchange returns to the usual wake or click mode.
 
-**Interrupt while notdot speaks** is off by default. Turn it on to change a reply while it is playing. Say “Stop”, “Actually…” or a new request; no wake phrase is needed. The orb glows and pauses the reply when it detects speech. A clear stop ends it, a new request replaces it, and empty, unclear or refused speech lets it carry on. Escape always cancels. If listening cannot start, notdot stops trying; toggle the setting off and on to retry.
+**Interrupt while notdot speaks** is off by default. Turn it on to change a reply while it is playing. Say “Stop”, “Actually…” or a new request; no wake phrase is needed. The orb glows and pauses the reply when it detects speech. A clear stop ends it, a new request replaces it, and empty, unclear or refused speech lets it carry on. Escape always cancels. If listening cannot start, notdot stops trying; toggle the setting off and on to retry. Listening covers the whole reply, including the short pauses between sentences, and the next sentence waits while notdot is listening to you.
 
 The setting stays unavailable if the microphone cannot provide echo cancellation. Speech detected during a reply goes to your selected recognition service, with its usual usage charges; idle audio stays local. A reply or background sound can still be mistaken for speech, so use mute whenever you want listening to stop.
 
