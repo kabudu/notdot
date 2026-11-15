@@ -159,6 +159,9 @@ class Accessibility(unittest.TestCase):
             self.assertEqual(controls[ident][1]['type'],'button')
             self.assertIn('hidden',controls[ident][1])
         self.assertNotIn('hidden',controls['update-panel-close'][1])
+        # WebKit focuses the dialog itself when nothing has autofocus; Close is
+        # the safe control present in every state.
+        self.assertIn('autofocus',controls['update-panel-close'][1])
 
     def test_update_menu_opens_the_panel_not_settings(self):
         ui=(ROOT/'crates/notdot-orb/src/lib.rs').read_text()
