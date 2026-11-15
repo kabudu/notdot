@@ -62,8 +62,17 @@ struct Utterance {
     audio: zeroize::Zeroizing<Vec<f32>>,
     speaking: bool,
     quiet: usize,
+    /// Samples classified as speech so far.
+    voiced: usize,
     complete: bool,
 }
+/// Silence that ends an utterance, at 16 kHz.
+const ENDPOINT: usize = 9_600; // 600 ms
+/// After only a word or two ("Actually…", "Wait…") people often pause before
+/// the request itself; wait longer so the request is not cut to its lead-in.
+const LEAD_IN_ENDPOINT: usize = 19_200; // 1.2 s
+/// Less speech than this counts as a lead-in.
+const LEAD_IN_SPEECH: usize = 12_800; // 800 ms
 impl Utterance {
     fn push(&mut self, samples: &[f32], speech: bool) -> bool {
         if self.complete {
@@ -76,12 +85,20 @@ impl Utterance {
             let excess = self.audio.len().saturating_sub(8_000);
             self.audio.drain(..excess);
         } else {
+            if speech {
+                self.voiced += samples.len();
+            }
             self.quiet = if speech {
                 0
             } else {
                 self.quiet + samples.len()
             };
-            self.complete = self.quiet >= 9_600 || self.audio.len() >= 192_000;
+            let endpoint = if self.voiced < LEAD_IN_SPEECH {
+                LEAD_IN_ENDPOINT
+            } else {
+                ENDPOINT
+            };
+            self.complete = self.quiet >= endpoint || self.audio.len() >= 192_000;
             self.audio.truncate(192_000);
         }
         onset
@@ -714,8 +731,39 @@ mod tests {
         for _ in 0..6 {
             capture.push(&[0.; 1600], false);
         }
-        assert!(capture.complete, "600 ms silence submits even a short Stop");
+        assert!(!capture.complete, "a short word may be a lead-in");
+        for _ in 0..6 {
+            capture.push(&[0.; 1600], false);
+        }
+        assert!(
+            capture.complete,
+            "1.2 s of silence submits even a short Stop"
+        );
         assert!(capture.audio.contains(&0.2), "first word is retained");
+        // "Actually," then a natural pause, then the request: one utterance.
+        let mut steer = super::Utterance::default();
+        for _ in 0..5 {
+            steer.push(&[0.2; 1600], true);
+        }
+        for _ in 0..8 {
+            steer.push(&[0.; 1600], false);
+        }
+        assert!(
+            !steer.complete,
+            "an 800 ms pause after a lead-in keeps listening"
+        );
+        for _ in 0..10 {
+            steer.push(&[0.2; 1600], true);
+        }
+        for _ in 0..5 {
+            steer.push(&[0.; 1600], false);
+        }
+        assert!(!steer.complete);
+        steer.push(&[0.; 1600], false);
+        assert!(
+            steer.complete,
+            "600 ms after a full request ends it promptly"
+        );
         let mut long = super::Utterance::default();
         for _ in 0..200 {
             long.push(&[0.2; 1600], true);
