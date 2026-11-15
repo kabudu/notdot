@@ -3102,6 +3102,8 @@ pub fn start() -> Result<(), JsValue> {
                         "title",
                         if target.borrow().conversation.listening() {
                             "Listening for a follow-up · say That’s all to stop"
+                        } else if interruption::reply_hint(&target.borrow(), &snapshot) {
+                            interruption::REPLY_HINT
                         } else if snapshot.settings.microphone_muted {
                             "Microphone muted"
                         } else if snapshot.wake["phase"] == "listening" {

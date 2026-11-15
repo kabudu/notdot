@@ -308,7 +308,11 @@
         }
         await clean();reset();Object.assign(settings,{followup_enabled:false,interrupt_enabled:false,wake_enabled:false});
         // 1. Long reply, interruption off.
-        streaming();let from=performance.now();await initial();await until(finished('R1'),20000);await quiet();
+        streaming();let from=performance.now();await initial();
+        const orbEl=document.getElementById('orb');await until(()=>played(from,'R1').length>=2);await sleep(250);
+        check('with interruption off, a reply says how to interrupt by voice',orbEl.title.includes('turn on Interrupt while notdot speaks')&&orbEl.getAttribute('aria-label').includes('turn on Interrupt'));
+        check('the hint never turns listening on',settings.interrupt_enabled===false&&!since(from,'mic-open').length);
+        await until(finished('R1'),20000);await quiet();
         check('every sentence of a long streamed reply plays once, in order',JSON.stringify(played(from,'R1'))===JSON.stringify(sentences('R1')));
         check('only one clip ever plays at a time',maxActive===1&&since(from,'src-replaced-while-playing').length===0);
         let g=gaps(from);report.gapsInterruptOff=g.map(x=>Math.round(x.excess));
@@ -316,7 +320,9 @@
         check('a synthesis underrun resumes as soon as the clip is ready',g.some(x=>x.underrun));
         // 2. Same reply with interruption listening: one capture for the whole reply.
         Object.assign(settings,{interrupt_enabled:true});await sleep(300);
-        from=performance.now();let mics=since(0,'mic-open').length;await initial();await until(finished('R2'),20000);await quiet();await sleep(300);
+        from=performance.now();let mics=since(0,'mic-open').length;await initial();
+        await until(()=>(orbEl.getAttribute('aria-label')||'').includes('interrupt with Stop'),6000).then(()=>check('with interruption on, the reply says it is listening',!orbEl.title.includes('turn on Interrupt')),()=>check('with interruption on, the reply says it is listening',false));
+        await until(finished('R2'),20000);await quiet();await sleep(300);
         const opens=since(from,'mic-open').filter(e=>e.listen);report.listeningOpensPerReply=opens.length;
         check('interruption listening opens the microphone once per reply, not per sentence',opens.length===1);
         check('listening is released after the reply',micTracks===0);

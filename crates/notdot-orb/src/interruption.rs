@@ -283,12 +283,20 @@ pub fn label(view: &Shared, snapshot: &crate::Snapshot) {
             "Listening. Paused my reply. Say your request, or Stop. Escape cancels.",
         );
     } else if v.interrupt_session.is_some() {
-        let _ = snapshot;
         let _ = orb.set_attribute(
             "aria-label",
             "Speaking. You can interrupt with Stop or a new request. Escape stops.",
         );
+    } else if reply_hint(&v, snapshot) {
+        let _ = orb.set_attribute("aria-label", REPLY_HINT);
     }
+}
+/// Shown while a reply plays with voice interruption off.
+pub const REPLY_HINT: &str = "Speaking. Escape stops me. To interrupt by voice, turn on Interrupt while notdot speaks in Settings.";
+/// Nothing listens during a reply unless interrupting is on; say so instead
+/// of letting "Actually…" go unheard. The setting is never turned on here.
+pub fn reply_hint(v: &crate::View, snapshot: &crate::Snapshot) -> bool {
+    v.interrupt_hold.is_none() && speaking(v) && !snapshot.settings.interrupt_enabled
 }
 
 /// The wake phrase was heard during a reply: pause playback at once and
