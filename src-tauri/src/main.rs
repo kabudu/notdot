@@ -2380,6 +2380,8 @@ fn main() {
             TrayIconBuilder::new().icon(icon).menu(&menu).build(app)?;
             app.on_menu_event(|app, event| match event.id.as_ref() {
                 "check-updates" => {
+                    // The compact update panel starts the check itself and
+                    // joins one that is already running; Settings stays closed.
                     if let Some(w) = app.get_webview_window("main") {
                         let _ = w.show();
                         orb_input::refresh(w.app_handle());
@@ -2387,11 +2389,6 @@ fn main() {
                         let _ = w.set_focus();
                         let _ = w.eval("window.dispatchEvent(new Event('notdot-updates'))");
                     }
-                    let handle = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let updates = handle.state::<Arc<updates::Updates>>();
-                        let _ = updates::check_updates(handle.clone(), updates).await;
-                    });
                 }
                 "quit" => app.exit(0),
                 "mute" => {

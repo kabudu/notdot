@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **Quicker update checks.** **Check for Updates…** in the app and tray menus now opens a small update panel and checks straight away, instead of opening Settings. It shows checking, up to date, an available update with download progress, errors with **Try again**, and package-manager guidance on Linux. A check that is already running is shown rather than reported as an error.
+- **One click is enough.** Buttons in Settings and the update panel now respond to the first click on macOS, even when notdot isn't the active app.
+
 ## [0.8.0] - 2026-11-12
 
 Interrupt replies naturally, keep voice notes and lists, and protect your memories with encrypted backups.

@@ -22,6 +22,7 @@
   let active = 0, lastEnd = -Infinity, turn = 0, capture = 0, transcript = '', delayedStart = false, noticeGeneration = 0;
   function later(ms, fn) { const id = setTimeout(() => {timers.delete(id);fn();},ms);timers.add(id);return id; }
   function record(event, detail={}) {log.push({event,at:performance.now(),...detail});}
+  window.harnessLog=log;
   function emit(phase,token) {for (const cb of callbacks) cb({payload:{phase,token}});}
   class Node {connect(){return this;} disconnect(){} getByteTimeDomainData(a){a.fill(128);} }
   const parameter = () => ({value:0,cancelScheduledValues(){},setValueAtTime(){},linearRampToValueAtTime(){}});
@@ -72,6 +73,10 @@
     if(cmd==='backup_inspect'){record('backup-inspect');if(window.inspectDelay){const d=window.inspectDelay;window.inspectDelay=0;await sleep(d);}if(args.password!=='synthetic password')throw Error('The password is wrong, or the backup was changed after it was made. Nothing was restored.');return {id:'restore-1',created_unix_ms:1800000000000,memories:3,skipped_memories:1,notes:2,renamed_notes:1,preferences:true};}
     if(cmd==='backup_restore'){record('backup-restore',{id:args.id});return 'Restored 3 memories and 2 notes. Orb colour, quiet hours, reminder limits and follow-up length were restored.';}
     if(cmd==='backup_cancel'){record('backup-cancel');return null;}
+    // Software-update adapters: never contact a release server or install anything.
+    if(cmd==='check_updates'){record('update-check');state.updates={...state.updates,phase:'checking',message:'Checking for updates…'};if(window.updateCheckDelay)await sleep(window.updateCheckDelay);const next=copy(window.updateCheckResult||{phase:'current',version:null,message:'You have the latest published version',received:0,total:null,prompt:false});state.updates={...state.updates,received:0,total:null,prompt:false,...next};if(next.phase==='error')throw Error(next.message);return copy(state.updates);}
+    if(cmd==='install_update'){record('update-install');state.updates={...state.updates,phase:'downloading',message:'Downloading update…',received:25,total:100};return new Promise(()=>{});}
+    if(cmd==='defer_update'){record('update-defer');state.updates.prompt=false;return null;}
     if(cmd==='snapshot') return copy(state);
     if(cmd==='capture_status') return copy(state.wake);
     if(cmd==='voice_providers') return [{id:'elevenlabs',name:'ElevenLabs',streaming_transcription:true}];

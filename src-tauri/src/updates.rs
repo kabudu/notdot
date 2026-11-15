@@ -39,6 +39,10 @@ struct Inner {
     consent: Option<(String, Instant)>,
     journal: Journal,
 }
+enum Begin<'a> {
+    Started(tokio::sync::MutexGuard<'a, ()>),
+    Running(Status),
+}
 pub struct Updates {
     inner: Mutex<Inner>,
     operation: tokio::sync::Mutex<()>,
@@ -83,6 +87,19 @@ impl Updates {
             .and_then(|()| std::fs::rename(temp, &self.journal))
             .map_err(|e| e.to_string())
     }
+    /// Start a check, or join the update operation that is already running.
+    /// A second request (menu, Settings or the periodic timer) must show the
+    /// running check, download or installation rather than fail or race it.
+    fn begin_check(&self) -> Begin<'_> {
+        let Ok(guard) = self.operation.try_lock() else {
+            return Begin::Running(self.status());
+        };
+        let mut i = self.lock_state();
+        i.status.phase = "checking".into();
+        i.status.message = "Checking for updates…".into();
+        i.journal.last_check = now();
+        Begin::Started(guard)
+    }
     fn fail(&self, error: &str) {
         let mut i = self.lock_state();
         i.status.phase = "error".into();
@@ -95,10 +112,12 @@ impl Updates {
 pub async fn check_updates(
     app: tauri::AppHandle,
     updates: State<'_, Arc<Updates>>,
-) -> Result<(), String> {
+) -> Result<Status, String> {
     check(&app, &updates).await
 }
-async fn check(app: &tauri::AppHandle, updates: &Updates) -> Result<(), String> {
+/// Returns the status to show once the check finishes, or the status of the
+/// update operation that was already running.
+async fn check(app: &tauri::AppHandle, updates: &Updates) -> Result<Status, String> {
     if !can_install_here() {
         let mut i = updates.lock_state();
         i.update = None;
@@ -108,19 +127,13 @@ async fn check(app: &tauri::AppHandle, updates: &Updates) -> Result<(), String> 
             message: PACKAGE_MANAGER_GUIDANCE.into(),
             ..Status::default()
         };
-        return Ok(());
+        return Ok(i.status.clone());
     }
 
-    let _guard = updates
-        .operation
-        .try_lock()
-        .map_err(|_| "An update operation is already in progress")?;
-    {
-        let mut i = updates.lock_state();
-        i.status.phase = "checking".into();
-        i.status.message = "Checking for updates…".into();
-        i.journal.last_check = now();
-    }
+    let _guard = match updates.begin_check() {
+        Begin::Started(guard) => guard,
+        Begin::Running(status) => return Ok(status),
+    };
     if let Err(error) = updates.persist() {
         updates.fail(&error);
         return Err(error);
@@ -161,7 +174,7 @@ async fn check(app: &tauri::AppHandle, updates: &Updates) -> Result<(), String> 
     if let Err(e) = &result {
         updates.fail(e);
     }
-    result
+    result.map(|()| updates.status())
 }
 fn validate_source(update: &Update) -> Result<(), String> {
     validate_package_url(
@@ -553,6 +566,47 @@ mod tests {
         assert_eq!(i.status.phase, "idle");
         drop(i);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_second_check_joins_the_running_operation_instead_of_failing() {
+        let path = std::env::temp_dir().join(format!(
+            "notdot-update-join-{}-{}.json",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let updates = Updates::new(path);
+        let Begin::Started(first) = updates.begin_check() else {
+            panic!("an idle updater must start a check");
+        };
+        assert_eq!(updates.status().phase, "checking");
+        assert!(updates.lock_state().journal.last_check > 0);
+        let Begin::Running(status) = updates.begin_check() else {
+            panic!("a concurrent check must join the running one");
+        };
+        assert_eq!(status.phase, "checking");
+        assert_eq!(status.message, "Checking for updates…");
+        drop(first);
+        // A download holds the same operation lock; joining shows its progress.
+        let download = updates.operation.lock().await;
+        {
+            let mut i = updates.lock_state();
+            i.status.phase = "downloading".into();
+            i.status.received = 10;
+            i.status.total = Some(40);
+        }
+        let Begin::Running(status) = updates.begin_check() else {
+            panic!("a check must not interrupt a download");
+        };
+        assert_eq!(
+            (status.phase.as_str(), status.received, status.total),
+            ("downloading", 10, Some(40))
+        );
+        drop(download);
+        assert!(matches!(updates.begin_check(), Begin::Started(_)));
     }
 
     #[test]

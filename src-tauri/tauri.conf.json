@@ -29,7 +29,8 @@
         "alwaysOnTop": true,
         "resizable": false,
         "backgroundColor": "#00000000",
-        "backgroundThrottling": "disabled"
+        "backgroundThrottling": "disabled",
+        "acceptFirstMouse": true
       }
     ],
     "security": {
