@@ -969,11 +969,14 @@ async fn connect(state: Arc<AppState>, allow_interrupt: bool) -> Result<(), Stri
     let settings = state.snapshot.lock().await.settings.clone();
     let cwd = state.path.parent().ok_or("App data directory missing")?;
     let tid = bridge
-        .thread_with_selection(
+        .thread_with_options(
             existing_thread.as_deref(),
             cwd,
             &settings.name,
             &settings.selection(),
+            notdot_core::bridge::ThreadOptions {
+                live_web_search: settings.live_web_search,
+            },
         )
         .await?;
     {

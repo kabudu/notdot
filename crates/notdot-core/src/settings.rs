@@ -37,6 +37,9 @@ pub struct Settings {
     /// Independent of wake listening; uses the selected recognition backend.
     pub interrupt_enabled: bool,
     pub microphone_muted: bool,
+    /// Codex live web search for the owner's own companion. Off by default.
+    /// Members, shared rosters and trusted-voice mode keep web search off.
+    pub live_web_search: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -65,6 +68,7 @@ impl Default for Settings {
             wake_name_only: false,
             interrupt_enabled: false,
             microphone_muted: false,
+            live_web_search: false,
         }
     }
 }
@@ -74,6 +78,7 @@ impl Settings {
         self.name != previous.name
             || self.selection() != previous.selection()
             || self.session_control != previous.session_control
+            || self.live_web_search != previous.live_web_search
     }
 
     pub fn transcription_id(&self) -> &str {
@@ -157,6 +162,20 @@ mod tests {
         assert!(!cosmetic.requires_reconnect(&original));
         cosmetic.name = "Luna".into();
         assert!(cosmetic.requires_reconnect(&original));
+        let mut search = original.clone();
+        search.live_web_search = true;
+        assert!(
+            search.requires_reconnect(&original),
+            "thread config changes"
+        );
+    }
+    #[test]
+    fn live_web_search_is_off_by_default_and_for_older_settings() {
+        assert!(!Settings::default().live_web_search);
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("settings.json");
+        std::fs::write(&path, br#"{"name":"Ava"}"#).unwrap();
+        assert!(!Settings::load(&path).unwrap().live_web_search);
     }
 
     #[test]
