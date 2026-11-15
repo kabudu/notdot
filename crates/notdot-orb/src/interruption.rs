@@ -295,8 +295,16 @@ pub fn label(view: &Shared, snapshot: &crate::Snapshot) {
 pub const REPLY_HINT: &str = "Speaking. Escape stops me. To interrupt by voice, turn on Interrupt while notdot speaks in Settings.";
 /// Nothing listens during a reply unless interrupting is on; say so instead
 /// of letting "Actually…" go unheard. The setting is never turned on here.
+/// Not shown where turning it on would not help: echo cancellation is
+/// unavailable here, or the microphone is muted.
 pub fn reply_hint(v: &crate::View, snapshot: &crate::Snapshot) -> bool {
-    v.interrupt_hold.is_none() && speaking(v) && !snapshot.settings.interrupt_enabled
+    let s = &snapshot.settings;
+    v.interrupt_hold.is_none()
+        && speaking(v)
+        && !s.interrupt_enabled
+        && !s.microphone_muted
+        && s.onboarding_complete
+        && v.interrupt_supported != Some(false)
 }
 
 /// The wake phrase was heard during a reply: pause playback at once and

@@ -195,6 +195,10 @@ struct View {
     speech_queue: speech_queue::SpeechQueue,
     /// Synthesized sentences (blob URL, text) waiting to play, in order.
     speech_pipeline: speech_pipeline::Pipeline<(String, String)>,
+    /// Identifies the speech loop that owns `speech_pipeline`. A follow-up
+    /// reply can share a generation, so synthesis results are matched to the
+    /// loop that requested them, not only to the generation.
+    speech_stream: u64,
     /// A synthesis failure for the current reply, reported by its request.
     speech_error: Option<String>,
     /// Wakes the speech loop early: a clip ended or a synthesis finished.
@@ -1497,15 +1501,17 @@ fn speech_context(previous: &str) -> Option<String> {
 async fn stream_speech(view: Shared, generation: u64) -> Result<(), String> {
     let started = js_sys::Date::now();
     let mut previous = String::new();
-    {
+    let stream = {
         let mut v = view.borrow_mut();
         for (url, _) in v.speech_pipeline.drain() {
             let _ = web_sys::Url::revoke_object_url(&url);
         }
         v.speech_pipeline = speech_pipeline::Pipeline::default();
+        v.speech_stream += 1;
         v.speech_error = None;
         v.speech_started = None;
-    }
+        v.speech_stream
+    };
     loop {
         if js_sys::Date::now() - started > 240_000. {
             return Err("The spoken response took too long. Please try again.".into());
@@ -1523,8 +1529,12 @@ async fn stream_speech(view: Shared, generation: u64) -> Result<(), String> {
             if let Some(error) = v.speech_error.take() {
                 return Err(error);
             }
+            let holding = v.interrupt_hold.is_some();
             let mut requests = Vec::new();
-            while v.speech_pipeline.can_request() {
+            // While a reply is held for an interruption, synthesize nothing
+            // more: a replacement would discard it, and the capture needs the
+            // voice service.
+            while !holding && v.speech_pipeline.can_request() {
                 let Some(text) = v.speech_queue.next() else {
                     break;
                 };
@@ -1536,7 +1546,6 @@ async fn stream_speech(view: Shared, generation: u64) -> Result<(), String> {
                 return Err("Voice playback failed".into());
             }
             let playing = v.audio.as_ref().is_some_and(|a| !a.paused() && !a.ended());
-            let holding = v.interrupt_hold.is_some();
             let next = if playing || holding {
                 None
             } else {
@@ -1552,7 +1561,7 @@ async fn stream_speech(view: Shared, generation: u64) -> Result<(), String> {
         for (seq, text) in requests {
             let context = speech_context(&previous);
             previous.clone_from(&text);
-            synthesize_sentence(view.clone(), generation, seq, text, context);
+            synthesize_sentence(view.clone(), (generation, stream), seq, text, context);
         }
         if let Some((url, sentence)) = next {
             {
@@ -1578,7 +1587,7 @@ async fn stream_speech(view: Shared, generation: u64) -> Result<(), String> {
 /// to the pipeline at its reserved position.
 fn synthesize_sentence(
     view: Shared,
-    generation: u64,
+    (generation, stream): (u64, u64),
     seq: u64,
     text: String,
     previous: Option<String>,
@@ -1591,7 +1600,7 @@ fn synthesize_sentence(
         .await;
         {
             let mut v = view.borrow_mut();
-            if v.generation != generation {
+            if v.generation != generation || v.speech_stream != stream {
                 if let Ok(url) = result {
                     let _ = web_sys::Url::revoke_object_url(&url);
                 }

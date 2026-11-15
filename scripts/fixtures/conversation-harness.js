@@ -355,13 +355,14 @@
         await quiet();await sleep(300);from=performance.now();const before=count('message');await initial();
         await until(()=>played(from,'R'+(before+1)).length>=2);
         const detections=count('synthetic-detection');injectDetection=true;await until(()=>count('synthetic-detection')>detections);
-        const held=log.length;await until(()=>interruptPending);
+        const held=log.length;await until(()=>interruptPending);const holding=log.length;
         const stops=count('stop');interruptResult={interrupt:'request',text:'Actually, tell me about Manchester instead.'};submit('ignored');
         await until(()=>count('message')>before+1);await until(finished('M'),20000);await quiet();await sleep(400);
         const replacement=since(from,'message');
         check('the replacement request is captured once and sent once',replacement.length===2&&replacement[1].text==='Actually, tell me about Manchester instead.');
         check('the interrupted reply is cancelled through the normal stop path',count('stop')>stops);
         check('no old or queued sentence resumes after the interruption',playedAfter(held,'R'+(before+1)).length===0);
+        check('nothing more of the old reply is synthesized while it is held',!log.slice(holding).some(e=>e.event==='synthesize'&&e.text.startsWith('R'+(before+1)+' ')));
         check('the replacement reply plays completely, in order',JSON.stringify(played(from,'M'))===JSON.stringify(sentences('M'))&&maxActive===1);
         check('the replacement reply is not self-interrupted',count('synthetic-detection')===detections+1&&count('interrupt-capture')===since(0,'interrupt-capture').length);
         // 6. Speech detected in the gap between sentences holds the next one.
@@ -373,9 +374,21 @@
         check('speech in an inter-sentence gap is heard (listening continues between sentences)',heardInGap);
         const gapHeld=log.length;if(heardInGap)await until(()=>interruptPending);await until(()=>log.some(e=>e.event==='synthesized'&&e.text===tag+' Third sentence.'),6000);await sleep(500);
         check('a held reply does not start its next sentence',playedAfter(gapHeld,tag).length===0);
+        const resumeMark=log.length;
         injectDetection=false;interruptResult={interrupt:'resume',line:'I didn’t hear a request, so I’ll carry on.'};if(heardInGap)submit('ignored');
         await until(finished(tag),20000);await quiet();
+        check('synthesis continues once the reply resumes',log.slice(resumeMark).some(e=>e.event==='synthesize'&&e.text.startsWith(tag+' ')));
         check('the held reply carries on from the next sentence, once each',JSON.stringify(played(from,tag))===JSON.stringify(sentences(tag)));
+        // 7. Held while the model is still writing: nothing more is synthesized
+        // (and paid for) unless the reply resumes.
+        await quiet();await sleep(300);const slowTag='R'+(count('message')+1);
+        window.replyScript=()=>{const all=sentences(slowTag);return all.map((_,i)=>[300+i*1500,all.slice(0,i+1).join(' '),i===all.length-1]);};
+        window.synthDelay=()=>60;window.clipDuration=()=>4000;from=performance.now();await initial();
+        await until(()=>played(from,slowTag).length>=1);const slowDetections=count('synthetic-detection');injectDetection=true;
+        await until(()=>count('synthetic-detection')>slowDetections);await until(()=>interruptPending);const slowHeld=log.length;injectDetection=false;
+        await sleep(2500);
+        check('a reply held while still being written synthesizes nothing more',!log.slice(slowHeld).some(e=>e.event==='synthesize'&&e.text.startsWith(slowTag+' ')));
+        interruptResult={interrupt:'stop'};submit('ignored');await quiet();
         reset();
         output.textContent=JSON.stringify({status:failed.length?'failed':'passed',passed,failed,report,adapters:'production WASM; synthetic IPC, model, synthesis, media element and echo-cancelled microphone; no audio output, microphone or providers'},null,2);return;
       }
