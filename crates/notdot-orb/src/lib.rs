@@ -2045,6 +2045,18 @@ pub fn start() -> Result<(), JsValue> {
     });
     let update_target = view.clone();
     on(element("install-update").as_ref(), "click", move |_| {
+        // Hide the choice at once: a quick second click must not start a
+        // second install and report "already in progress" over the download.
+        // The status poll shows the buttons again if the install is refused.
+        if element("install-update").has_attribute("hidden") {
+            return;
+        }
+        for id in ["install-update", "defer-update"] {
+            let _ = element(id).set_attribute("hidden", "");
+        }
+        let _ = element("check-updates")
+            .dyn_into::<web_sys::HtmlElement>()
+            .map(|button| button.focus());
         stop_audio(&update_target);
         spawn_local(async {
             if let Err(e) = call("install_update", json!({})).await {

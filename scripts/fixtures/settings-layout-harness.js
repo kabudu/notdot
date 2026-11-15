@@ -104,6 +104,8 @@
  await sleep(1200);
  check('status polling never replaces update buttons',$('defer-update')===laterButton&&document.activeElement===laterButton);
  check('update controls are native buttons, so Enter and Space activate them',['check-updates','install-update','defer-update','update-panel-install','update-panel-later','update-panel-retry','update-panel-close'].every(id=>$(id).tagName==='BUTTON'&&$(id).type==='button'&&$(id).textContent.trim()));
+ before=updates('update-install');pointerClick($('install-update'));pointerClick($('install-update'));await sleep(50);
+ check('Settings Install starts once, even on a double click',updates('update-install')===before+1&&$('install-update').hidden&&$('defer-update').hidden&&document.activeElement===$('check-updates'));
  $('close').click();await sleep(150);
  $('orb').focus();const opener=document.activeElement;
  window.updateCheckDelay=3000;before=updates('update-check');
