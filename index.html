@@ -779,5 +779,32 @@
     Close
    </button>
   </dialog>
+  <dialog aria-describedby="update-panel-status" aria-labelledby="update-panel-title" id="update-panel">
+   <h1 id="update-panel-title">
+    Software update
+   </h1>
+   <p aria-atomic="true" aria-live="polite" id="update-panel-status" role="status">
+   </p>
+   <div hidden="" id="update-panel-progress">
+    <progress aria-label="Download progress" id="update-panel-bar" max="100">
+    </progress>
+    <span aria-hidden="true" id="update-panel-percent">
+    </span>
+   </div>
+   <div class="actions update-panel-actions">
+    <button hidden="" id="update-panel-retry" type="button">
+     Try again
+    </button>
+    <button hidden="" id="update-panel-later" type="button">
+     Later
+    </button>
+    <button class="primary-action" hidden="" id="update-panel-install" type="button">
+     Install and restart
+    </button>
+    <button id="update-panel-close" type="button">
+     Close
+    </button>
+   </div>
+  </dialog>
  </body>
 </html>

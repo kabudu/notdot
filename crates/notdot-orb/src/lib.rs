@@ -12,6 +12,7 @@ mod settings_navigation;
 mod shader_renderer;
 mod speakers;
 mod speech_queue;
+mod update_panel;
 mod visual_state;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -272,6 +273,10 @@ fn input(id: &str) -> HtmlInputElement {
 }
 fn dialog(id: &str) -> HtmlDialogElement {
     element(id).unchecked_into()
+}
+/// About or the update panel covers the orb; speech and prompts wait for it.
+fn overlay_open() -> bool {
+    dialog("about").open() || update_panel::is_open()
 }
 fn select(id: &str) -> web_sys::HtmlSelectElement {
     element(id).unchecked_into()
@@ -743,7 +748,7 @@ fn followup_allowed(view: &Shared, snapshot: &Snapshot) -> bool {
         && v.update_listening.is_none()
         && v.confirmation_listening.is_none()
         && !dialog("panel").open()
-        && !dialog("about").open()
+        && !overlay_open()
         && !matches!(
             snapshot.updates.phase.as_str(),
             "downloading" | "installing"
@@ -768,7 +773,7 @@ fn wake_ready(view: &Shared, snapshot: &Snapshot) -> bool {
         && v.recording.is_none()
         && ((v.update_listening.is_none() && v.confirmation_listening.is_none()) || v.native_manual)
         && !dialog("panel").open()
-        && !dialog("about").open()
+        && !overlay_open()
         && !matches!(
             snapshot.updates.phase.as_str(),
             "downloading" | "installing"
@@ -1615,7 +1620,7 @@ async fn voice_inner(view: Shared, followup: bool) -> Result<(), String> {
     if followup && !view.borrow().conversation.starting() {
         return Ok(());
     }
-    if dialog("panel").open() || dialog("about").open() || !view.borrow().snapshot.window_visible {
+    if dialog("panel").open() || overlay_open() || !view.borrow().snapshot.window_visible {
         return Err("Close Settings before speaking.".into());
     }
     if view.borrow().native_manual && view.borrow().local_phase == Some("listening") {
@@ -2059,14 +2064,9 @@ pub fn start() -> Result<(), JsValue> {
     });
     let updates_view = view.clone();
     on(window().as_ref(), "notdot-updates", move |_| {
-        open_panel(&updates_view);
-        let section = element("startup-section");
-        let _ = section.set_attribute("open", "");
-        element("check-updates").scroll_into_view();
-        let _ = element("check-updates")
-            .dyn_into::<web_sys::HtmlElement>()
-            .map(|button| button.focus());
+        update_panel::open(&updates_view)
     });
+    update_panel::install(&view);
     let target = view.clone();
     let focus_view = view.clone();
     on(document().as_ref(), "keydown", move |event| {
@@ -2099,7 +2099,7 @@ pub fn start() -> Result<(), JsValue> {
         if let Ok(e) = e.dyn_into::<web_sys::KeyboardEvent>() {
             let modal = dialog("panel").open()
                 || dialog("setup-panel").open()
-                || dialog("about").open()
+                || overlay_open()
                 || document()
                     .get_element_by_id("composer")
                     .is_some_and(|e| e.unchecked_into::<HtmlDialogElement>().open());
@@ -2809,6 +2809,7 @@ pub fn start() -> Result<(), JsValue> {
         let target = target.clone();
         let first = first.clone();
         spawn_local(async move {
+            let requested_at = js_sys::Date::now();
             match call("snapshot", json!({})).await.and_then(|v| {
                 serde_wasm_bindgen::from_value::<Snapshot>(v).map_err(|e| e.to_string())
             }) {
@@ -3011,12 +3012,21 @@ pub fn start() -> Result<(), JsValue> {
                         .set_text_content(snapshot.learning["message"].as_str());
                     element("about-version")
                         .set_text_content(Some(&format!("Version {}", snapshot.version)));
-                    element("update-status").set_text_content(Some(&snapshot.updates.message));
-                    let available = snapshot.updates.phase == "available";
-                    let _ =
-                        element("install-update").toggle_attribute_with_force("hidden", !available);
-                    let _ =
-                        element("defer-update").toggle_attribute_with_force("hidden", !available);
+                    // A status region re-announces replaced text, so only write changes.
+                    if element("update-status").text_content().as_deref()
+                        != Some(snapshot.updates.message.as_str())
+                    {
+                        element("update-status").set_text_content(Some(&snapshot.updates.message));
+                    }
+                    let controls = update_panel::controls(
+                        &snapshot.updates.phase,
+                        snapshot.updates.received,
+                        snapshot.updates.total,
+                    );
+                    let _ = element("install-update")
+                        .toggle_attribute_with_force("hidden", !controls.install);
+                    let _ = element("defer-update")
+                        .toggle_attribute_with_force("hidden", !controls.later);
                     let updating = matches!(
                         snapshot.updates.phase.as_str(),
                         "downloading" | "installing"
@@ -3025,13 +3035,16 @@ pub fn start() -> Result<(), JsValue> {
                         element("update-progress").toggle_attribute_with_force("hidden", !updating);
                     element("update-progress-label")
                         .set_text_content(Some(&snapshot.updates.message));
-                    if let Some(total) = snapshot.updates.total.filter(|t| *t > 0) {
-                        let percent =
-                            (snapshot.updates.received as f64 / total as f64 * 100.).min(100.);
-                        let _ = element("update-bar").set_attribute("value", &percent.to_string());
-                    } else {
-                        let _ = element("update-bar").remove_attribute("value");
+                    match controls.progress {
+                        update_panel::Progress::Percent(percent) => {
+                            let _ =
+                                element("update-bar").set_attribute("value", &percent.to_string());
+                        }
+                        _ => {
+                            let _ = element("update-bar").remove_attribute("value");
+                        }
                     }
+                    update_panel::render(&snapshot.updates, requested_at);
                     if target.borrow().quota_display.as_ref() != Some(&snapshot.quota) {
                         render_usage(&snapshot.quota);
                         target.borrow_mut().quota_display = Some(snapshot.quota.clone());
@@ -3046,7 +3059,7 @@ pub fn start() -> Result<(), JsValue> {
                             && !v.voice_pending
                             && v.local_phase.is_none()
                             && v.recording.is_none()
-                            && !dialog("about").open()
+                            && !overlay_open()
                             && (snapshot.quota["fault"].is_object() || !dialog("panel").open())
                             && v.audio.as_ref().is_none_or(|a| a.paused() || a.ended())
                             && js_sys::Date::now() >= v.quota_retry_at;
@@ -3068,7 +3081,7 @@ pub fn start() -> Result<(), JsValue> {
                             && v.local_phase.is_none()
                             && v.recording.is_none()
                             && !dialog("panel").open()
-                            && !dialog("about").open()
+                            && !overlay_open()
                             && v.audio.as_ref().is_none_or(|a| a.paused() || a.ended())
                             && v.update_announced != snapshot.updates.version
                     };
@@ -3089,7 +3102,7 @@ pub fn start() -> Result<(), JsValue> {
                             && v.local_phase.is_none()
                             && v.recording.is_none()
                             && !dialog("panel").open()
-                            && !dialog("about").open()
+                            && !overlay_open()
                             && v.audio.as_ref().is_none_or(|a| a.paused() || a.ended())
                         {
                             snapshot.initiative["announce"].as_str().map(str::to_owned)
@@ -3118,7 +3131,7 @@ pub fn start() -> Result<(), JsValue> {
                             && v.confirmation_listening.is_none()
                             && snapshot.wake["phase"] != "capturing"
                             && !dialog("panel").open()
-                            && !dialog("about").open()
+                            && !overlay_open()
                             && v.audio.as_ref().is_none_or(|a| a.paused() || a.ended())
                         {
                             snapshot
