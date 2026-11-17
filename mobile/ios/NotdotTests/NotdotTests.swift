@@ -360,3 +360,96 @@ final class SensitiveActionsModelTests: XCTestCase {
         #endif
     }
 }
+
+/// The iOS voice-turn controller against the Rust core (request
+/// endpointing at the hardware rate) and a fake computer. Synthetic tones
+/// only; nothing plays (the sink only records).
+final class VoiceTurnsTests: XCTestCase {
+    private func tone(ms: Int, amplitude: Float, rate: Int = 48_000) -> [Float] {
+        (0..<(rate * ms / 1000)).map { sin(Float($0) / Float(rate) * 250 * 2 * .pi) * amplitude }
+    }
+
+    private final class FakeClient: VoiceTurnClient, @unchecked Sendable {
+        let lock = NSLock()
+        var sent: [Data] = []
+        var cancelled: [String] = []
+        let hold: Bool
+        var release: CheckedContinuation<Void, Never>?
+        init(hold: Bool = false) { self.hold = hold }
+        func ensureConnected() async throws {}
+        func turn(requestId: String, pcm16: Data, listener: VoiceReplyListener) async throws -> VoiceTurnResult {
+            lock.withLock { sent.append(pcm16) }
+            listener.heard(text: "what's still running?")
+            listener.replyText(text: "Two tasks are running.")
+            listener.replyClip(clip: 0, mime: "audio/mpeg", audio: Data([1, 2]))
+            if hold { await withCheckedContinuation { c in lock.withLock { release = c } } }
+            listener.replyText(text: "The build is nearly done.")
+            listener.replyClip(clip: 1, mime: "audio/mpeg", audio: Data([3]))
+            return VoiceTurnResult(heard: "what's still running?", reply: "Two tasks are running. The build is nearly done.", cancelled: false)
+        }
+        func cancel(requestId: String) async { lock.withLock { cancelled.append(requestId) } }
+    }
+
+    private final class Sink: ReplySink, @unchecked Sendable {
+        let lock = NSLock()
+        var played: [UInt32] = []
+        func play(clip: UInt32, mime: String, audio: Data) { lock.withLock { played.append(clip) } }
+        func stopAll() {}
+    }
+
+    private final class Seen: @unchecked Sendable {
+        let lock = NSLock()
+        var all: [VoiceUi] = []
+        func add(_ ui: VoiceUi) { lock.withLock { all.append(ui) } }
+        var snapshot: [VoiceUi] { lock.withLock { all } }
+    }
+
+    private func feed(_ turns: VoiceTurns, _ audio: [Float]) {
+        stride(from: 0, to: audio.count, by: 960).forEach { turns.feed(samples: Array(audio[$0..<min($0 + 960, audio.count)]), rate: 48_000) }
+    }
+
+    private func wait(_ what: String, _ condition: () -> Bool) async throws {
+        for _ in 0..<500 where !condition() { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertTrue(condition(), what)
+    }
+
+    func testARequestAfterTheWakePhraseIsSentAndItsReplyPlaysInOrder() async throws {
+        let client = FakeClient(), sink = Sink(), seen = Seen()
+        let turns = VoiceTurns(client: client, sink: sink, ui: { seen.add($0) })
+        feed(turns, tone(ms: 500, amplitude: 0.2)) // Ignored: no wake yet.
+        turns.wake()
+        feed(turns, tone(ms: 300, amplitude: 0.0006) + tone(ms: 1500, amplitude: 0.2) + tone(ms: 1000, amplitude: 0.0006))
+        try await wait("finished") { seen.snapshot.contains(.finished(cancelled: false)) }
+        let sent = client.lock.withLock { client.sent }
+        XCTAssertEqual(sent.count, 1)
+        let ms = sent[0].count / 2 * 1000 / 16_000
+        XCTAssertTrue((1500...2100).contains(ms), "\(ms) ms")
+        XCTAssertEqual(sink.lock.withLock { sink.played }, [0, 1])
+        XCTAssertEqual(seen.snapshot.first, .listening)
+        XCTAssertTrue(seen.snapshot.contains(.heard("what's still running?")))
+    }
+
+    func testStopCancelsTheTurnOnTheComputerAndPlaysNothingMore() async throws {
+        let client = FakeClient(hold: true), sink = Sink()
+        let turns = VoiceTurns(client: client, sink: sink, ui: { _ in })
+        turns.wake()
+        feed(turns, tone(ms: 1500, amplitude: 0.2) + tone(ms: 1000, amplitude: 0.0006))
+        try await wait("first clip") { !sink.lock.withLock { sink.played }.isEmpty }
+        turns.stop()
+        try await wait("cancelled") { !client.lock.withLock { client.cancelled }.isEmpty }
+        try await wait("held") { client.lock.withLock { client.release } != nil }
+        client.lock.withLock { client.release }?.resume()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(sink.lock.withLock { sink.played }, [0], "a cancelled turn's later clips never play")
+    }
+
+    func testSilenceSendsNothingAndErrorsArePlain() async throws {
+        let client = FakeClient(), seen = Seen()
+        let turns = VoiceTurns(client: client, sink: Sink(), ui: { seen.add($0) })
+        turns.wake()
+        feed(turns, tone(ms: 6_500, amplitude: 0.0006))
+        XCTAssertTrue(client.lock.withLock { client.sent }.isEmpty)
+        XCTAssertEqual(seen.snapshot.last, .nothingHeard("I didn't hear a request."))
+        XCTAssertEqual(plainDetail(MobileError.Offline(detail: "Not connected to the computer.")), "Not connected to the computer.")
+    }
+}

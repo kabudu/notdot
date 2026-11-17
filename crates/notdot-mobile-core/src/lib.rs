@@ -19,6 +19,8 @@ pub mod orb;
 pub mod session;
 pub mod stepup;
 #[cfg(feature = "wake")]
+pub mod voice;
+#[cfg(feature = "wake")]
 pub mod wake;
 
 /// Errors reported to native code in plain language.

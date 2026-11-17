@@ -22,6 +22,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -136,6 +137,8 @@ private fun Pairing(scenario: String?) {
     // Identity and paired computer survive restarts (Keystore-sealed).
     val store = remember { IdentityStore.standard(context) }
     var link by remember { mutableStateOf(runCatching { store.restoreLink() }.getOrElse { PhoneLink() }) }
+    // Voice turns use whichever link this screen holds.
+    LaunchedEffect(link) { NotdotState.link = link }
     var qr by remember { mutableStateOf("") }
     var message by remember { mutableStateOf("Not linked") }
     var showSensitive by remember { mutableStateOf(scenario != null) }

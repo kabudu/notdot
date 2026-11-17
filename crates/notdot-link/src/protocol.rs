@@ -81,6 +81,17 @@ pub enum Op {
     },
     /// Whether this phone has an enrolled key and a live owner grant.
     StepUpStatus {},
+    /// One spoken request: `samples` mono PCM16 samples at `rate` follow on
+    /// the same stream as [`ClientFrame::Audio`] chunks, hashing to
+    /// `sha256`. The reply streams back as [`ServerFrame::Event`]s, then a
+    /// final frame. A dropped connection never cancels it; the phone picks
+    /// the reply up again with [`ClientFrame::Resume`].
+    VoiceTurn {
+        rate: u32,
+        samples: u32,
+        #[serde(with = "crate::b64_32")]
+        sha256: [u8; 32],
+    },
 }
 
 /// Biometric step-up attached to a sensitive operation.
@@ -115,6 +126,18 @@ pub enum ClientFrame {
     /// Cancel a call. A network drop never cancels; only this frame does.
     Cancel {
         id: RequestId,
+    },
+    /// Request audio for a [`Op::VoiceTurn`] call, in order, after the call.
+    Audio {
+        id: RequestId,
+        #[serde(with = "crate::b64_chunk")]
+        pcm: Vec<u8>,
+    },
+    /// Pick up a voice turn's reply from event `next` (the first event not
+    /// yet received), then its final frame.
+    Resume {
+        id: RequestId,
+        next: u32,
     },
 }
 
@@ -151,6 +174,9 @@ pub enum OpError {
     UnsupportedVersion {
         supported: Vec<u16>,
     },
+    /// The computer has no record of this request (for example after a
+    /// restart before it began); send it again.
+    UnknownRequest,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,6 +204,12 @@ pub enum ServerFrame {
         id: RequestId,
         found: bool,
     },
+    /// Not final: the `seq`th event of a voice turn's reply, from 0.
+    Event {
+        id: RequestId,
+        seq: u32,
+        event: crate::voice::VoiceEvent,
+    },
 }
 impl ServerFrame {
     pub fn id(&self) -> Option<RequestId> {
@@ -185,7 +217,8 @@ impl ServerFrame {
             Self::Done { id, .. }
             | Self::Failed { id, .. }
             | Self::Cancelled { id }
-            | Self::CancelAck { id, .. } => Some(*id),
+            | Self::CancelAck { id, .. }
+            | Self::Event { id, .. } => Some(*id),
             Self::Welcome { .. } => None,
         }
     }

@@ -89,6 +89,21 @@ To include the end-to-end link tests, run `cargo run -p notdot-link --features t
 | Sensitive-actions screens | iOS simulator and Android emulator with a **debug-only scripted backend**: every state (not set up, set up, not allowed, confirm, working, done, cancelled, denied, expired, offline, revoked, unavailable), destructive alert with "Erase memories" and "Keep memories", double tap starts one request, large text (iOS accessibility XL; Android 1.6×) with results kept on screen | Pass (screenshots kept locally) |
 | Identity storage: Keychain (iOS), Keystore-sealed files (Android), including tamper and swap refusal on Android | iOS simulator, Android emulator, disposable names | Pass; no prompts |
 
+### Voice turns (phone to computer)
+
+After the wake phrase, the phone's Rust core endpoints the request (`RequestCapture`: speech start, an 800 ms pause ends it, at most 15 s, nothing kept after it is sent) and sends it over the link as 16 kHz PCM16 (`Op::VoiceTurn`, audio chunks on the same stream, checked against a SHA-256 in the call). The computer transcribes it, runs a turn for the phone's own profile and streams numbered reply events: what it heard, each sentence, and that sentence's audio. The phone plays each clip as soon as it is complete. The computer keeps the events (bounded), so after a drop the phone reconnects and resumes from the first event it lacks; the turn is never cancelled by a drop and never run twice (same request id). Stop sends a Cancel frame (or sends it after reconnecting).
+
+| Item | Evidence level | Result |
+| --- | --- | --- |
+| Upload, streamed reply, resume after a mid-reply drop, same-id retry replays without re-running, mismatched audio refused | Rust, real Iroh QUIC through iroh's local test relay, synthetic voice pipeline (fake transcription, turn and speech) | Pass |
+| Cancel mid-reply; silence, over-long audio, a second concurrent turn and unknown resumes refused plainly; removed phone refused | Same | Pass |
+| Phone API: captured fixture request, drop as the reply starts, every event delivered once in order, clips byte-identical, one turn on the computer; Stop cancels on the computer | Rust mobile core over loopback QUIC with an in-process desktop | Pass |
+| Request capture at 16 kHz PCM16 and 48 kHz float (iOS hardware rate) | Rust | Pass |
+| Desktop orchestration: transcript, sentence-by-sentence reply with speech, cancel stops the desktop turn, silence and provider failures | Rust, fake providers | Pass |
+| Android controller (wake → capture → send → ordered playback, Stop, offline) | Android JVM against the host core, fake computer | Pass |
+| iOS controller (same, with 48 kHz input) | iOS simulator unit tests, fake computer | See PR evidence |
+| **Not verified:** the live desktop path with the real speech service, Codex and voice (paid services were off); a real phone's microphone and speaker; echo while a reply plays (Android records with `VOICE_RECOGNITION`, which has no echo cancellation; iOS uses voice processing); barge-in beyond "a new wake phrase stops the reply" | — | Owner device checks |
+
 The table above describes offline and simulator checks. Physical Android findings and the newer on-device recogniser experiment are recorded below; those results have separate acceptance gaps.
 
 App microphone capture could not be exercised on this Mac. With Xcode 27, the iOS simulator's host audio input is never authorised: no Simulator app or helper declares microphone use, so macOS shows no prompt, and the app's audio unit aborts with an RPC timeout. The Android emulator hung when host audio was enabled. App microphone evidence must come from devices; debug builds include an unattended auto-start hook for that (`-NotdotAutoStart YES` on iOS; the `notdotAutoStart` intent extra on Android).

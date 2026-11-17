@@ -76,6 +76,9 @@ final class LinkModel: ObservableObject {
         message = detail
     }
 
+    /// The link voice turns use (whichever this model holds now).
+    var current: PhoneLink { link }
+
     func reconnect(relayOnly: Bool) async {
         do { route = try await link.connect(relayOnly: relayOnly) } catch { report(error) }
     }

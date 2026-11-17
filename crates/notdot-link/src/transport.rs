@@ -643,6 +643,31 @@ async fn serve_link(connection: Connection, peer: DeviceId, state: Arc<DesktopSt
                 }
             };
             let reply = match request {
+                ClientFrame::Call {
+                    id,
+                    op: op @ Op::VoiceTurn { .. },
+                    ..
+                } => {
+                    serve_voice_turn(&state, &record, id, op, &mut send, &mut recv).await;
+                    return;
+                }
+                ClientFrame::Resume { id, next } => {
+                    match state.service.voice_resume(&peer, id, next) {
+                        Ok(stream) => pump(stream, &mut send).await,
+                        Err(frame) => {
+                            if frame::write(&mut send, &frame).await.is_ok() {
+                                let _ = send.finish();
+                            }
+                        }
+                    }
+                    return;
+                }
+                ClientFrame::Audio { id, .. } => ServerFrame::Failed {
+                    id,
+                    error: OpError::BadRequest {
+                        reason: "audio without a voice turn".into(),
+                    },
+                },
                 ClientFrame::Hello { versions } if versions.contains(&LINK_VERSION) => {
                     ServerFrame::Welcome {
                         version: LINK_VERSION,
@@ -683,6 +708,109 @@ async fn serve_link(connection: Connection, peer: DeviceId, state: Arc<DesktopSt
     if let Some(list) = state.live.lock().expect("live lock").get_mut(&peer) {
         list.retain(|c| c.stable_id() != connection.stable_id());
     }
+}
+
+/// Longest wait for a voice request's audio once its call has arrived.
+pub const VOICE_UPLOAD_WAIT: Duration = Duration::from_secs(30);
+
+/// Read a voice turn's audio, check it against its call and stream the
+/// reply. A dropped stream stops only this delivery, never the turn.
+async fn serve_voice_turn(
+    state: &Arc<DesktopState>,
+    record: &DeviceRecord,
+    id: RequestId,
+    op: Op,
+    send: &mut iroh::endpoint::SendStream,
+    recv: &mut iroh::endpoint::RecvStream,
+) {
+    let refuse = async |send: &mut iroh::endpoint::SendStream, frame: ServerFrame| {
+        if frame::write(send, &frame).await.is_ok() {
+            let _ = send.finish();
+        }
+    };
+    let known = match state.service.voice_admit(record, id, &op) {
+        Ok(known) => known,
+        Err(frame) => return refuse(send, frame).await,
+    };
+    let Op::VoiceTurn {
+        rate,
+        samples,
+        sha256,
+    } = &op
+    else {
+        return;
+    };
+    let expected = *samples as usize * 2;
+    let upload = async {
+        let mut pcm = Vec::with_capacity(expected);
+        while pcm.len() < expected {
+            match frame::read::<ClientFrame>(recv).await? {
+                Some(ClientFrame::Audio {
+                    id: chunk,
+                    pcm: bytes,
+                }) if chunk == id
+                    && bytes.len() <= crate::voice::AUDIO_CHUNK_BYTES
+                    && pcm.len() + bytes.len() <= expected =>
+                {
+                    pcm.extend_from_slice(&bytes)
+                }
+                _ => return Err(LinkError::BadRequest("unexpected voice upload frame")),
+            }
+        }
+        Ok(pcm)
+    };
+    let pcm = match tokio::time::timeout(VOICE_UPLOAD_WAIT, upload).await {
+        Ok(Ok(pcm)) => pcm,
+        // A cut-off upload never started anything; the phone sends it again.
+        Ok(Err(LinkError::Io(_))) | Err(_) => return,
+        Ok(Err(_)) => {
+            return refuse(
+                send,
+                ServerFrame::Failed {
+                    id,
+                    error: OpError::BadRequest {
+                        reason: "the request audio did not match its call".into(),
+                    },
+                },
+            )
+            .await;
+        }
+    };
+    if crate::voice::audio_digest(&pcm) != *sha256 {
+        return refuse(
+            send,
+            ServerFrame::Failed {
+                id,
+                error: OpError::BadRequest {
+                    reason: "the request audio did not match its call".into(),
+                },
+            },
+        )
+        .await;
+    }
+    let stream = match known {
+        Some(stream) => stream,
+        None => {
+            let audio = crate::voice::VoiceAudio {
+                rate: *rate,
+                samples: crate::voice::samples(&pcm).unwrap_or_default(),
+            };
+            match state.service.voice_start(record, id, op, audio) {
+                Ok(stream) => stream,
+                Err(frame) => return refuse(send, frame).await,
+            }
+        }
+    };
+    pump(stream, send).await;
+}
+
+async fn pump(mut stream: crate::voice::VoiceStream, send: &mut iroh::endpoint::SendStream) {
+    while let Some(frame) = stream.next().await {
+        if frame::write(send, &frame).await.is_err() {
+            return;
+        }
+    }
+    let _ = send.finish();
 }
 
 /// Where a connection's packets currently go.
@@ -853,6 +981,20 @@ impl Phone {
 pub struct Link {
     connection: Connection,
 }
+
+/// A voice turn's reply frames as they arrive: events, then one final frame.
+pub struct VoiceReplies {
+    link: Link,
+    recv: iroh::endpoint::RecvStream,
+}
+impl VoiceReplies {
+    /// The next frame, or `None` once the stream has ended cleanly.
+    pub async fn next(&mut self) -> Result<Option<ServerFrame>, LinkError> {
+        frame::read::<ServerFrame>(&mut self.recv)
+            .await
+            .map_err(|e| self.link.error(e))
+    }
+}
 impl Link {
     fn error(&self, error: impl std::fmt::Display) -> LinkError {
         if let Some(ConnectionError::ApplicationClosed(close)) = self.connection.close_reason()
@@ -882,6 +1024,70 @@ impl Link {
         step_up: Option<StepUpProof>,
     ) -> Result<ServerFrame, LinkError> {
         self.request(&ClientFrame::Call { id, op, step_up }).await
+    }
+
+    /// Send one voice request and return its reply as it streams in.
+    /// `pcm` is 16 kHz mono PCM16 little-endian.
+    pub async fn voice_turn(&self, id: RequestId, pcm: &[u8]) -> Result<VoiceReplies, LinkError> {
+        if pcm.is_empty() || !pcm.len().is_multiple_of(2) {
+            return Err(LinkError::BadRequest(
+                "voice audio must be whole PCM16 samples",
+            ));
+        }
+        let op = Op::VoiceTurn {
+            rate: crate::voice::VOICE_RATE,
+            samples: u32::try_from(pcm.len() / 2).map_err(|_| LinkError::BadRequest("too long"))?,
+            sha256: crate::voice::audio_digest(pcm),
+        };
+        let (mut send, recv) = self.connection.open_bi().await.map_err(|e| self.error(e))?;
+        frame::write(
+            &mut send,
+            &ClientFrame::Call {
+                id,
+                op,
+                step_up: None,
+            },
+        )
+        .await
+        .map_err(|e| self.error(e))?;
+        // The computer may refuse before reading the audio (and stop this
+        // upload); its refusal is then the reply, so read it either way.
+        let mut uploaded = true;
+        for chunk in pcm.chunks(crate::voice::AUDIO_CHUNK_BYTES) {
+            if frame::write(
+                &mut send,
+                &ClientFrame::Audio {
+                    id,
+                    pcm: chunk.to_vec(),
+                },
+            )
+            .await
+            .is_err()
+            {
+                uploaded = false;
+                break;
+            }
+        }
+        if uploaded {
+            let _ = send.finish();
+        }
+        Ok(VoiceReplies {
+            link: self.clone(),
+            recv,
+        })
+    }
+
+    /// Pick a voice turn's reply up again from event `next`.
+    pub async fn voice_resume(&self, id: RequestId, next: u32) -> Result<VoiceReplies, LinkError> {
+        let (mut send, recv) = self.connection.open_bi().await.map_err(|e| self.error(e))?;
+        frame::write(&mut send, &ClientFrame::Resume { id, next })
+            .await
+            .map_err(|e| self.error(e))?;
+        send.finish().map_err(|e| self.error(e))?;
+        Ok(VoiceReplies {
+            link: self.clone(),
+            recv,
+        })
     }
 
     pub async fn cancel(&self, id: RequestId) -> Result<bool, LinkError> {

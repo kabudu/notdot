@@ -17,6 +17,7 @@ pub mod service;
 pub mod stepup;
 pub mod store;
 pub mod transport;
+pub mod voice;
 
 use serde::{Deserialize, Serialize};
 
@@ -138,6 +139,21 @@ pub(crate) mod b64 {
             return Err(serde::de::Error::custom("too long"));
         }
         decode(&text).ok_or_else(|| serde::de::Error::custom("not base64url"))
+    }
+}
+
+/// An audio chunk: base64url, bounded by the frame size rather than 512.
+pub(crate) mod b64_chunk {
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&super::b64::encode(bytes))
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        let text = String::deserialize(d)?;
+        if text.len() > crate::protocol::MAX_FRAME {
+            return Err(serde::de::Error::custom("too long"));
+        }
+        super::b64::decode(&text).ok_or_else(|| serde::de::Error::custom("not base64url"))
     }
 }
 

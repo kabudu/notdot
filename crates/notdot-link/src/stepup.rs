@@ -78,6 +78,16 @@ pub fn op_bytes(op: &crate::protocol::Op) -> Vec<u8> {
             evidence.canonical(&mut out);
         }
         Op::StepUpStatus {} => out.push(10),
+        Op::VoiceTurn {
+            rate,
+            samples,
+            sha256,
+        } => {
+            out.push(11);
+            out.extend_from_slice(&rate.to_be_bytes());
+            out.extend_from_slice(&samples.to_be_bytes());
+            out.extend_from_slice(sha256);
+        }
     }
     out
 }

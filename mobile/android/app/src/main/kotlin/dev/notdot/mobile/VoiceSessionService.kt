@@ -17,6 +17,10 @@ import android.os.IBinder
 import uniffi.notdot_mobile_core.SessionEvent
 import uniffi.notdot_mobile_core.StartSource
 import kotlin.concurrent.thread
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 
 /**
  * A user-started hands-free session: a `microphone` foreground service with
@@ -35,6 +39,8 @@ class VoiceSessionService : Service() {
     private var restartPolicy = WakeRestartPolicy()
     private var listeningSince = 0L
     @Volatile private var microphoneSilenced = false
+    @Volatile private var voiceTurns: VoiceTurns? = null
+    private var voiceScope: CoroutineScope? = null
     private var languageIndex = 0
     private val nativeLanguages by lazy {
         (listOf(resources.configuration.locales[0].toLanguageTag()).filter { it.startsWith("en", true) } +
@@ -62,6 +68,7 @@ class VoiceSessionService : Service() {
             }
             override fun onWake() {
                 NotdotState.wakeHeard()
+                if (NotdotState.link != null) voiceTurns?.wake()
             }
             override fun onError(error: WakeRecognizerError) {
                 wakeReady = false
@@ -186,6 +193,9 @@ class VoiceSessionService : Service() {
         languageIndex = 0
         microphoneSilenced = false
         NotdotState.setStatus("Preparing wake listening…")
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        voiceScope = scope
+        voiceTurns = VoiceTurns(PhoneLinkClient { NotdotState.link }, ReplyPlayer(), scope) { NotdotState.voice(it) }
         if (BuildConfig.NATIVE_WAKE) startWake()
         thread(name = "notdot-capture") {
             val packet = ByteArray(rate / 50 * 2)
@@ -251,8 +261,13 @@ class VoiceSessionService : Service() {
                     if (BuildConfig.NATIVE_WAKE) detector?.feedPcm16(bytes)
                     else {
                         val woke = legacy?.acceptPcm16(bytes, rate.toUInt()) == true
-                        if (woke && capturing && recorder === record) NotdotState.wakeHeard()
+                        if (woke && capturing && recorder === record) {
+                            NotdotState.wakeHeard()
+                            if (NotdotState.link != null) voiceTurns?.wake()
+                        }
                     }
+                    // After the wake phrase, the same audio is the request.
+                    voiceTurns?.takeIf { it.listening }?.feed(bytes)
                 }
             }
         }
@@ -270,6 +285,10 @@ class VoiceSessionService : Service() {
 
     private fun stop(event: SessionEvent) {
         capturing = false
+        voiceTurns?.stop()
+        voiceTurns = null
+        voiceScope?.cancel()
+        voiceScope = null
         main.removeCallbacksAndMessages(null)
         wakeReady = false
         nativeWake?.stop()

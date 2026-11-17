@@ -15,6 +15,7 @@ use notdot_link::{
     pairing::{PairedDesktop, QrPayload},
     protocol::{Op, OpError, PairFrame, RequestId, ServerFrame, StepUpProof},
     transport::{Link, NetConfig, Pairing, Phone, Route, SecretKey, paired_addr},
+    voice::VoiceEvent,
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -51,6 +52,8 @@ struct State {
     /// The endpoint used for the link, and whether it is relay-only.
     phone: Option<(Arc<Phone>, bool)>,
     link: Option<Link>,
+    /// Voice turns the owner asked to stop (sent again after a reconnect).
+    cancels: std::collections::HashSet<RequestId>,
 }
 
 /// Keeps the secret key private to this module.
@@ -404,6 +407,114 @@ impl PhoneLink {
         removed(self.call_with(id, op, Some(proof)).await?)
     }
 
+    /// Send one spoken request (16 kHz mono PCM16 LE, from
+    /// `RequestCapture`) and stream the reply to `listener`: what was heard,
+    /// reply text, and each reply audio clip as soon as it is complete, in
+    /// order and never twice. If the connection drops, this reconnects and
+    /// picks the reply up where it stopped (the computer keeps running the
+    /// turn); after [`VOICE_RECONNECT_ATTEMPTS`] failed attempts it reports
+    /// `Offline`. Keep `request_id` to cancel.
+    pub async fn voice_turn(
+        &self,
+        request_id: String,
+        pcm16: Vec<u8>,
+        listener: Arc<dyn VoiceReplyListener>,
+    ) -> Result<VoiceTurnResult, MobileError> {
+        let id = parse_id(&request_id)?;
+        if pcm16.is_empty() || !pcm16.len().is_multiple_of(2) {
+            return Err(MobileError::Invalid {
+                detail: "voice requests are whole PCM16 samples".into(),
+            });
+        }
+        let mut reply = ReplyState::default();
+        let mut attempt = 0u32;
+        loop {
+            // Release the lock before reconnecting, which takes it again.
+            let current = self.state.lock().await.link.clone();
+            let link = match current {
+                Some(link) => link,
+                None => match self.reconnect(&mut attempt, &listener).await? {
+                    Some(link) => link,
+                    None => continue,
+                },
+            };
+            // Before any of the reply arrived we can't tell whether the
+            // request did; sending it again is safe (the computer runs a
+            // request id once and replays its reply).
+            let opened = if reply.next == 0 {
+                link.voice_turn(id, &pcm16).await
+            } else {
+                link.voice_resume(id, reply.next).await
+            };
+            let outcome = match opened {
+                Ok(mut replies) => reply.read(&mut replies, listener.as_ref()).await,
+                Err(error) => Err(error),
+            };
+            match outcome {
+                Ok(Some(ServerFrame::Done { result, .. })) => {
+                    return Ok(VoiceTurnResult {
+                        heard: result["heard"].as_str().unwrap_or(&reply.heard).to_owned(),
+                        reply: result["reply"].as_str().unwrap_or(&reply.text).to_owned(),
+                        cancelled: false,
+                    });
+                }
+                Ok(Some(ServerFrame::Cancelled { .. })) => {
+                    return Ok(VoiceTurnResult {
+                        heard: reply.heard,
+                        reply: reply.text,
+                        cancelled: true,
+                    });
+                }
+                Ok(Some(ServerFrame::Failed {
+                    error: OpError::UnknownRequest,
+                    ..
+                })) => {
+                    // The computer restarted before it began: send it again.
+                    reply = ReplyState::default();
+                    attempt += 1;
+                    if attempt > VOICE_RECONNECT_ATTEMPTS {
+                        return Err(offline());
+                    }
+                }
+                Ok(Some(other)) => return Err(refused(other)),
+                // The stream ended without a final frame, or broke.
+                Ok(None)
+                | Err(notdot_link::LinkError::Connection(_))
+                | Err(notdot_link::LinkError::Io(_)) => {
+                    let mut state = self.state.lock().await;
+                    if let Some(old) = state.link.take() {
+                        old.close();
+                    }
+                }
+                Err(error) => return Err(self.failed(error).await),
+            }
+            let current = self.state.lock().await.link.clone();
+            if self.cancel_wanted(id).await
+                && let Some(link) = current
+            {
+                let _ = link.cancel(id).await;
+            }
+        }
+    }
+
+    /// Ask the computer to stop a voice turn. If the phone is offline, the
+    /// turn is cancelled as soon as it reconnects. True if it was running.
+    pub async fn cancel_voice(&self, request_id: String) -> Result<bool, MobileError> {
+        let id = parse_id(&request_id)?;
+        let link = {
+            let mut state = self.state.lock().await;
+            state.cancels.insert(id);
+            state.link.clone()
+        };
+        match link {
+            Some(link) => match link.cancel(id).await {
+                Ok(found) => Ok(found),
+                Err(_) => Ok(false),
+            },
+            None => Ok(false),
+        }
+    }
+
     pub async fn disconnect(&self) {
         let mut state = self.state.lock().await;
         if let Some(link) = state.link.take() {
@@ -421,6 +532,7 @@ impl PhoneLink {
                 pending: None,
                 phone: None,
                 link: None,
+                cancels: Default::default(),
             })),
         })
     }
@@ -464,6 +576,43 @@ impl PhoneLink {
         }
     }
 
+    async fn cancel_wanted(&self, id: RequestId) -> bool {
+        self.state.lock().await.cancels.contains(&id)
+    }
+
+    /// Reconnect after a drop, waiting a little longer each time. `None`
+    /// means try the turn again; an error means stop.
+    async fn reconnect(
+        &self,
+        attempt: &mut u32,
+        listener: &Arc<dyn VoiceReplyListener>,
+    ) -> Result<Option<Link>, MobileError> {
+        *attempt += 1;
+        if *attempt > VOICE_RECONNECT_ATTEMPTS {
+            return Err(offline());
+        }
+        listener.reconnecting(*attempt);
+        let wait = 150u64 << (*attempt - 1).min(4);
+        tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+        let relay_only = self
+            .state
+            .lock()
+            .await
+            .phone
+            .as_ref()
+            .is_some_and(|(_, relay)| *relay);
+        let connected =
+            match tokio::time::timeout(VOICE_CONNECT_WAIT, self.connect(relay_only)).await {
+                Ok(connected) => connected,
+                Err(_) => Err(offline()),
+            };
+        match connected {
+            Ok(_) => Ok(self.state.lock().await.link.clone()),
+            Err(MobileError::Offline { .. }) | Err(MobileError::Link { .. }) => Ok(None),
+            Err(other) => Err(other),
+        }
+    }
+
     async fn ids(&self) -> Result<(notdot_link::DeviceId, notdot_link::DeviceId), MobileError> {
         let state = self.state.lock().await;
         let desktop = state.paired.as_ref().map(|p| p.desktop);
@@ -499,6 +648,97 @@ impl PhoneLink {
             signature: signed.signature,
             assertion: signed.assertion,
         })
+    }
+}
+
+/// Reconnection attempts during one voice turn before reporting `Offline`.
+pub const VOICE_RECONNECT_ATTEMPTS: u32 = 8;
+/// Longest wait for one reconnection attempt.
+pub const VOICE_CONNECT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Receives a voice turn's reply. Calls come in order from the core's
+/// runtime; keep them short (queue audio for playback, update the screen).
+#[uniffi::export(with_foreign)]
+pub trait VoiceReplyListener: Send + Sync {
+    /// What the computer heard.
+    fn heard(&self, text: String);
+    /// The next piece of reply text.
+    fn reply_text(&self, text: String);
+    /// A complete reply audio clip, ready to play after the previous one.
+    fn reply_clip(&self, clip: u32, mime: String, audio: Vec<u8>);
+    /// The connection dropped; reconnecting (attempt from 1).
+    fn reconnecting(&self, attempt: u32);
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct VoiceTurnResult {
+    pub heard: String,
+    pub reply: String,
+    /// Stopped before it finished (Stop on the phone or the computer).
+    pub cancelled: bool,
+}
+
+/// What has arrived of one reply, so a resumed stream continues exactly
+/// where the last one stopped.
+#[derive(Default)]
+struct ReplyState {
+    next: u32,
+    heard: String,
+    text: String,
+    clip: Option<(u32, String, Vec<u8>)>,
+}
+impl ReplyState {
+    /// Read until the final frame (returned), or `Ok(None)` if the stream
+    /// ended without one.
+    async fn read(
+        &mut self,
+        replies: &mut notdot_link::transport::VoiceReplies,
+        listener: &dyn VoiceReplyListener,
+    ) -> Result<Option<ServerFrame>, notdot_link::LinkError> {
+        while let Some(frame) = replies.next().await? {
+            let ServerFrame::Event { seq, event, .. } = frame else {
+                return Ok(Some(frame));
+            };
+            if seq != self.next {
+                // Already delivered (a replay from the start), or a gap the
+                // computer never sends: either way, never deliver twice.
+                if seq > self.next {
+                    return Ok(None);
+                }
+                continue;
+            }
+            self.next += 1;
+            match event {
+                VoiceEvent::Heard { text } => {
+                    self.heard = text.clone();
+                    listener.heard(text);
+                }
+                VoiceEvent::Reply { text } => {
+                    if !self.text.is_empty() {
+                        self.text.push(' ');
+                    }
+                    self.text.push_str(&text);
+                    listener.reply_text(text);
+                }
+                VoiceEvent::Audio {
+                    clip,
+                    mime,
+                    data,
+                    last,
+                } => {
+                    let entry = self.clip.get_or_insert_with(|| (clip, mime, Vec::new()));
+                    if entry.0 != clip {
+                        // A new clip before the old one ended: drop the old.
+                        *entry = (clip, entry.1.clone(), Vec::new());
+                    }
+                    entry.2.extend_from_slice(&data);
+                    if last && let Some((clip, mime, audio)) = self.clip.take() {
+                        listener.reply_clip(clip, mime, audio);
+                    }
+                }
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -1360,6 +1600,202 @@ mod tests {
             assert_eq!(keys.signed.load(Ordering::SeqCst), 1, "no second prompt");
             desktop.close().await;
             std::fs::remove_dir_all(&dir).unwrap();
+        })
+        .await;
+    }
+
+    /// Records a voice reply as native code would receive it.
+    #[derive(Default)]
+    struct Recorder {
+        events: std::sync::Mutex<Vec<String>>,
+        clips: std::sync::Mutex<Vec<(u32, String, Vec<u8>)>>,
+        reconnects: std::sync::atomic::AtomicU32,
+        first_text: tokio::sync::Notify,
+        heard: tokio::sync::Notify,
+    }
+    impl VoiceReplyListener for Recorder {
+        fn heard(&self, text: String) {
+            self.events.lock().unwrap().push(format!("heard:{text}"));
+            self.heard.notify_one();
+        }
+        fn reply_text(&self, text: String) {
+            let mut events = self.events.lock().unwrap();
+            if !events.iter().any(|e| e.starts_with("text:")) {
+                self.first_text.notify_one();
+            }
+            events.push(format!("text:{text}"));
+        }
+        fn reply_clip(&self, clip: u32, mime: String, audio: Vec<u8>) {
+            self.events.lock().unwrap().push(format!("clip:{clip}"));
+            self.clips.lock().unwrap().push((clip, mime, audio));
+        }
+        fn reconnecting(&self, _attempt: u32) {
+            self.reconnects
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    #[cfg(feature = "wake")]
+    fn captured_request() -> Vec<u8> {
+        use crate::voice::{CaptureState, RequestCapture, tests::tone};
+        let capture = RequestCapture::new();
+        let mut audio = tone(400, 20.0);
+        audio.extend(tone(1500, 6000.0));
+        audio.extend(tone(1000, 20.0));
+        let mut state = CaptureState::Waiting;
+        for packet in audio.chunks(640) {
+            state = capture.push_pcm16(packet.to_vec()).unwrap();
+        }
+        assert_eq!(state, CaptureState::Done);
+        capture.take_pcm16()
+    }
+
+    #[cfg(feature = "wake")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_captured_request_gets_its_whole_reply_across_a_dropped_connection() {
+        within(async {
+            let desktop = desktop().await;
+            let voice = notdot_link::voice::SyntheticVoice {
+                sentences: 3,
+                step: Duration::from_millis(30),
+                clip_samples: 30_000,
+            };
+            desktop
+                .service()
+                .synthetic()
+                .unwrap()
+                .set_voice(voice.clone());
+            let phone = PhoneLink::new();
+            pair(&desktop, &phone, "owner").await;
+            phone.connect(false).await.unwrap();
+            let pcm = captured_request();
+            let recorder = Arc::new(Recorder::default());
+            // The network drops as soon as the reply starts.
+            let dropper = {
+                let (phone, recorder) = (phone.clone(), recorder.clone());
+                tokio::spawn(async move {
+                    recorder.first_text.notified().await;
+                    phone.disconnect().await;
+                })
+            };
+            let result = phone
+                .voice_turn(new_request_id(), pcm.clone(), recorder.clone())
+                .await
+                .unwrap();
+            dropper.await.unwrap();
+            let ms = pcm.len() / 2 * 1000 / 16_000;
+            assert_eq!(result.heard, format!("synthetic request of {ms} ms"));
+            assert_eq!(
+                result.reply,
+                "Synthetic sentence 1. Synthetic sentence 2. Synthetic sentence 3."
+            );
+            assert!(!result.cancelled);
+            assert!(
+                recorder
+                    .reconnects
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    >= 1,
+                "the drop happened mid-reply"
+            );
+            let events = recorder.events.lock().unwrap().clone();
+            assert_eq!(
+                events,
+                [
+                    format!("heard:{}", result.heard),
+                    "text:Synthetic sentence 1.".into(),
+                    "clip:0".into(),
+                    "text:Synthetic sentence 2.".into(),
+                    "clip:1".into(),
+                    "text:Synthetic sentence 3.".into(),
+                    "clip:2".into(),
+                ],
+                "every piece once, in order"
+            );
+            for (clip, mime, audio) in recorder.clips.lock().unwrap().iter() {
+                assert_eq!(mime, "audio/wav");
+                assert_eq!(audio, &voice.clip(*clip), "clip {clip} intact");
+            }
+            assert_eq!(desktop.service().synthetic().unwrap().voice_turns(), 1);
+            phone.disconnect().await;
+            desktop.close().await;
+        })
+        .await;
+    }
+
+    #[cfg(feature = "wake")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stop_on_the_phone_cancels_the_turn_on_the_computer() {
+        within(async {
+            let desktop = desktop().await;
+            desktop
+                .service()
+                .synthetic()
+                .unwrap()
+                .set_voice(notdot_link::voice::SyntheticVoice {
+                    sentences: 6,
+                    step: Duration::from_millis(80),
+                    clip_samples: 4_000,
+                });
+            let phone = PhoneLink::new();
+            pair(&desktop, &phone, "owner").await;
+            phone.connect(false).await.unwrap();
+            let recorder = Arc::new(Recorder::default());
+            let id = new_request_id();
+            let turn = {
+                let (phone, recorder, id) = (phone.clone(), recorder.clone(), id.clone());
+                tokio::spawn(
+                    async move { phone.voice_turn(id, captured_request(), recorder).await },
+                )
+            };
+            recorder.heard.notified().await;
+            assert!(phone.cancel_voice(id).await.unwrap());
+            let result = turn.await.unwrap().unwrap();
+            assert!(result.cancelled);
+            let clips = recorder.clips.lock().unwrap().len();
+            assert!(
+                clips < 6,
+                "stopped before the reply finished ({clips} clips)"
+            );
+            phone.disconnect().await;
+            desktop.close().await;
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn voice_turns_report_offline_and_refusals_plainly() {
+        within(async {
+            let desktop = desktop().await;
+            let phone = PhoneLink::new();
+            let device = pair(&desktop, &phone, "owner").await;
+            phone.connect(false).await.unwrap();
+            let silence = vec![0u8; 32_000];
+            let recorder = Arc::new(Recorder::default());
+            assert!(matches!(
+                phone
+                    .voice_turn(new_request_id(), vec![1, 2, 3], recorder.clone())
+                    .await,
+                Err(MobileError::Invalid { .. })
+            ));
+            assert!(matches!(
+                phone
+                    .voice_turn(new_request_id(), silence.clone(), recorder.clone())
+                    .await,
+                Err(MobileError::Link { .. })
+            ));
+            // Removed at the computer: the phone forgets the pairing.
+            desktop.revoke(device).unwrap();
+            let refused = phone
+                .voice_turn(new_request_id(), silence, recorder.clone())
+                .await;
+            assert!(
+                matches!(
+                    refused,
+                    Err(MobileError::Unpaired { .. }) | Err(MobileError::Offline { .. })
+                ),
+                "{refused:?}"
+            );
+            desktop.close().await;
         })
         .await;
     }

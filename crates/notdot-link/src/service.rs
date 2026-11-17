@@ -26,6 +26,7 @@ use crate::{
     pairing::{DeviceRecord, Scope},
     protocol::{MAX_NOTE_BYTES, Op, OpError, RequestId, ServerFrame, StepUpProof},
     stepup::{Registration, StepUpDesk, StepUpState, op_digest},
+    voice::{self, SyntheticVoice, VoiceAudio, VoiceSink, VoiceStream},
 };
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
@@ -79,6 +80,20 @@ pub trait Backend: Send + Sync + 'static {
     ) -> BoxFuture<Result<Option<serde_json::Value>, OpError>>;
     /// Erase the profile's memories; returns how many were removed.
     fn reset_memory(&self, profile: String) -> BoxFuture<Result<u64, OpError>>;
+    /// One voice turn: transcribe `audio`, answer it for `profile` and
+    /// write the reply to `reply` as it is produced. `Ok(None)` if
+    /// `cancelled` was set before it finished. The default refuses.
+    fn voice_turn(
+        &self,
+        _profile: String,
+        _audio: VoiceAudio,
+        _reply: VoiceSink,
+        _cancelled: watch::Receiver<bool>,
+    ) -> BoxFuture<Result<Option<serde_json::Value>, OpError>> {
+        Box::pin(std::future::ready(Err(OpError::NotAvailable {
+            reason: "voice turns aren't available on this computer".into(),
+        })))
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -95,6 +110,8 @@ pub struct ProfileData {
 #[derive(Default)]
 pub struct SyntheticBackend {
     profiles: Mutex<HashMap<String, ProfileData>>,
+    voice: Mutex<SyntheticVoice>,
+    voice_turns: std::sync::atomic::AtomicU64,
 }
 impl SyntheticBackend {
     fn with<T>(&self, profile: &str, f: impl FnOnce(&mut ProfileData) -> T) -> T {
@@ -106,6 +123,14 @@ impl SyntheticBackend {
     }
     pub fn remember(&self, profile: &str, memory: &str) {
         self.with(profile, |d| d.memories.push(memory.to_owned()));
+    }
+    /// Configure the fake voice pipeline (tests and the simulator).
+    pub fn set_voice(&self, voice: SyntheticVoice) {
+        *self.voice.lock().unwrap_or_else(|e| e.into_inner()) = voice;
+    }
+    /// How many voice turns the fake pipeline has started.
+    pub fn voice_turns(&self) -> u64 {
+        self.voice_turns.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 fn ready<T: Send + 'static>(value: T) -> BoxFuture<T> {
@@ -181,6 +206,18 @@ impl Backend for Arc<SyntheticBackend> {
             removed
         })))
     }
+    fn voice_turn(
+        &self,
+        _profile: String,
+        audio: VoiceAudio,
+        reply: VoiceSink,
+        cancelled: watch::Receiver<bool>,
+    ) -> BoxFuture<Result<Option<serde_json::Value>, OpError>> {
+        self.voice_turns
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let voice = self.voice.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        Box::pin(async move { voice.run(audio, reply, cancelled).await })
+    }
 }
 
 /// The durable part of the service.
@@ -241,6 +278,7 @@ impl Calls {
 
 struct State {
     calls: HashMap<DeviceId, Calls>,
+    voice: HashMap<DeviceId, voice::Runs>,
     step_up: StepUpDesk,
     policy: AttestationPolicy,
     store: Option<Arc<dyn ServiceStore>>,
@@ -335,6 +373,7 @@ fn has_side_effect(op: &Op) -> bool {
             | Op::RunTask { .. }
             | Op::ResetMemory {}
             | Op::StepUpEnroll { .. }
+            | Op::VoiceTurn { .. }
     )
 }
 
@@ -352,6 +391,7 @@ impl Service {
         Self {
             state: Arc::new(Mutex::new(State {
                 calls: HashMap::new(),
+                voice: HashMap::new(),
                 step_up: StepUpDesk::new(desktop),
                 policy: AttestationPolicy::default(),
                 store: None,
@@ -445,6 +485,9 @@ impl Service {
         let mut state = self.lock();
         state.step_up.forget(device);
         state.calls.remove(&device);
+        if let Some(mut runs) = state.voice.remove(&device) {
+            runs.cancel_all();
+        }
         state.persist().map_err(LinkError::Io)
     }
 
@@ -586,9 +629,195 @@ impl Service {
         }
     }
 
+    /// Check a voice turn before its audio is read: scope, sizes, request
+    /// id reuse and the one-running-turn limit. `Ok(Some)` means this turn
+    /// is already known (a retry): the audio is read and dropped, and the
+    /// phone gets that turn's reply from its start.
+    pub fn voice_admit(
+        &self,
+        device: &DeviceRecord,
+        id: RequestId,
+        op: &Op,
+    ) -> Result<Option<VoiceStream>, ServerFrame> {
+        let Op::VoiceTurn { rate, samples, .. } = op else {
+            return Err(failed(
+                id,
+                OpError::BadRequest {
+                    reason: "not a voice turn".into(),
+                },
+            ));
+        };
+        if !device.allows(Scope::Converse) {
+            return Err(failed(id, OpError::Forbidden));
+        }
+        if *rate != voice::VOICE_RATE || *samples == 0 || *samples > voice::MAX_VOICE_SAMPLES {
+            return Err(failed(
+                id,
+                OpError::BadRequest {
+                    reason: format!(
+                        "voice requests are 16 kHz mono PCM16 of at most {} seconds",
+                        voice::MAX_VOICE_SECONDS
+                    ),
+                },
+            ));
+        }
+        let digest = op_digest(op);
+        let state = self.lock();
+        if state.closed {
+            return Err(failed(
+                id,
+                OpError::NotAvailable {
+                    reason: "phone links are stopping".into(),
+                },
+            ));
+        }
+        if let Some(run) = state
+            .voice
+            .get(&device.device)
+            .and_then(|runs| runs.get(&id))
+        {
+            let same = run.lock().unwrap_or_else(|e| e.into_inner()).digest == digest;
+            return if same {
+                Ok(Some(VoiceStream::new(run, id, 0)))
+            } else {
+                Err(reused(id))
+            };
+        }
+        if let Some((recorded, frame)) = state
+            .calls
+            .get(&device.device)
+            .and_then(|c| c.recorded.get(&id))
+        {
+            return if *recorded == digest {
+                Ok(Some(VoiceStream::new(
+                    voice::finished_run(digest, frame.clone()),
+                    id,
+                    0,
+                )))
+            } else {
+                Err(reused(id))
+            };
+        }
+        if state
+            .voice
+            .get(&device.device)
+            .and_then(voice::Runs::running)
+            .is_some()
+        {
+            return Err(failed(id, OpError::Busy));
+        }
+        Ok(None)
+    }
+
+    /// Start an admitted voice turn with its checked audio and return its
+    /// reply stream. Written down before it runs, like other side effects,
+    /// so a turn interrupted by a restart is never run twice.
+    pub fn voice_start(
+        &self,
+        device: &DeviceRecord,
+        id: RequestId,
+        op: Op,
+        audio: VoiceAudio,
+    ) -> Result<VoiceStream, ServerFrame> {
+        if let Some(stream) = self.voice_admit(device, id, &op)? {
+            return Ok(stream);
+        }
+        let digest = op_digest(&op);
+        let mut guard = self.lock();
+        let state = &mut *guard;
+        let calls = state.calls.entry(device.device).or_default();
+        calls.pending.insert(id, digest);
+        if state.persist().is_err() {
+            if let Some(calls) = state.calls.get_mut(&device.device) {
+                calls.pending.remove(&id);
+            }
+            return Err(failed(id, unsaved()));
+        }
+        let (run, cancelled) = voice::new_run(digest);
+        state
+            .voice
+            .entry(device.device)
+            .or_default()
+            .insert(id, run.clone());
+        let stream = VoiceStream::new(run.clone(), id, 0);
+        let service = self.clone();
+        let backend = self.backend.clone();
+        let profile = device.profile.id.clone();
+        let phone = device.device;
+        while state.tasks.try_join_next().is_some() {}
+        state.tasks.spawn(async move {
+            // If this task is aborted (shutdown), the stream still ends.
+            struct Interrupted(voice::SharedRun, RequestId);
+            impl Drop for Interrupted {
+                fn drop(&mut self) {
+                    voice::finish(&self.0, failed(self.1, OpError::Interrupted));
+                }
+            }
+            let interrupted = Interrupted(run.clone(), id);
+            let outcome = backend
+                .voice_turn(profile, audio, VoiceSink(run.clone()), cancelled)
+                .await;
+            let frame = match outcome {
+                Ok(Some(result)) => ServerFrame::Done { id, result },
+                Ok(None) => ServerFrame::Cancelled { id },
+                Err(error) => failed(id, error),
+            };
+            {
+                let mut guard = service.lock();
+                let state = &mut *guard;
+                let calls = state.calls.entry(phone).or_default();
+                calls.pending.remove(&id);
+                // Failed turns may be sent again; finished ones are replayed.
+                if matches!(
+                    frame,
+                    ServerFrame::Done { .. } | ServerFrame::Cancelled { .. }
+                ) {
+                    calls.record(id, digest, frame.clone());
+                }
+                let _ = state.persist();
+            }
+            voice::finish(&run, frame);
+            drop(interrupted);
+        });
+        Ok(stream)
+    }
+
+    /// The reply of a voice turn from event `next`, for a phone that lost
+    /// its connection. A turn the computer no longer holds in memory yields
+    /// only its recorded final frame; an unknown one says so.
+    pub fn voice_resume(
+        &self,
+        device: &DeviceId,
+        id: RequestId,
+        next: u32,
+    ) -> Result<VoiceStream, ServerFrame> {
+        let state = self.lock();
+        if let Some(run) = state.voice.get(device).and_then(|runs| runs.get(&id)) {
+            return Ok(VoiceStream::new(run, id, next));
+        }
+        match state.calls.get(device).and_then(|c| c.recorded.get(&id)) {
+            Some((digest, frame)) => Ok(VoiceStream::new(
+                voice::finished_run(*digest, frame.clone()),
+                id,
+                u32::MAX,
+            )),
+            None => Err(failed(id, OpError::UnknownRequest)),
+        }
+    }
+
     /// Ask a running call to stop before it commits.
     pub fn cancel(&self, device: &DeviceId, id: RequestId) -> bool {
         let state = self.lock();
+        if let Some(run) = state.voice.get(device).and_then(|runs| runs.get(&id))
+            && voice::is_running(&run)
+        {
+            let _ = run
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .cancel
+                .send(true);
+            return true;
+        }
         match state
             .calls
             .get(device)
@@ -804,6 +1033,12 @@ impl Service {
                     }),
                 })
             }
+            Op::VoiceTurn { .. } => failed(
+                id,
+                OpError::BadRequest {
+                    reason: "a voice turn carries its audio on its own stream".into(),
+                },
+            ),
             op @ Op::ResetMemory {} => {
                 if !need(Scope::Sensitive) {
                     return failed(id, OpError::Forbidden);

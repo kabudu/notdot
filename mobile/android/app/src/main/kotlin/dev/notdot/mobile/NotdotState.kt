@@ -28,6 +28,10 @@ object NotdotState {
     @Volatile
     var silent = false
 
+    /** The paired computer, set by the link screen (null until linked). */
+    @Volatile
+    var link: uniffi.notdot_mobile_core.PhoneLink? = null
+
     private var session: VoiceSession? = null
     private val _effects = MutableStateFlow(
         Effects(SessionState.Off, microphone = false, surface = false, endSurface = false, remainingMs = null),
@@ -71,17 +75,38 @@ object NotdotState {
         if (hearing) setStatus("Checking wake phrase locally…")
         else setStatus("Listening hands-free · Say Hey Ava")
     }
-    fun wakeHeard() {
+    fun wakeHeard(linked: Boolean = link != null) {
         handle(SessionEvent.Activity)
         val generation = wakeFeedback.incrementAndGet()
         orb.value = orb.value.copy(mode = OrbMode.LISTENING)
-        setStatus("Heard you. Desktop voice replies are not connected in this prototype.")
+        if (linked) {
+            setStatus("Listening…")
+            return
+        }
+        setStatus("Heard you. Link this phone to your computer to talk.")
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
             if (wakeFeedback.get() == generation && effects.value.microphone) {
                 orb.value = orb.value.copy(mode = OrbMode.IDLE)
                 setStatus("Listening hands-free · Say Hey Ava")
             }
         }, 2500)
+    }
+
+    /** Show a voice turn's progress (text only; audio is never logged). */
+    fun voice(ui: VoiceUi) {
+        handle(SessionEvent.Activity)
+        val (mode, text) = when (ui) {
+            VoiceUi.Listening -> OrbMode.LISTENING to "Listening…"
+            VoiceUi.Sending -> OrbMode.THINKING to "Sending to your computer…"
+            is VoiceUi.Heard -> OrbMode.THINKING to "“${ui.text}”"
+            is VoiceUi.Replying -> OrbMode.SPEAKING to ui.text
+            is VoiceUi.Reconnecting -> OrbMode.THINKING to "Reconnecting to your computer…"
+            is VoiceUi.Finished -> OrbMode.IDLE to (if (ui.result.cancelled) "Stopped." else "Listening hands-free · Say Hey Ava")
+            is VoiceUi.NothingHeard -> OrbMode.IDLE to ui.reason
+            is VoiceUi.Failed -> OrbMode.IDLE to ui.reason
+        }
+        orb.value = orb.value.copy(mode = if (effects.value.microphone) mode else OrbMode.IDLE)
+        setStatus(text)
     }
 
     fun setStatus(text: String) {

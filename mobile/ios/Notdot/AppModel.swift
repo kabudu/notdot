@@ -27,6 +27,8 @@ final class AppModel: ObservableObject {
     #if NOTDOT_WAKE
     private nonisolated(unsafe) var wake: WakeEngine?
     #endif
+    /// Voice turns to the paired computer (capture, send, play the reply).
+    private nonisolated(unsafe) var voiceTurns: VoiceTurns?
 
     init() {
         let arguments = ProcessInfo.processInfo
@@ -48,6 +50,10 @@ final class AppModel: ObservableObject {
             }
         }
         #endif
+        voiceTurns = VoiceTurns(
+            client: PhoneLinkClient(link: { await MainActor.run { AppModel.shared.link.current } }),
+            sink: ReplyPlayer(silent: silent),
+            ui: { ui in Task { @MainActor in AppModel.shared.voice(ui) } })
         #if NOTDOT_WAKE
         if !silent, let models = Bundle.main.resourceURL?.appendingPathComponent("wake").path {
             wake = try? WakeEngine(models: models, name: "Ava", nameOnly: false)
@@ -64,8 +70,11 @@ final class AppModel: ObservableObject {
                 AppModel.log.info("capture rate=\(rate) mean_rms=\(meter.sum / Float(meter.count)) peak_rms=\(meter.peak) backup=\(backup, privacy: .public)")
                 meter = (0, 0, 0)
             }
+            // After the wake phrase, the same audio is the request.
+            if let turns = self.voiceTurns, turns.listening { turns.feed(samples: samples, rate: rate) }
             guard let wake = self.wake, wake.accept(samples: samples, rate: rate) else { return }
             AppModel.log.info("wake detected")
+            self.voiceTurns?.wake()
             Task { @MainActor in self.wakeHeard() }
         }
         #endif
@@ -108,9 +117,27 @@ final class AppModel: ObservableObject {
     func wakeHeard() {
         handle(.activity)
         orb.mode = .listening
+        status = "Listening…"
+    }
+
+    /// Show a voice turn's progress (text only; audio is never logged).
+    func voice(_ ui: VoiceUi) {
+        handle(.activity)
+        let mode: OrbMode
+        switch ui {
+        case .listening: (mode, status) = (.listening, "Listening…")
+        case .sending: (mode, status) = (.thinking, "Sending to your computer…")
+        case .heard(let text): (mode, status) = (.thinking, "“\(text)”")
+        case .replying(let text): (mode, status) = (.speaking, text)
+        case .reconnecting: (mode, status) = (.thinking, "Reconnecting to your computer…")
+        case .finished(let cancelled): (mode, status) = (.idle, cancelled ? "Stopped." : "Listening hands-free · Say Hey Ava")
+        case .nothingHeard(let reason), .failed(let reason): (mode, status) = (.idle, reason)
+        }
+        orb.mode = effects.microphone ? mode : .idle
     }
 
     func handle(_ event: SessionEvent) {
+        if case .stop = event { voiceTurns?.stop() }
         _ = session.handle(event: AudioCapture.permitted && !silent ? .permissionGranted : .permissionLost, nowMs: nowMs)
         let next = session.handle(event: event, nowMs: nowMs)
         apply(next)

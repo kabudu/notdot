@@ -4,7 +4,10 @@
 //! phones over an end-to-end encrypted Iroh connection (same network only
 //! until a relay is deployed). Phones act only on their own person's notes
 //! and memories, through the same stores and permission checks as voice
-//! turns; they never talk to Codex and never see provider keys. Sensitive
+//! turns. A phone's voice turn runs here, as a turn for that phone's own
+//! person: this computer transcribes it, asks Codex and speaks the reply,
+//! so phones never talk to Codex or a voice service directly and never see
+//! provider keys. Sensitive
 //! actions need an attested step-up key, the owner's grant here, and a
 //! biometric on the phone for every action.
 //!
@@ -22,6 +25,8 @@ use tauri::State;
 mod runtime;
 #[cfg(feature = "phones")]
 pub mod status_list;
+#[cfg(feature = "phones")]
+mod voice;
 #[cfg(feature = "phones")]
 pub use runtime::Phones;
 

@@ -9,6 +9,7 @@ use notdot_link::{
     service::{Backend, BoxFuture, Settings},
     store::JsonFile,
     transport::{Desktop, DesktopOptions, NetConfig, SecretKey},
+    voice::{VoiceAudio, VoiceSink},
 };
 use serde_json::{Value, json};
 use std::{
@@ -527,6 +528,25 @@ impl Backend for AppBackend {
             Err(unavailable(
                 "Remote Codex tasks are not connected in this mobile prototype",
             ))
+        })
+    }
+    fn voice_turn(
+        &self,
+        profile: String,
+        audio: VoiceAudio,
+        reply: VoiceSink,
+        cancelled: watch::Receiver<bool>,
+    ) -> BoxFuture<Result<Option<Value>, OpError>> {
+        let state = self.state();
+        Box::pin(async move {
+            let state = state?;
+            let profile = ProfileId::parse(&profile).map_err(|_| OpError::Forbidden)?;
+            let voice = super::voice::AppVoice {
+                state,
+                profile,
+                request_id: uuid::Uuid::new_v4().to_string(),
+            };
+            super::voice::run(&voice, audio, reply, cancelled).await
         })
     }
     fn reset_memory(&self, profile: String) -> BoxFuture<Result<u64, OpError>> {

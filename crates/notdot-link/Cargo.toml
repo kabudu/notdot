@@ -37,3 +37,6 @@ name = "reverse_proxy"
 iroh-relay = { version = "1.4", default-features = false, features = ["server"] }
 iroh = { version = "1.4", default-features = false, features = ["tls-ring", "test-utils"] }
 tokio = { workspace = true, features = ["test-util"] }
+[[test]]
+name = "voice"
+required-features = ["test-relay"]
