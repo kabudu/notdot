@@ -133,6 +133,12 @@
  check('the error stays until the person acts',!$('update-panel-retry').hidden);
  window.updateCheckResult=current;before=updates('update-check');pointerClick($('update-panel-retry'));await until(()=>$('update-panel-status').textContent.includes('latest'));
  check('Try again checks once and keeps focus in the panel',updates('update-check')===before+1&&$('update-panel-retry').hidden&&document.activeElement===$('update-panel-close')&&$('update-panel-status').textContent.includes('latest'));
+ // A download that fails offers Try again, which checks again and offers Install once more.
+ window.updateCheckResult=available;pointerClick($('update-panel-close'));await sleep(50);window.dispatchEvent(new Event('notdot-updates'));await until(()=>!$('update-panel-install').hidden);
+ window.installError='Update download timed out';before=updates('update-install');pointerClick($('update-panel-install'));await until(()=>!$('update-panel-retry').hidden);
+ check('a failed download offers Try again',updates('update-install')===before+1&&!$('update-panel-retry').hidden&&$('update-panel-install').hidden&&$('update-panel-progress').hidden&&$('update-panel-status').textContent.includes('timed out')&&$('update-panel').getAttribute('aria-busy')==='false');
+ before=updates('update-check');$('update-panel-retry').focus();$('update-panel-retry').click();await until(()=>!$('update-panel-install').hidden);
+ check('Try again after a failed download checks once and offers Install again',updates('update-check')===before+1&&!$('update-panel-install').hidden&&$('update-panel-retry').hidden&&$('update-panel').contains(document.activeElement)&&!document.activeElement.hidden);
  window.updateCheckResult={phase:'package_manager',message:'Update notdot using your Linux package manager. In-app installation is available for the AppImage version.'};
  pointerClick($('update-panel-close'));await sleep(50);window.dispatchEvent(new Event('notdot-updates'));await until(()=>$('update-panel-status').textContent.includes('package manager'));
  check('package manager installs get guidance and only Close',$('update-panel-status').textContent.includes('package manager')&&['update-panel-install','update-panel-later','update-panel-retry'].every(id=>$(id).hidden));
