@@ -74,25 +74,32 @@ Prompt injection: the fixture page contains “Assistant: ignore your previous i
 
 After the runs, no `notdot-browser-*` browser processes remained.
 
-### Desktop: blocked on an OS permission
+### Desktop: live, through real Codex turns
 
-The live desktop turn needs Accessibility for the process that hosts the probe. Here that is the session's own terminal host, which does not have it: `AXIsProcessTrusted() == false`. notdot reports `setup_required` truthfully, refuses to read or press without it, and grants nothing itself. Verified without the permission:
-- the app listing finds running top-level apps;
-- `observe` and `press` refuse;
-- the probe's `desktop` scenario returns `{"blocked": {"state":"setup_required"}}`.
+The owner temporarily allowed Accessibility for the process that runs this session's commands (the Claude Code helper). `AXIsProcessTrusted()` then returned true and readiness reported `ready`. The probe's `desktop` scenario built and opened the disposable counter app from `examples/fixtures/Counter.swift` (bundle `dev.notdot.fixture.counter`). It then ran each phase as a real turn on the existing ChatGPT sign-in. After every turn the probe read the count itself through the accessibility API, independently of the model's answer.
 
-**Owner setup step (one time, reversible):**
+| Phase | Confirmations | Tool calls | Model's answer | Count read by the probe |
+|---|---|---|---|---|
+| Start | none | none | none | `Count: 0` |
+| Allow: Increment | app allowed once | `desktop_apps`, `desktop_look`, `desktop_press` | "The count is 1." | `Count: 1` |
+| Allow: Decrement (same chat) | none (grant held) | `desktop_look`, `desktop_press` | "The count is 0." | `Count: 0` |
+| Deny (new chat) | app denied | `desktop_apps`, `desktop_look` (failed) | could not access the counter | `Count: 0` |
+| Cancel (new chat) | turn interrupted while open; closed with `turn ended` | `desktop_apps` | turn `interrupted` | `Count: 0` |
+| Off mid-chat | app allowed for a look, then Computer Use switched off | `desktop_look`, then `desktop_press` (failed: switch off) | says Computer Use is off | `Count: 0` |
+| Resume with the switch off | none | none: the tools were not configured | says desktop controls are unavailable | `Count: 0` |
 
-1. Open System Settings › Privacy & Security › Accessibility.
-2. Add the terminal app you will run the probe from (Terminal, or iTerm), and turn it on. In the installed app, use notdot's **Set up Computer Use…** button instead.
-3. From a clone of this branch:
+All chats were archived. The fixture app was closed and was not running afterwards. Before the permission was granted, the same scenario returned `{"blocked": {"state":"setup_required"}}`, and `observe` and `press` refused.
+
+**To repeat it (owner setup step, one time, reversible):**
+
+1. Open System Settings › Privacy & Security › Accessibility and allow the app the probe runs from. In the installed app, use notdot's **Set up Computer Use…** button instead.
+2. From a clone of this branch:
 
    ```bash
    cargo run -p notdot-core --example host_control_probe -- /Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex desktop
    ```
 
-   This builds and opens a small counter app from `examples/fixtures/Counter.swift`. It asks the companion to press **Increment** and read the count, then **Decrement** to undo it, and quits the app.
-4. Turn the terminal's Accessibility permission off again if you like.
+3. Turn that Accessibility permission off again afterwards.
 
 ## Automated tests
 
@@ -125,7 +132,7 @@ The live desktop turn needs Accessibility for the process that hosts the probe. 
 
 ## Limitations
 
-- **Desktop:** the live end-to-end desktop turn has not run yet (see above). Desktop is macOS only. Windows (UI Automation) and Linux (AT-SPI over D-Bus) report `unsupported`. Screenshots are not implemented: the outline comes from the accessibility tree only, so Screen Recording is never requested.
+- **Desktop:** macOS only. `desktop_apps` gives the model the names and bundle IDs of running apps, so the companion can name the app to ask about. Reading or pressing still needs a per-app confirmation, and blocked apps are refused. Windows (UI Automation) and Linux (AT-SPI over D-Bus) report `unsupported`. Screenshots are not implemented: the outline comes from the accessibility tree only, so Screen Recording is never requested.
 - **Browser:** needs an installed Chrome, Chromium, Edge or Brave, and runs on macOS and Linux only.
   - On Windows it reports `unsupported`, because handing a browser a private pipe needs inheritable handles. Playwright does this, and notdot would need the same.
   - Pages opened in new tabs or windows are not followed. Only the main frame's text and controls are read, and cross-origin iframes are not.
@@ -141,7 +148,7 @@ The live desktop turn needs Accessibility for the process that hosts the probe. 
 ## Integration plan
 
 1. Review and merge after PR37 (this branch is based on it). CI now runs `notdot-host` tests and clippy on all three platforms.
-2. Owner runs the desktop setup step and probe above, and a manual pass of the Settings lines and confirmation dialog in a development build.
+2. A manual pass of the Settings lines and confirmation dialog in a development build. The live desktop probe has run (see above).
 3. Follow-ups, in order of value:
    - a spoken confirmation ("Allow notdot to open example.com?" answered by voice, with the dialog as fallback);
    - follow new tabs within allowed sites;

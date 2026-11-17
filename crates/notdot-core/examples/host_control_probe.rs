@@ -476,9 +476,40 @@ async fn desktop(runtime: &Path) -> Result<Value, String> {
         .spawn()
         .map_err(|e| e.to_string())?;
     tokio::time::sleep(Duration::from_secs(2)).await;
-    let lab = lab(false)?;
-    let bridge = connect(runtime, &lab).await?;
-    let thread = bridge
+    let pid = app.id() as i32;
+    let phases = desktop_phases(runtime, pid).await;
+    let _ = app.kill();
+    let _ = app.wait();
+    let mut result = phases?;
+    result["fixtureStillRunning"] = json!(
+        notdot_host::desktop::apps()
+            .map(|a| a
+                .iter()
+                .any(|a| a.bundle_id == "dev.notdot.fixture.counter"))
+            .unwrap_or(false)
+    );
+    Ok(result)
+}
+
+/// The fixture's count, read by the probe itself through the accessibility
+/// API: independent of anything the model reports.
+fn counter(pid: i32) -> Value {
+    notdot_host::desktop::observe(pid)
+        .ok()
+        .and_then(|nodes| {
+            nodes.into_iter().find_map(|n| {
+                [n.label, n.value]
+                    .into_iter()
+                    .find(|s| s.starts_with("Count:"))
+            })
+        })
+        .map_or(Value::Null, Value::from)
+}
+
+const INCREMENT: &str = "In the app “notdot Fixture Counter”, use your desktop tools to press Increment once, then tell me the exact count it shows.";
+
+async fn new_thread(bridge: &Bridge, lab: &Lab) -> Result<String, String> {
+    bridge
         .thread_with_options(
             None,
             lab.dir.path(),
@@ -486,8 +517,17 @@ async fn desktop(runtime: &Path) -> Result<Value, String> {
             &Default::default(),
             options(),
         )
-        .await?;
-    let up = turn(&bridge, &thread, "In the app “notdot Fixture Counter”, use your desktop tools to press Increment once, then tell me the exact count it shows.", |_| Answer::Allow, false).await?;
+        .await
+}
+
+async fn desktop_phases(runtime: &Path, pid: i32) -> Result<Value, String> {
+    let start = counter(pid);
+    // Allow: Increment then Decrement in one conversation.
+    let lab = lab(false)?;
+    let bridge = connect(runtime, &lab).await?;
+    let thread = new_thread(&bridge, &lab).await?;
+    let up = turn(&bridge, &thread, INCREMENT, |_| Answer::Allow, false).await?;
+    let after_up = counter(pid);
     let down = turn(
         &bridge,
         &thread,
@@ -496,10 +536,83 @@ async fn desktop(runtime: &Path) -> Result<Value, String> {
         false,
     )
     .await?;
-    let archived = finish(bridge, &thread).await;
-    let _ = app.kill();
-    let _ = app.wait();
-    Ok(json!({"scenario":"desktop","increment":up,"decrement":down,"chatArchived":archived}))
+    let after_down = counter(pid);
+    let allow_archived = bridge
+        .call("thread/archive", json!({"threadId":thread}))
+        .await
+        .is_ok();
+
+    // Deny: a new conversation, the app confirmation refused.
+    let thread = new_thread(&bridge, &lab).await?;
+    let deny = turn(&bridge, &thread, INCREMENT, |_| Answer::Deny, false).await?;
+    let after_deny = counter(pid);
+    let deny_archived = bridge
+        .call("thread/archive", json!({"threadId":thread}))
+        .await
+        .is_ok();
+
+    // Cancel: the turn is interrupted while the confirmation is open.
+    let thread = new_thread(&bridge, &lab).await?;
+    let cancel = turn(&bridge, &thread, INCREMENT, |_| Answer::Allow, true).await?;
+    let after_cancel = counter(pid);
+    let cancel_archived = bridge
+        .call("thread/archive", json!({"threadId":thread}))
+        .await
+        .is_ok();
+
+    // Off mid-conversation: the app is allowed and looked at, then the
+    // switch goes off before the press.
+    let thread = new_thread(&bridge, &lab).await?;
+    let look = turn(&bridge, &thread, "Use your desktop tools to look at the app “notdot Fixture Counter” and tell me the count it shows. Do not press anything.", |_| Answer::Allow, false).await?;
+    let mut settings = Settings::load(&lab.settings)?;
+    settings.computer_use = false;
+    settings.save(&lab.settings)?;
+    let off = turn(
+        &bridge,
+        &thread,
+        "Now press Increment once in that app and tell me the count.",
+        |_| Answer::Allow,
+        false,
+    )
+    .await?;
+    let after_off = counter(pid);
+    bridge.shutdown().await;
+
+    // Resume that conversation on a new connection with the switch off:
+    // the desktop tools are no longer configured at all.
+    let bridge = connect(runtime, &lab).await?;
+    let resumed = bridge
+        .thread_with_options(
+            Some(&thread),
+            lab.dir.path(),
+            "notdot host control probe",
+            &Default::default(),
+            ThreadOptions {
+                computer_use: false,
+                ..options()
+            },
+        )
+        .await?;
+    let resume = turn(
+        &bridge,
+        &resumed,
+        "Press Increment once in “notdot Fixture Counter” using your desktop tools and tell me the count.",
+        |_| Answer::Allow,
+        false,
+    )
+    .await?;
+    let after_resume = counter(pid);
+    let off_archived = finish(bridge, &resumed).await;
+
+    Ok(json!({
+        "scenario": "desktop",
+        "countAtStart": start,
+        "allow": {"increment": up, "countAfterIncrement": after_up, "decrement": down, "countAfterDecrement": after_down, "chatArchived": allow_archived},
+        "deny": {"turn": deny, "count": after_deny, "chatArchived": deny_archived},
+        "cancel": {"turn": cancel, "count": after_cancel, "chatArchived": cancel_archived},
+        "offMidThread": {"look": look, "press": off, "count": after_off},
+        "resumeOff": {"sameThread": resumed == thread, "turn": resume, "count": after_resume, "chatArchived": off_archived},
+    }))
 }
 
 async fn run(runtime: PathBuf, scenarios: Vec<String>) -> Result<(), String> {
