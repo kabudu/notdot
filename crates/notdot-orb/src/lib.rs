@@ -158,14 +158,14 @@ struct Snapshot {
     initiative: Value,
 }
 /// Readiness of notdot's own browser and desktop control.
-#[derive(Clone, Default, Deserialize)]
+#[derive(Clone, Default, Deserialize, PartialEq)]
 struct HostControls {
     #[serde(default)]
     browser: HostStatus,
     #[serde(default)]
     desktop: HostStatus,
 }
-#[derive(Clone, Default, Deserialize)]
+#[derive(Clone, Default, Deserialize, PartialEq)]
 struct HostStatus {
     #[serde(default)]
     state: String,
@@ -1222,24 +1222,22 @@ fn refresh_models(view: &Shared, model: String, effort: String) {
 /// Show the owner's Browser Use and Computer Use preferences as saved, and
 /// say separately whether notdot's own capability can run now.
 fn render_host_controls(view: &Shared, s: &Settings) {
-    let controls = view.borrow().snapshot.host_controls.clone();
-    for (id, on, label, status) in [
-        (
-            "browser-use",
-            s.browser_use,
-            "Browser Use",
-            &controls.browser,
-        ),
-        (
-            "computer-use",
-            s.computer_use,
-            "Computer Use",
-            &controls.desktop,
-        ),
+    input("browser-use").set_checked(s.browser_use);
+    input("computer-use").set_checked(s.computer_use);
+    render_host_status(&view.borrow().snapshot.host_controls);
+}
+/// The readiness line under each switch follows the switch as shown (saved
+/// or not) and the latest readiness, which can change while Settings is open.
+fn render_host_status(controls: &HostControls) {
+    for (id, label, status) in [
+        ("browser-use", "Browser Use", &controls.browser),
+        ("computer-use", "Computer Use", &controls.desktop),
     ] {
-        input(id).set_checked(on);
-        element(&format!("{id}-status"))
-            .set_text_content(Some(&host_status_text(label, on, status)));
+        element(&format!("{id}-status")).set_text_content(Some(&host_status_text(
+            label,
+            input(id).checked(),
+            status,
+        )));
     }
     let setup = controls.desktop.state == "setup_required";
     let _ = element("computer-use-setup").toggle_attribute_with_force("hidden", !setup);
@@ -1259,6 +1257,11 @@ fn host_status_text(label: &str, on: bool, status: &HostStatus) -> String {
         _ => "Checking…".into(),
     }
 }
+thread_local! {
+    /// The question the person last answered. A snapshot taken before the
+    /// native side has cleared it must not show it again for a second answer.
+    static ANSWERED_HOST_CONFIRMATION: RefCell<Option<String>> = const { RefCell::new(None) };
+}
 /// Show or close notdot's confirmation dialog to match the snapshot. Closing
 /// it without choosing (Escape) answers "Don't allow".
 fn render_host_confirmation(
@@ -1266,7 +1269,10 @@ fn render_host_confirmation(
     current: Option<&HostConfirmation>,
 ) {
     let host = dialog("host-confirm");
+    let answered =
+        |id: &str| ANSWERED_HOST_CONFIRMATION.with(|a| a.borrow().as_deref() == Some(id));
     match current {
+        Some(question) if answered(&question.id) => {}
         Some(question) if previous != Some(question) || !host.open() => {
             element("host-confirm-message").set_text_content(Some(&question.message));
             let seconds = (question.timeout_ms / 1000).max(1);
@@ -1295,6 +1301,7 @@ fn answer_host_confirmation(allow: bool) {
     let _ = host.remove_attribute("data-id");
     host.close();
     if let Some(id) = id {
+        ANSWERED_HOST_CONFIRMATION.with(|a| a.replace(Some(id.clone())));
         spawn_local(async move {
             if let Err(e) = call("answer_host_confirmation", json!({"id":id,"allow":allow})).await {
                 message(e);
@@ -1306,6 +1313,8 @@ fn open_panel(view: &Shared) {
     spawn_local(async {
         let _ = call("cancel_session", json!({})).await;
         let _ = call("cancel_settings", json!({})).await;
+        // An OS permission may have changed since the last check.
+        let _ = call("refresh_host_controls", json!({})).await;
     });
     if view.borrow().conversation.active()
         || view.borrow().capture_token.is_some()
@@ -2284,6 +2293,12 @@ pub fn start() -> Result<(), JsValue> {
         event.prevent_default();
         answer_host_confirmation(false);
     });
+    for id in ["browser-use", "computer-use"] {
+        let target = view.clone();
+        on(element(id).as_ref(), "change", move |_| {
+            render_host_status(&target.borrow().snapshot.host_controls);
+        });
+    }
     on(element("computer-use-setup").as_ref(), "click", |_| {
         spawn_local(async {
             if let Err(e) = call("set_up_computer_use", json!({})).await {
@@ -3472,6 +3487,11 @@ pub fn start() -> Result<(), JsValue> {
                         target.borrow().snapshot.host_confirmation.as_ref(),
                         snapshot.host_confirmation.as_ref(),
                     );
+                    if dialog("panel").open()
+                        && target.borrow().snapshot.host_controls != snapshot.host_controls
+                    {
+                        render_host_status(&snapshot.host_controls);
+                    }
                     target.borrow_mut().snapshot = snapshot;
                     let recovery = target.borrow().snapshot.setup_required;
                     if !recovery {
