@@ -289,8 +289,9 @@
       <input aria-describedby="live-web-description" id="live-web-search" role="switch" type="checkbox"/>
       <span aria-hidden="true" class="switch-track"></span>
      </label>
-     <label class="switch-row"><span class="switch-copy">Browser Use<span class="switch-description" id="browser-use-description">Your preference for letting your own companion use Codex browser tools to open and use websites. On by default; never used for other people.</span><span class="switch-description" id="browser-use-status"></span></span><input aria-describedby="browser-use-description browser-use-status" id="browser-use" role="switch" type="checkbox"/><span aria-hidden="true" class="switch-track"></span></label>
-     <label class="switch-row"><span class="switch-copy">Computer Use<span class="switch-description" id="computer-use-description">Your preference for letting your own companion use Codex computer tools to work with apps on this computer. On by default; never used for other people.</span><span class="switch-description" id="computer-use-status"></span></span><input aria-describedby="computer-use-description computer-use-status" id="computer-use" role="switch" type="checkbox"/><span aria-hidden="true" class="switch-track"></span></label>
+     <label class="switch-row"><span class="switch-copy">Browser Use<span class="switch-description" id="browser-use-description">Lets your own companion open and use websites in notdot’s private browser, which has none of your sign-ins. On by default; never used for other people.</span><span class="switch-description" id="browser-use-status"></span></span><input aria-describedby="browser-use-description browser-use-status" id="browser-use" role="switch" type="checkbox"/><span aria-hidden="true" class="switch-track"></span></label>
+     <label class="switch-row"><span class="switch-copy">Computer Use<span class="switch-description" id="computer-use-description">Lets your own companion read and press controls in apps you allow on this computer. On by default; never used for other people.</span><span class="switch-description" id="computer-use-status"></span></span><input aria-describedby="computer-use-description computer-use-status" id="computer-use" role="switch" type="checkbox"/><span aria-hidden="true" class="switch-track"></span></label>
+     <button hidden="" id="computer-use-setup" type="button">Set up Computer Use…</button>
      </div>
     </details>
     <details class="settings-section" id="wake-section" data-settings-category="voice" hidden>
@@ -772,6 +773,23 @@
    <progress id="update-bar" max="100">
    </progress>
   </aside>
+  <dialog aria-describedby="host-confirm-message host-confirm-timeout" aria-labelledby="host-confirm-title" id="host-confirm" role="alertdialog">
+   <h1 id="host-confirm-title">
+    Allow this?
+   </h1>
+   <p id="host-confirm-message">
+   </p>
+   <p class="hint" id="host-confirm-timeout">
+   </p>
+   <div class="actions">
+    <button id="host-confirm-deny" type="button">
+     Don’t allow
+    </button>
+    <button id="host-confirm-allow" type="button">
+     Allow
+    </button>
+   </div>
+  </dialog>
   <dialog aria-labelledby="about-title" id="about">
    <img alt="notdot logomark" height="96" src="logomark.svg" width="96"/>
    <h1 id="about-title">

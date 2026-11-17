@@ -2719,6 +2719,7 @@ dependencies = [
  "hound",
  "keyring",
  "notdot-core",
+ "notdot-host",
  "notdot-speakers",
  "notdot-voice",
  "notdot-wake-runtime",
@@ -2750,11 +2751,25 @@ name = "notdot-core"
 version = "0.8.1"
 dependencies = [
  "mnemara",
+ "notdot-host",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "url",
  "uuid",
+]
+
+[[package]]
+name = "notdot-host"
+version = "0.8.1"
+dependencies = [
+ "core-foundation 0.10.1",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

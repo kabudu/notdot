@@ -43,8 +43,8 @@ pub struct Settings {
     /// Owner preferences for Codex Browser Use and Computer Use: on by default
     /// (the owner's product choice), including for settings saved before they
     /// existed; an explicit off choice is kept. A preference is not readiness:
-    /// neither capability is sent to Codex while
-    /// `bridge::HOST_CONTROLS_AVAILABLE` is false.
+    /// notdot's own tools reach Codex only when `notdot_host::readiness`
+    /// reports the capability ready (see `bridge::ThreadOptions`).
     pub browser_use: bool,
     pub computer_use: bool,
 }
