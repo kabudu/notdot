@@ -75,7 +75,7 @@
     if(cmd==='backup_cancel'){record('backup-cancel');return null;}
     // Software-update adapters: never contact a release server or install anything.
     if(cmd==='check_updates'){record('update-check');if(window.updateCheckRunning)return copy(state.updates);/* joins, like Updates::begin_check */window.updateCheckRunning=true;state.updates={...state.updates,phase:'checking',message:'Checking for updates…'};try{if(window.updateCheckDelay)await sleep(window.updateCheckDelay);}finally{window.updateCheckRunning=false;}const next=copy(window.updateCheckResult||{phase:'current',version:null,message:'You have the latest published version',received:0,total:null,prompt:false});state.updates={...state.updates,received:0,total:null,prompt:false,...next};if(next.phase==='error')throw Error(next.message);return copy(state.updates);}
-    if(cmd==='install_update'){record('update-install');state.updates={...state.updates,phase:'downloading',message:'Downloading update…',received:25,total:100};return new Promise(()=>{});}
+    if(cmd==='install_update'){record('update-install');state.updates={...state.updates,phase:'downloading',message:'Downloading update…',received:25,total:100};if(window.installError){/* like updates.rs: a failed download sets phase error and rejects */const m=window.installError;window.installError=null;await sleep(300);state.updates={...state.updates,phase:'error',message:m,received:0,total:null};throw Error(m);}return new Promise(()=>{});}
     if(cmd==='defer_update'){record('update-defer');state.updates.prompt=false;return null;}
     if(cmd==='snapshot') return copy(state);
     if(cmd==='capture_status') return copy(state.wake);
