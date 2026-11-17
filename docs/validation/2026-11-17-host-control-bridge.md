@@ -101,6 +101,41 @@ All chats were archived. The fixture app was closed and was not running afterwar
 
 3. Turn that Accessibility permission off again afterwards.
 
+## Native QA build, Settings and the confirmation dialog
+
+**Native QA app.** A debug QA bundle (`cargo tauri build --debug --bundles app --config src-tauri/tauri.qa.conf.json`, identifier `com.kabudu.notdot.qa`) was built in the worktree's `target/` and started directly. It was never installed, and the owner's app and QA profile were not touched. It ran under a throwaway `HOME` that held only a minimal settings file, so its profile, roster and chats were disposable. `NOTDOT_CODEX_BIN` pointed at `scripts/fixtures/fake_codex_app_server.py`, a stand-in runtime. It answers start-up requests with synthetic data, contacts no service, and sends `mcpServer/elicitation/request` questions on demand, so approvals are simulated. The app's real bridge, confirmation state machine and native commands handled them. The stand-in logged every reply the app sent:
+
+| Injected request | Reply from the native app |
+|---|---|
+| `notdot_host` question, no answer | `decline` after 60.0 s |
+| question from another MCP server | refused (`-32601`, approval not granted) |
+| Codex generic tool approval (`codex_approval_kind`) | refused |
+| form that asks for data (non-empty schema) | refused |
+| question, then `turn/completed` for its turn | `decline` when the turn ended |
+| a fifth question while four were open | `decline` at once |
+| question open, then the runtime exits | no reply possible; the app stayed running and dropped the question |
+
+**Dialog and Settings UI.** Driving the native window needs desktop control of the QA app. The owner declined that request in this session, so the UI was checked as the production WASM build in a local browser instead. `scripts/fixtures/conversation-harness.js` and the new `host-control-harness.js` replace the Tauri commands. The new harness mirrors the bridge rules: one answer per question, closed or unknown ids refused, and a timeout. `scripts/prepare_host_control_harness.py` prepares it, and `index.html#host-checks` runs 20 automatic checks. All 20 pass. Real key presses (Chrome DevTools input, which counts as trusted) were also checked:
+- **Opening:** the dialog opens as a modal `alertdialog` titled "Allow this?". It is described by the message and the timeout line, and focus starts on **Don't allow**.
+- **Keyboard:** Tab and Shift+Tab stay between **Don't allow** and **Allow**. Escape sends one "Don't allow" and closes the dialog.
+- **Answers:** **Allow** and **Don't allow** each send exactly one answer.
+- **Timeouts:** an unanswered question closes as a timeout with no yes. The stated timeout follows the question.
+- **Replacement:** when an older question closes, a newer open question stays on screen. A turn ending closes the dialog.
+- **Stale questions:** an answer to a question the bridge had already closed is refused with "That question has already closed".
+- **Settings:**
+  - the Browser Use and Computer Use lines show ready, setup needed and unsupported separately from the switches, and update while Settings is open;
+  - turning a switch off changes its line before saving;
+  - opening Settings asks the native side to recheck readiness;
+  - **Set up Computer Use…** appears only when setup is needed and calls the native setup once;
+  - Space toggles a focused switch, and Tab reaches the setup button with a visible focus ring.
+
+**Defects found and fixed:**
+1. After an answer, the dialog reopened briefly with the same question until the native side cleared it. The harness showed the dialog opening and closing twice (open, close, open, close). A second click in that gap would send a duplicate answer. The UI now remembers the answered question and never shows it again. The same check now records one open and one close.
+2. The readiness lines were drawn only when Settings opened, and followed the saved setting rather than the switch on screen. After **Set up Computer Use…** they kept saying "Setup needed". They now follow the switch, and they update when readiness changes.
+3. The UI never called `refresh_host_controls`, so a permission granted in System Settings showed only after a restart. Opening Settings now refreshes readiness.
+
+**Not covered here.** Clicking and VoiceOver in the native WebKit window were not exercised, because desktop control of the QA app was declined. Pressing **Set up Computer Use…** in the native app was also skipped, so that no system Accessibility prompt was shown unasked.
+
 ## Automated tests
 
 - **`notdot-host` unit tests:**
@@ -143,12 +178,12 @@ All chats were archived. The fixture app was closed and was not running afterwar
   - Sensitive-action detection is a keyword list on the element label, and the site and app confirmation is the outer boundary. A page can mislabel a button, but it cannot skip the site confirmation or reach other sites.
 - **Owner-only rule:** it follows notdot's existing isolation rule (member, more than one person, or trusted-voice mode). In open single-person mode an unrecognised voice is served as the owner, as for every other owner capability.
 - **Clean-up:** if Codex kills the helper abruptly, its temporary browser profile stays until the next launch sweeps it. The browser itself exits with the pipe, and no orphan processes were seen.
-- **The real app:** the probe exercises the same library code and helper mode as the app binary. The app's dialog and Settings lines compile and are wired, but were not exercised in a running notdot build here, because that would mean installing over the owner's app.
+- **The real app:** the probe exercises the same library code and helper mode as the app binary. A native QA build was run with a stand-in runtime (see above). Its dialog and Settings UI were checked in a browser harness, not by clicking the native window or with VoiceOver.
 
 ## Integration plan
 
 1. Review and merge after PR37 (this branch is based on it). CI now runs `notdot-host` tests and clippy on all three platforms.
-2. A manual pass of the Settings lines and confirmation dialog in a development build. The live desktop probe has run (see above).
+2. Optional: a person clicks through the dialog and Settings lines in the native QA window and with VoiceOver. The live desktop probe and the harness checks have run (see above).
 3. Follow-ups, in order of value:
    - a spoken confirmation ("Allow notdot to open example.com?" answered by voice, with the dialog as fallback);
    - follow new tabs within allowed sites;
