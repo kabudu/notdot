@@ -3,7 +3,8 @@
 ## [Unreleased]
 
 - **Live web search.** Turn on current web results for your own companion in Settings.
-- **Browser and computer preferences.** Choose your preferences and see when the tools are available.
+- **Browser Use.** Open and interact with sites in a separate browser, with approval for new sites and sensitive actions.
+- **Computer Use on macOS (preview).** Allow Accessibility access to use controls in approved apps. Settings shows readiness for both tools.
 
 ## [0.8.1] - 2026-11-20
 
