@@ -282,13 +282,15 @@
      </div>
     </details>
     <details class="settings-section" id="web-section" data-settings-category="codex" hidden>
-     <summary><span><strong>Web search</strong><small>Search only, not browser control</small></span></summary>
+     <summary><span><strong>Browser &amp; computer</strong><small>Choose which tools notdot may request</small></span></summary>
      <div class="settings-body">
      <label class="switch-row">
-      <span class="switch-copy">Live web search<span class="switch-description" id="live-web-description">Off by default. When on, your own companion can use Codex live web search to read current web pages for an answer. This is web search only: notdot can't open a browser, sign in, fill in forms or control this computer. Web pages are treated as untrusted and can't give notdot instructions. Not used while other people are set up or trusted voices are on.</span></span>
+      <span class="switch-copy">Live web search<span class="switch-description" id="live-web-description">Off by default. When on, your own companion can use Codex live web search to read current web pages for an answer. This reads web pages for answers; browser and computer tools are controlled separately below. Web pages are treated as untrusted and can't give notdot instructions. Not used while other people are set up or trusted voices are on.</span></span>
       <input aria-describedby="live-web-description" id="live-web-search" role="switch" type="checkbox"/>
       <span aria-hidden="true" class="switch-track"></span>
      </label>
+     <label class="switch-row"><span class="switch-copy">Browser Use<span class="switch-description" id="browser-use-description">Let notdot request browser tools to navigate and interact with websites. On by default. Requires a compatible Codex host and its permissions; switching on does not connect or approve access. Unavailable to other members.</span></span><input aria-describedby="browser-use-description" id="browser-use" role="switch" type="checkbox"/><span aria-hidden="true" class="switch-track"></span></label>
+     <label class="switch-row"><span class="switch-copy">Computer Use<span class="switch-description" id="computer-use-description">Let notdot request computer tools to work with desktop apps. On by default. Requires a compatible Codex host and its permissions; switching on does not connect or approve access. Unavailable to other members.</span></span><input aria-describedby="computer-use-description" id="computer-use" role="switch" type="checkbox"/><span aria-hidden="true" class="switch-track"></span></label>
      </div>
     </details>
     <details class="settings-section" id="wake-section" data-settings-category="voice" hidden>

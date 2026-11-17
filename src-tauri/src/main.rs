@@ -976,6 +976,8 @@ async fn connect(state: Arc<AppState>, allow_interrupt: bool) -> Result<(), Stri
             &settings.selection(),
             notdot_core::bridge::ThreadOptions {
                 live_web_search: settings.live_web_search,
+                browser_use: settings.browser_use,
+                computer_use: settings.computer_use,
             },
         )
         .await?;

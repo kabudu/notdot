@@ -309,3 +309,11 @@ Use [release measures](release-measures.md) and `scripts/evaluate_release_measur
 ### Linux interruption microphone permission
 
 WebKitGTK media capture uses an explicit permission handler. It permits microphone requests only from the main app page after a one-use six-second request from the interruption UI. Other pages, windows and expired requests are refused; camera and unrelated permissions are not granted. Release builds do not trust development-server origins. This does not change OS microphone permissions. Native origin, expiry and replay tests cover the policy; actual device echo cancellation still needs platform validation.
+
+### Browser and computer tools
+
+In Settings → Codex → Browser & computer, choose Browser Use and Computer Use separately. Both preferences start on, including when older settings have no saved choice. An explicit off choice stays off. Saving a change reconnects the companion; finish an active turn first.
+
+These switches request tools from the connected Codex runtime. They do not connect the desktop app's browser automatically, grant screen access, or approve actions. A compatible host and its permissions are still required. If the runtime does not supply a requested tool, notdot must say so rather than pretend it can act. Live web search is a separate option for reading current pages.
+
+Other members and trusted-voice sessions retain their existing tool isolation. The owner's browser and computer preferences do not grant them access. Turning either switch off sends that restriction again when a chat is resumed. Existing operating-system permissions and tool approvals still apply.

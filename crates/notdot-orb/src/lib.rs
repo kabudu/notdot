@@ -118,6 +118,10 @@ struct Settings {
     microphone_muted: bool,
     #[serde(default)]
     live_web_search: bool,
+    #[serde(default)]
+    browser_use: bool,
+    #[serde(default)]
+    computer_use: bool,
 }
 #[derive(Clone, Default, Deserialize)]
 struct Snapshot {
@@ -1227,6 +1231,8 @@ fn open_panel(view: &Shared) {
     input("microphone-muted").set_checked(s.microphone_muted);
     input("interrupt-enabled").set_checked(s.interrupt_enabled);
     input("live-web-search").set_checked(s.live_web_search);
+    input("browser-use").set_checked(s.browser_use);
+    input("computer-use").set_checked(s.computer_use);
     select("wake-phrase").set_value(if s.wake_name_only { "name" } else { "hey" });
     render_wake_phrase();
     interruption::render_settings(view);
@@ -2679,6 +2685,8 @@ pub fn start() -> Result<(), JsValue> {
         settings.microphone_muted = input("microphone-muted").checked();
         settings.interrupt_enabled = input("interrupt-enabled").checked();
         settings.live_web_search = input("live-web-search").checked();
+        settings.browser_use = input("browser-use").checked();
+        settings.computer_use = input("computer-use").checked();
         settings.onboarding_complete = target.borrow().snapshot.settings.onboarding_complete;
         let key = input("key").value();
         let stt_key = input("stt-key").value();

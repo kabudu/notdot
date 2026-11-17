@@ -40,6 +40,9 @@ pub struct Settings {
     /// Codex live web search for the owner's own companion. Off by default.
     /// Members, shared rosters and trusted-voice mode keep web search off.
     pub live_web_search: bool,
+    /// Request host-backed tools; OS and runtime approvals still apply.
+    pub browser_use: bool,
+    pub computer_use: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -69,6 +72,8 @@ impl Default for Settings {
             interrupt_enabled: false,
             microphone_muted: false,
             live_web_search: false,
+            browser_use: true,
+            computer_use: true,
         }
     }
 }
@@ -79,6 +84,8 @@ impl Settings {
             || self.selection() != previous.selection()
             || self.session_control != previous.session_control
             || self.live_web_search != previous.live_web_search
+            || self.browser_use != previous.browser_use
+            || self.computer_use != previous.computer_use
     }
 
     pub fn transcription_id(&self) -> &str {
@@ -292,5 +299,27 @@ mod tests {
         s.hue = 500;
         assert!(s.save(&p).is_err());
         assert_eq!(Settings::load(&p).unwrap().hue, 192);
+    }
+}
+
+#[cfg(test)]
+mod control_settings_tests {
+    use super::*;
+    #[test]
+    fn controls_default_on_and_saved_off_survives() {
+        let defaults: Settings = serde_json::from_str("{}").unwrap();
+        assert!(defaults.browser_use && defaults.computer_use);
+        let off: Settings =
+            serde_json::from_str(r#"{"browser_use":false,"computer_use":false}"#).unwrap();
+        let restored: Settings =
+            serde_json::from_str(&serde_json::to_string(&off).unwrap()).unwrap();
+        assert!(!restored.browser_use && !restored.computer_use);
+        assert!(off.requires_reconnect(&defaults));
+        let mut browser = defaults.clone();
+        browser.browser_use = false;
+        assert!(browser.requires_reconnect(&defaults));
+        let mut computer = defaults.clone();
+        computer.computer_use = false;
+        assert!(computer.requires_reconnect(&defaults));
     }
 }

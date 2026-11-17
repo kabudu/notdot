@@ -42,6 +42,7 @@ async fn main() -> Result<(), String> {
             &notdot_core::models::Selection::default(),
             ThreadOptions {
                 live_web_search: true,
+                ..Default::default()
             },
         )
         .await?;
