@@ -60,6 +60,8 @@ notdot can look things up with Codex web search. By default it uses your Codex s
 
 Turn on **Live web search** to let your own companion read current web pages for an answer, for example **“Open example.com and tell me its main heading.”** It is off by default. It is search only: notdot cannot open a browser, sign in, fill in forms, act on websites or control your computer. Web pages are treated as untrusted, and nothing on a page can tell notdot to use a tool or change anything. It is not used while other people are set up or trusted voices are on; their conversations keep web search off. Voice requests cannot change this setting.
 
+**Browser Use** and **Computer Use** in the same section record your preference. Both are on by default, and turning one off is remembered. Neither is available in notdot yet, and each switch says so. The ChatGPT desktop app keeps these tools for the Codex runtime it starts itself and refuses other apps, so notdot doesn't send them to Codex and doesn't try to work around the check. Use the ChatGPT desktop app for browser or computer control.
+
 ## Other Codex chats
 
 Ask something like **“Find my Codex chat about the website and remind me what we decided.”** notdot can find saved local chats by title and read relevant messages. If several match, it can ask which one you mean.

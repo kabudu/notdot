@@ -40,7 +40,11 @@ pub struct Settings {
     /// Codex live web search for the owner's own companion. Off by default.
     /// Members, shared rosters and trusted-voice mode keep web search off.
     pub live_web_search: bool,
-    /// Request host-backed tools; OS and runtime approvals still apply.
+    /// Owner preferences for Codex Browser Use and Computer Use: on by default
+    /// (the owner's product choice), including for settings saved before they
+    /// existed; an explicit off choice is kept. A preference is not readiness:
+    /// neither capability is sent to Codex while
+    /// `bridge::HOST_CONTROLS_AVAILABLE` is false.
     pub browser_use: bool,
     pub computer_use: bool,
 }
@@ -306,20 +310,20 @@ mod tests {
 mod control_settings_tests {
     use super::*;
     #[test]
-    fn controls_default_on_and_saved_off_survives() {
-        let defaults: Settings = serde_json::from_str("{}").unwrap();
-        assert!(defaults.browser_use && defaults.computer_use);
+    fn control_preferences_default_on_and_saved_choices_survive() {
+        let legacy: Settings = serde_json::from_str(r#"{"name":"Ava"}"#).unwrap();
+        assert!(legacy.browser_use && legacy.computer_use);
+        assert!(Settings::default().browser_use && Settings::default().computer_use);
         let off: Settings =
-            serde_json::from_str(r#"{"browser_use":false,"computer_use":false}"#).unwrap();
+            serde_json::from_str(r#"{"browser_use":false,"computer_use":true}"#).unwrap();
         let restored: Settings =
             serde_json::from_str(&serde_json::to_string(&off).unwrap()).unwrap();
-        assert!(!restored.browser_use && !restored.computer_use);
-        assert!(off.requires_reconnect(&defaults));
-        let mut browser = defaults.clone();
+        assert!(!restored.browser_use && restored.computer_use);
+        let mut browser = legacy.clone();
         browser.browser_use = false;
-        assert!(browser.requires_reconnect(&defaults));
-        let mut computer = defaults.clone();
+        assert!(browser.requires_reconnect(&legacy));
+        let mut computer = legacy.clone();
         computer.computer_use = false;
-        assert!(computer.requires_reconnect(&defaults));
+        assert!(computer.requires_reconnect(&legacy));
     }
 }

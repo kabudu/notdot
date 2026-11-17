@@ -4,7 +4,11 @@
 //! against a read-only public page. It changes no notdot settings and
 //! archives its disposable chat afterwards. It prints no account details.
 //!
-//! Run: cargo run -p notdot-core --example live_web_search_probe -- CODEX_PATH
+//! An optional second argument replaces the request, and `PROBE_LIVE=0` sends
+//! the turn without live web search (for the browser-control boundary check:
+//! the owner's Browser Use and Computer Use preferences are requested too).
+//!
+//! Run: cargo run -p notdot-core --example live_web_search_probe -- CODEX_PATH [REQUEST]
 use notdot_core::bridge::{Bridge, ThreadOptions};
 use serde_json::{Value, json};
 use std::{path::PathBuf, time::Duration};
@@ -18,6 +22,10 @@ async fn main() -> Result<(), String> {
             .nth(1)
             .ok_or("Pass the Codex runtime path")?,
     );
+    let request = std::env::args()
+        .nth(2)
+        .unwrap_or_else(|| REQUEST.to_owned());
+    let live = std::env::var("PROBE_LIVE").map_or(true, |v| v != "0");
     let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
     let bridge = Bridge::connect(&runtime).await?;
     let account = bridge
@@ -41,23 +49,30 @@ async fn main() -> Result<(), String> {
             "notdot live web search probe",
             &notdot_core::models::Selection::default(),
             ThreadOptions {
-                live_web_search: true,
-                ..Default::default()
+                live_web_search: live,
+                browser_use: true,
+                computer_use: true,
             },
         )
         .await?;
-    let turn = bridge.send(&thread, REQUEST).await?;
+    let turn = bridge.send(&thread, &request).await?;
     let mut items: Vec<Value> = Vec::new();
     let mut answer = String::new();
     let outcome = tokio::time::timeout(Duration::from_secs(180), async {
         loop {
             let e = events.recv().await.map_err(|e| e.to_string())?;
+            if e["method"] == "notdot/unsupportedRequest" {
+                items.push(json!({"type":"refusedHostRequest","method":e["params"]["method"]}));
+            }
             if e["method"] == "item/completed" {
                 let item = &e["params"]["item"];
                 let kind = item["type"].as_str().unwrap_or("").to_owned();
                 match kind.as_str() {
                     "webSearch" => items
                         .push(json!({"type":kind,"query":item["query"],"action":item["action"]})),
+                    "mcpToolCall" | "dynamicToolCall" => items.push(
+                        json!({"type":kind,"server":item["server"],"tool":item["tool"],"status":item["status"]}),
+                    ),
                     "agentMessage" => {
                         answer = item["text"].as_str().unwrap_or("").to_owned();
                         items.push(json!({"type":kind}));
@@ -92,7 +107,8 @@ async fn main() -> Result<(), String> {
         "{}",
         serde_json::to_string_pretty(&json!({
             "signIn": kind,
-            "request": REQUEST,
+            "request": request,
+            "liveWebSearch": live,
             "status": status,
             "items": items,
             "answer": answer,

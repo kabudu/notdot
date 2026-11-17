@@ -312,8 +312,11 @@ WebKitGTK media capture uses an explicit permission handler. It permits micropho
 
 ### Browser and computer tools
 
-In Settings → Codex → Browser & computer, choose Browser Use and Computer Use separately. Both preferences start on, including when older settings have no saved choice. An explicit off choice stays off. Saving a change reconnects the companion; finish an active turn first.
+Settings → Codex → Browser & computer has Browser Use and Computer Use switches. They record your preference. Both are on by default, including for settings saved by earlier versions, and a choice to turn either off is kept. They never apply to other members or while trusted voices are on.
 
-These switches request tools from the connected Codex runtime. They do not connect the desktop app's browser automatically, grant screen access, or approve actions. A compatible host and its permissions are still required. If the runtime does not supply a requested tool, notdot must say so rather than pretend it can act. Live web search is a separate option for reading current pages.
+A preference is not the same as availability. In this version neither capability is available, so notdot sends neither to Codex whatever the switches say. Each switch says so. There are two separate blockers:
 
-Other members and trusted-voice sessions retain their existing tool isolation. The owner's browser and computer preferences do not grant them access. Turning either switch off sends that restriction again when a chat is resumed. Existing operating-system permissions and tool approvals still apply.
+- **OpenAI's host restriction (external).** The ChatGPT desktop app supplies these tools only to the Codex runtime it starts itself. notdot starts its own runtime. There the browser service refuses to start ("Invalid browser service environment"), and the Computer Use service rejects the request ("Sender process is not authenticated") because it accepts only OpenAI-signed apps. notdot doesn't imitate a signature, an environment or a parent app to get past these checks.
+- **notdot's approval handling (ours).** notdot refuses every approval request that Codex sends to it. Even if a supported host connection appeared, notdot would need an approval prompt of its own before these tools could act. That part is fixable in notdot.
+
+The companion is told that it can't open or control a browser, apps or this computer, and that these work in the ChatGPT desktop app. Live web search is the separate option for reading current pages.

@@ -147,6 +147,8 @@ struct Snapshot {
     window_visible: bool,
     version: String,
     desktop_launch_supported: bool,
+    #[serde(default)]
+    host_controls_available: bool,
     updates: UpdateStatus,
     quota: Value,
     wake: Value,
@@ -1193,6 +1195,25 @@ fn refresh_models(view: &Shared, model: String, effort: String) {
         }
     });
 }
+/// Show the owner's Browser Use and Computer Use preferences as saved, and say
+/// separately whether the capability is actually available to notdot.
+fn render_host_controls(view: &Shared, s: &Settings) {
+    let available = view.borrow().snapshot.host_controls_available;
+    for (id, on, label) in [
+        ("browser-use", s.browser_use, "Browser Use"),
+        ("computer-use", s.computer_use, "Computer Use"),
+    ] {
+        input(id).set_checked(on);
+        let status = match (available, on) {
+            (true, _) => format!("{label} is available. Codex still asks before acting."),
+            (false, true) => format!(
+                "Not available in notdot, so it stays off for now. {label} works only inside the ChatGPT desktop app, which doesn't share it with other apps."
+            ),
+            (false, false) => format!("Off. {label} isn't available in notdot either way."),
+        };
+        element(&format!("{id}-status")).set_text_content(Some(&status));
+    }
+}
 fn open_panel(view: &Shared) {
     spawn_local(async {
         let _ = call("cancel_session", json!({})).await;
@@ -1231,8 +1252,7 @@ fn open_panel(view: &Shared) {
     input("microphone-muted").set_checked(s.microphone_muted);
     input("interrupt-enabled").set_checked(s.interrupt_enabled);
     input("live-web-search").set_checked(s.live_web_search);
-    input("browser-use").set_checked(s.browser_use);
-    input("computer-use").set_checked(s.computer_use);
+    render_host_controls(view, &s);
     select("wake-phrase").set_value(if s.wake_name_only { "name" } else { "hey" });
     render_wake_phrase();
     interruption::render_settings(view);
