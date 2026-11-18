@@ -14,8 +14,12 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.IBinder
+import uniffi.notdot_mobile_core.MobileException
+import uniffi.notdot_mobile_core.PhoneticListener
 import uniffi.notdot_mobile_core.SessionEvent
 import uniffi.notdot_mobile_core.StartSource
+import uniffi.notdot_mobile_core.phoneticAvailable
+import java.io.File
 import kotlin.concurrent.thread
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -26,7 +30,12 @@ import kotlinx.coroutines.cancel
  * A user-started hands-free session: a `microphone` foreground service with
  * a visible, stoppable notification. It must be started while the app is
  * visible or from an exempt user action (notification, widget). It records;
- * it never plays audio. In silent mode it never opens the microphone.
+ * replies play through [ReplyPlayer]. In silent mode it never opens the microphone.
+ *
+ * Wake: if this build has the phonetic detector and a phonetic enrolment is
+ * saved on this phone, it listens continuously for that enrolled phrase (any
+ * name); otherwise it uses the existing detector. Whichever is used, wake is
+ * ignored while a reply plays and briefly after it ([PlaybackGate]).
  */
 class VoiceSessionService : Service() {
     @Volatile private var capturing = false
@@ -42,6 +51,7 @@ class VoiceSessionService : Service() {
     @Volatile private var voiceTurns: VoiceTurns? = null
     private var voiceScope: CoroutineScope? = null
     private var languageIndex = 0
+    private val playback = PlaybackGate({ android.os.SystemClock.elapsedRealtime() })
     private val nativeLanguages by lazy {
         (listOf(resources.configuration.locales[0].toLanguageTag()).filter { it.startsWith("en", true) } +
             listOf("en-GB", "en-US", "en")).distinct()
@@ -67,6 +77,7 @@ class VoiceSessionService : Service() {
                 }
             }
             override fun onWake() {
+                if (playback.suppressed()) return
                 NotdotState.wakeHeard()
                 if (NotdotState.link != null) voiceTurns?.wake()
             }
@@ -171,7 +182,7 @@ class VoiceSessionService : Service() {
         }
         val record = try { AudioRecord(
             MediaRecorder.AudioSource.VOICE_RECOGNITION, rate, AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT, maxOf(size, rate / 50 * 2 * 4),
+            AudioFormat.ENCODING_PCM_16BIT, maxOf(size, rate * 2 / 2),
         ) } catch (_: RuntimeException) {
             stop(SessionEvent.SystemStopped)
             NotdotState.setStatus("Microphone capture could not start.")
@@ -195,15 +206,22 @@ class VoiceSessionService : Service() {
         NotdotState.setStatus("Preparing wake listening…")
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         voiceScope = scope
-        voiceTurns = VoiceTurns(PhoneLinkClient { NotdotState.link }, ReplyPlayer(), scope) { NotdotState.voice(it) }
-        if (BuildConfig.NATIVE_WAKE) startWake()
+        voiceTurns = VoiceTurns(PhoneLinkClient { NotdotState.link }, ReplyPlayer { playback.playback(it) }, scope) { NotdotState.voice(it) }
         thread(name = "notdot-capture") {
             val packet = ByteArray(rate / 50 * 2)
             var meterSum = 0f
             var meterCount = 0
             var meterPeak = 0f
-            val legacy = if (BuildConfig.NATIVE_WAKE) null else WakeModels.engine(this)
-            if (!BuildConfig.NATIVE_WAKE && legacy == null) {
+            val phonetic = phoneticListener()
+            val native = phonetic == null && BuildConfig.NATIVE_WAKE
+            if (phonetic != null) {
+                wakeReady = true
+                NotdotState.setStatus("Listening hands-free · Say ${displayPhrase(phonetic.phrase())}")
+            } else if (native) {
+                main.post { if (capturing && recorder === record) startWake() }
+            }
+            val legacy = if (phonetic != null || native) null else WakeModels.engine(this)
+            if (phonetic == null && !native && legacy == null) {
                 failCapture(record, "Wake listening could not start. Please try again.")
                 return@thread
             }
@@ -224,7 +242,8 @@ class VoiceSessionService : Service() {
                     silenced = nowSilenced
                     microphoneSilenced = silenced
                     val changedToSilenced = silenced
-                    if (BuildConfig.NATIVE_WAKE) main.post {
+                    if (!changedToSilenced) phonetic?.reset()
+                    if (native) main.post {
                         if (capturing && recorder === record) {
                             if (changedToSilenced) {
                                 main.removeCallbacksAndMessages(restartToken)
@@ -236,7 +255,7 @@ class VoiceSessionService : Service() {
                     NotdotState.handle(SessionEvent.Silenced(silenced))
                 }
                 if (silenced) continue
-                if (!BuildConfig.NATIVE_WAKE) wakeReady = legacy?.backupState() == uniffi.notdot_mobile_core.BackupState.READY
+                if (legacy != null) wakeReady = legacy.backupState() == uniffi.notdot_mobile_core.BackupState.READY
                 // Level only (never audio) for diagnostics, once a second.
                 var sum = 0.0
                 for (i in 0 until read - 1 step 2) {
@@ -244,7 +263,7 @@ class VoiceSessionService : Service() {
                     sum += sample * sample
                 }
                 val rms = kotlin.math.sqrt(sum / (read / 2).coerceAtLeast(1)).toFloat()
-                if (wakeReady) NotdotState.wakeInput(rms, !BuildConfig.NATIVE_WAKE && legacy?.backupBusy() == true)
+                if (wakeReady) NotdotState.wakeInput(rms, legacy?.backupBusy() == true)
                 meterSum += rms; meterCount++; meterPeak = maxOf(meterPeak, rms)
                 if (meterCount * read >= rate * 2) {
                     val effects = NotdotState.handle(SessionEvent.Tick)
@@ -257,10 +276,21 @@ class VoiceSessionService : Service() {
                 }
                 val bytes = if (read == packet.size) packet else packet.copyOf(read)
                 val detector = nativeWake
+                // The phone's own reply (and its echo) never wakes it; a
+                // detector restarts afterwards rather than joining audio
+                // from either side of the reply.
+                val muted = playback.suppressed()
+                if (!muted && playback.resumed()) {
+                    phonetic?.reset()
+                    legacy?.reset()
+                }
                 if (capturing && recorder === record) {
-                    if (BuildConfig.NATIVE_WAKE) detector?.feedPcm16(bytes)
-                    else {
-                        val woke = legacy?.acceptPcm16(bytes, rate.toUInt()) == true
+                    // The native recogniser keeps its session; its wakes are ignored while muted.
+                    if (native) detector?.feedPcm16(bytes)
+                    else if (!muted) {
+                        val woke = if (phonetic != null) {
+                            try { phonetic.pushPcm16(bytes) } catch (_: MobileException) { phonetic.reset(); false }
+                        } else legacy?.acceptPcm16(bytes, rate.toUInt()) == true
                         if (woke && capturing && recorder === record) {
                             NotdotState.wakeHeard()
                             if (NotdotState.link != null) voiceTurns?.wake()
@@ -271,6 +301,22 @@ class VoiceSessionService : Service() {
                 }
             }
         }
+    }
+
+    /**
+     * The continuous phonetic listener for the enrolment saved on this
+     * phone (read only; the enrolment is never changed here), or null if
+     * this build lacks the detector, nothing is saved, or it can't be used.
+     */
+    private fun phoneticListener(): PhoneticListener? {
+        if (!phoneticAvailable()) return null
+        val d = LabDetector.PHONETIC
+        return runCatching {
+            val model = PersonalWakeStore(File(noBackupFilesDir, d.folder), KeystoreSealer(d.alias), d.maxBytes).load()
+                ?: return null
+            PhoneticListener(WakeModels.directory(this).absolutePath, model)
+        }.onFailure { android.util.Log.w("notdot.voice", "phonetic wake unavailable: ${it.javaClass.simpleName}") }
+            .getOrNull()
     }
 
     private fun failCapture(record: AudioRecord, message: String) {

@@ -119,9 +119,7 @@ pub fn frames(n: usize) -> usize {
 
 /// Log-mel frames for `x` (16 kHz, in [-1, 1]). Empty input gives none.
 pub fn compute(x: &[f32]) -> Vec<[f32; BINS]> {
-    let t = tables();
     let n = x.len();
-    let floor = f64::from(f32::EPSILON);
     (0..frames(n))
         .map(|f| {
             let start = (f * SHIFT + SHIFT / 2) as i64 - (LENGTH / 2) as i64;
@@ -134,35 +132,88 @@ pub fn compute(x: &[f32]) -> Vec<[f32; BINS]> {
                 }
                 *v = f64::from(x[s as usize]);
             }
-            let mean = w.iter().sum::<f64>() / LENGTH as f64;
-            for v in &mut w {
-                *v -= mean;
-            }
-            for i in (1..LENGTH).rev() {
-                w[i] -= PREEMPH * w[i - 1];
-            }
-            w[0] -= PREEMPH * w[0];
-            let mut re = [0f64; NFFT];
-            let mut im = [0f64; NFFT];
-            for i in 0..LENGTH {
-                re[i] = w[i] * t.window[i];
-            }
-            fft(&mut re, &mut im, &t.twiddles);
-            let mut out = [0f32; BINS];
-            for (b, (first, weights)) in t.bands.iter().enumerate() {
-                let e: f64 = weights
-                    .iter()
-                    .enumerate()
-                    .map(|(k, wt)| {
-                        let i = first + k;
-                        wt * (re[i] * re[i] + im[i] * im[i])
-                    })
-                    .sum();
-                out[b] = e.max(floor).ln() as f32;
-            }
-            out
+            frame(w)
         })
         .collect()
+}
+
+/// One frame from its 25 ms of samples.
+fn frame(mut w: [f64; LENGTH]) -> [f32; BINS] {
+    let t = tables();
+    let floor = f64::from(f32::EPSILON);
+    let mean = w.iter().sum::<f64>() / LENGTH as f64;
+    for v in &mut w {
+        *v -= mean;
+    }
+    for i in (1..LENGTH).rev() {
+        w[i] -= PREEMPH * w[i - 1];
+    }
+    w[0] -= PREEMPH * w[0];
+    let mut re = [0f64; NFFT];
+    let mut im = [0f64; NFFT];
+    for i in 0..LENGTH {
+        re[i] = w[i] * t.window[i];
+    }
+    fft(&mut re, &mut im, &t.twiddles);
+    let mut out = [0f32; BINS];
+    for (b, (first, weights)) in t.bands.iter().enumerate() {
+        let e: f64 = weights
+            .iter()
+            .enumerate()
+            .map(|(k, wt)| {
+                let i = first + k;
+                wt * (re[i] * re[i] + im[i] * im[i])
+            })
+            .sum();
+        out[b] = e.max(floor).ln() as f32;
+    }
+    out
+}
+
+/// The same frames as [`compute`] for audio that arrives in pieces: each
+/// frame is produced once its last sample has arrived. Frames near the start
+/// reflect the first samples, as [`compute`] does; there is no end, so the
+/// end reflection never applies. Holds under one frame of samples.
+#[derive(Default)]
+pub struct Stream {
+    pending: Vec<f32>,
+    /// Absolute index of `pending[0]`.
+    base: usize,
+    next: usize,
+}
+
+impl Stream {
+    pub fn push(&mut self, x: &[f32]) -> Vec<[f32; BINS]> {
+        self.pending.extend_from_slice(x);
+        let have = self.base + self.pending.len();
+        let mut out = Vec::new();
+        loop {
+            let centre = self.next * SHIFT + SHIFT / 2;
+            let start = centre as i64 - (LENGTH / 2) as i64;
+            let end = start + LENGTH as i64;
+            if end > have as i64 {
+                break;
+            }
+            let mut w = [0f64; LENGTH];
+            for (i, v) in w.iter_mut().enumerate() {
+                let mut s = start + i as i64;
+                if s < 0 {
+                    s = -s - 1; // only before the first sample, which is still held
+                }
+                *v = f64::from(self.pending[s as usize - self.base]);
+            }
+            out.push(frame(w));
+            self.next += 1;
+            // Keep what the next frame (and the start reflection) still needs.
+            let keep_from = (self.next * SHIFT + SHIFT / 2).saturating_sub(LENGTH / 2);
+            let keep_from = if keep_from < LENGTH { 0 } else { keep_from };
+            if keep_from > self.base {
+                self.pending.drain(..keep_from - self.base);
+                self.base = keep_from;
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -227,6 +278,31 @@ pub(crate) mod tests {
             checked += 1;
         }
         assert_eq!(checked, 3);
+    }
+
+    /// Streaming gives exactly the whole-clip frames, whatever the piece
+    /// sizes, for every frame whose samples have all arrived.
+    #[test]
+    fn streaming_matches_whole_clip_frames() {
+        let x = golden_signal(0, 16_000);
+        let whole = compute(&x);
+        for piece in [1usize, 160, 320, 333, 4_000] {
+            let mut s = Stream::default();
+            let mut got = Vec::new();
+            for c in x.chunks(piece) {
+                got.extend(s.push(c));
+            }
+            // The last frames of `compute` reflect past the end; a stream has no end.
+            let complete = (x.len() - 280) / SHIFT + 1;
+            assert_eq!(got.len(), complete, "piece {piece}");
+            assert_eq!(got[..], whole[..complete], "piece {piece}");
+            assert!(
+                s.pending.len() <= LENGTH + 2 * SHIFT + piece,
+                "piece {piece}: held {}",
+                s.pending.len()
+            );
+        }
+        assert!(Stream::default().push(&[]).is_empty());
     }
 
     #[test]

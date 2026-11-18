@@ -17,7 +17,8 @@ wake = ["dep:notdot-wake-kws"]
 whisper = ["wake", "dep:notdot-wake-runtime", "dep:whisper-rs"]
 # Experimental personal wake-phrase candidate: phonetic templates from the
 # bundled keyword spotter's encoder, run through the ONNX Runtime that
-# sherpa-onnx already ships (pinned-header C shim). Diagnostic only.
+# sherpa-onnx already ships (pinned-header C shim). Experimental: used for
+# hands-free wake only when a phonetic enrolment is saved on the phone.
 personal-phonetic = ["wake"]
 # Generator for the Swift/Kotlin bindings (development only).
 bindgen = ["uniffi/cli"]

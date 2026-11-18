@@ -7,8 +7,11 @@ import android.media.MediaPlayer
 /**
  * Plays reply clips one after another from memory (nothing is written to
  * storage). In silent test mode it never plays; it only counts clips.
+ * [onPlaying] hears true when a reply starts sounding and false once the
+ * queue has finished or been stopped (wake is suppressed in between).
  */
-class ReplyPlayer : ReplySink {
+class ReplyPlayer(private val onPlaying: (Boolean) -> Unit = {}) : ReplySink {
+    private var audible = false
     private val queue = ArrayDeque<ByteArray>()
     private var player: MediaPlayer? = null
     @Volatile var clipsReceived = 0
@@ -27,13 +30,21 @@ class ReplyPlayer : ReplySink {
         queue.clear()
         player?.run { runCatching { stop() }; release() }
         player = null
+        sounding(false)
+    }
+
+    private fun sounding(active: Boolean) {
+        if (audible == active) return
+        audible = active
+        onPlaying(active)
     }
 
     @Synchronized
     private fun next() {
         player?.release()
         player = null
-        val audio = queue.removeFirstOrNull() ?: return
+        val audio = queue.removeFirstOrNull() ?: return sounding(false)
+        sounding(true)
         val p = MediaPlayer()
         player = p
         try {

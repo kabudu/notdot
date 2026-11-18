@@ -1,8 +1,10 @@
-//! EXPERIMENTAL side-by-side candidate for the personal wake lab: the same
-//! template matching as [`crate::personal`], but over frame embeddings from
-//! the bundled phonetic keyword-spotting model's encoder instead of MFCCs.
-//! A local diagnostic only: never connected to wake listening, not speaker
-//! authentication, and not shown to be reliable (synthetic evidence only).
+//! EXPERIMENTAL phonetic wake detector: the same template matching as
+//! [`crate::personal`], but over frame embeddings from the bundled phonetic
+//! keyword-spotting model's encoder instead of MFCCs. Enrolled in the
+//! personal wake lab; [`PhoneticListener`] runs it continuously for
+//! hands-free wake when a phonetic enrolment is saved. Not speaker
+//! authentication, and not shown to meet the wake gate (synthetic evidence:
+//! .local/mobile-design/PERSONAL-WAKE.md).
 //!
 //! Pipeline (as evaluated in .local/mobile-design/PERSONAL-WAKE.md):
 //! - Kaldi 80-band fbank ([`crate::fbank`], golden parity with
@@ -162,6 +164,17 @@ pub(crate) fn decode_take(bytes: &[u8]) -> Result<Vec<[f64; EMBED]>, MobileError
 }
 
 pub(crate) fn decode_model(bytes: &[u8], phrase: &str) -> Result<Model, MobileError> {
+    let m = decode_stored(bytes)?;
+    if m.phrase != phrase_key(phrase)? {
+        return Err(invalid(
+            "These recordings are for a different wake phrase; record them again",
+        ));
+    }
+    Ok(m)
+}
+
+/// A model with the phrase it was enrolled for (no phrase check).
+pub(crate) fn decode_stored(bytes: &[u8]) -> Result<Model, MobileError> {
     let mut r = Reader(bytes);
     if r.take(4)? != MAGIC {
         return Err(invalid("These are not phonetic wake recordings"));
@@ -172,10 +185,8 @@ pub(crate) fn decode_model(bytes: &[u8], phrase: &str) -> Result<Model, MobileEr
         ));
     }
     let stored = r.text(MAX_PHRASE)?;
-    if stored != phrase_key(phrase)? {
-        return Err(invalid(
-            "These recordings are for a different wake phrase; record them again",
-        ));
+    if stored.is_empty() || phrase_key(&stored).ok().as_deref() != Some(stored.as_str()) {
+        return Err(damaged());
     }
     let bound = f64::from(r.f32()?);
     let (np, nc) = (r.u8()? as usize, r.u8()? as usize);
@@ -377,6 +388,17 @@ pub(crate) mod runtime {
         states: Vec<State>,
     }
 
+    /// The encoder's carried caches for one audio stream.
+    #[derive(Default)]
+    pub(crate) struct Caches {
+        f32s: Vec<Vec<f32>>,
+        i64s: Vec<Vec<i64>>,
+    }
+
+    /// Fbank frames per chunk and the step between chunks.
+    pub(crate) const CHUNK_FRAMES: usize = CHUNK;
+    pub(crate) const CHUNK_SHIFT: usize = SHIFT;
+
     fn verify(dir: &Path) -> Result<(), String> {
         use sha2::{Digest, Sha256};
         for (name, pin) in PINS {
@@ -519,6 +541,90 @@ pub(crate) mod runtime {
             })
         }
 
+        /// Fresh (all-zero) encoder caches.
+        pub(crate) fn caches(&self) -> Caches {
+            let mut c = Caches::default();
+            for s in &self.states {
+                match s.kind {
+                    Kind::F32 => c.f32s.push(vec![0.; s.len]),
+                    _ => c.i64s.push(vec![0; s.len]),
+                }
+            }
+            c
+        }
+
+        /// Run one 29-frame chunk, carrying `caches`; returns its encoder frames.
+        pub(crate) fn chunk(
+            &mut self,
+            chunk: &[[f32; fbank::BINS]],
+            caches: &mut Caches,
+        ) -> Result<Vec<[f32; EMBED]>, String> {
+            if chunk.len() != CHUNK {
+                return Err("Unexpected phonetic chunk".into());
+            }
+            let outputs: Vec<&str> = std::iter::once("encoder_out")
+                .chain(self.states.iter().map(|s| s.output.as_str()))
+                .collect();
+            let state_total: usize = self.states.iter().map(|s| s.len).sum();
+            let max_out = (CHUNK * EMBED).max(self.states.iter().map(|s| s.len).max().unwrap_or(0));
+            let flat: Vec<f32> = chunk.iter().flatten().copied().collect();
+            let x_shape = [1, CHUNK as i64, fbank::BINS as i64];
+            let mut inputs: Vec<(&str, Input<'_>)> = vec![("x", Input::F32(&flat, &x_shape))];
+            let (mut fi, mut ii) = (0, 0);
+            for s in &self.states {
+                match s.kind {
+                    Kind::F32 => {
+                        inputs.push((&s.name, Input::F32(&caches.f32s[fi], &s.dims)));
+                        fi += 1;
+                    }
+                    _ => {
+                        inputs.push((&s.name, Input::I64(&caches.i64s[ii], &s.dims)));
+                        ii += 1;
+                    }
+                }
+            }
+            let out =
+                self.encoder
+                    .run_many(&inputs, &outputs, max_out, CHUNK * EMBED + state_total)?;
+            let e = &out[0];
+            let frames_out = match (&e.data, e.shape.as_slice()) {
+                (TensorData::F32(d), [1, n, w])
+                    if *w == EMBED as i64 && *n >= 0 && d.len() == *n as usize * EMBED =>
+                {
+                    d
+                }
+                _ => return Err("Unexpected phonetic encoder output".into()),
+            };
+            let mut enc = Vec::with_capacity(frames_out.len() / EMBED);
+            for f in frames_out.chunks_exact(EMBED) {
+                let mut frame = [0f32; EMBED];
+                frame.copy_from_slice(f);
+                if frame.iter().any(|v| !v.is_finite()) {
+                    return Err("Unexpected phonetic encoder output".into());
+                }
+                enc.push(frame);
+            }
+            // Carry the caches, checking each keeps its declared shape.
+            let (mut fi, mut ii) = (0, 0);
+            for (s, o) in self.states.iter().zip(&out[1..]) {
+                if o.shape != s.dims {
+                    return Err("Unexpected phonetic encoder cache".into());
+                }
+                match (&o.data, s.kind) {
+                    (TensorData::F32(d), Kind::F32) if d.len() == s.len => {
+                        caches.f32s[fi].copy_from_slice(d);
+                        fi += 1;
+                    }
+                    (TensorData::I64(d), Kind::I64) if d.len() == s.len => {
+                        caches.i64s[ii].copy_from_slice(d);
+                        ii += 1;
+                    }
+                    _ => return Err("Unexpected phonetic encoder cache".into()),
+                }
+            }
+            Ok(enc)
+        }
+
         /// Encoder frames (and their blank probability) for 16 kHz audio.
         /// `cancelled` is checked between chunks.
         pub(crate) fn frames(
@@ -539,88 +645,14 @@ pub(crate) mod runtime {
                 .copied()
                 .fold(f32::INFINITY, f32::min);
             feats.extend(std::iter::repeat_n([floor; fbank::BINS], CHUNK));
-            let mut f32_states: Vec<Vec<f32>> = Vec::new();
-            let mut i64_states: Vec<Vec<i64>> = Vec::new();
-            for s in &self.states {
-                match s.kind {
-                    Kind::F32 => f32_states.push(vec![0.; s.len]),
-                    _ => i64_states.push(vec![0; s.len]),
-                }
-            }
-            let outputs: Vec<&str> = std::iter::once("encoder_out")
-                .chain(self.states.iter().map(|s| s.output.as_str()))
-                .collect();
-            let state_total: usize = self.states.iter().map(|s| s.len).sum();
-            let max_out = (CHUNK * EMBED).max(self.states.iter().map(|s| s.len).max().unwrap_or(0));
+            let mut caches = self.caches();
             let mut enc = Vec::new();
             let mut start = 0;
             while start + CHUNK <= feats.len() {
                 if cancelled() {
                     return Err("Cancelled".into());
                 }
-                let chunk: Vec<f32> = feats[start..start + CHUNK]
-                    .iter()
-                    .flatten()
-                    .copied()
-                    .collect();
-                let x_shape = [1, CHUNK as i64, fbank::BINS as i64];
-                let mut inputs: Vec<(&str, Input<'_>)> = vec![("x", Input::F32(&chunk, &x_shape))];
-                let (mut fi, mut ii) = (0, 0);
-                for s in &self.states {
-                    match s.kind {
-                        Kind::F32 => {
-                            inputs.push((&s.name, Input::F32(&f32_states[fi], &s.dims)));
-                            fi += 1;
-                        }
-                        _ => {
-                            inputs.push((&s.name, Input::I64(&i64_states[ii], &s.dims)));
-                            ii += 1;
-                        }
-                    }
-                }
-                let out = self.encoder.run_many(
-                    &inputs,
-                    &outputs,
-                    max_out,
-                    CHUNK * EMBED + state_total,
-                )?;
-                let (fi, ii) = (0, 0);
-                let mut fi = fi;
-                let mut ii = ii;
-                let e = &out[0];
-                let frames_out = match (&e.data, e.shape.as_slice()) {
-                    (TensorData::F32(d), [1, n, w])
-                        if *w == EMBED as i64 && *n >= 0 && d.len() == *n as usize * EMBED =>
-                    {
-                        d
-                    }
-                    _ => return Err("Unexpected phonetic encoder output".into()),
-                };
-                for f in frames_out.chunks_exact(EMBED) {
-                    let mut frame = [0f32; EMBED];
-                    frame.copy_from_slice(f);
-                    if frame.iter().any(|v| !v.is_finite()) {
-                        return Err("Unexpected phonetic encoder output".into());
-                    }
-                    enc.push(frame);
-                }
-                // Carry the caches, checking each keeps its declared shape.
-                for (s, o) in self.states.iter().zip(&out[1..]) {
-                    if o.shape != s.dims {
-                        return Err("Unexpected phonetic encoder cache".into());
-                    }
-                    match (&o.data, s.kind) {
-                        (TensorData::F32(d), Kind::F32) if d.len() == s.len => {
-                            f32_states[fi].copy_from_slice(d);
-                            fi += 1;
-                        }
-                        (TensorData::I64(d), Kind::I64) if d.len() == s.len => {
-                            i64_states[ii].copy_from_slice(d);
-                            ii += 1;
-                        }
-                        _ => return Err("Unexpected phonetic encoder cache".into()),
-                    }
-                }
+                enc.extend(self.chunk(&feats[start..start + CHUNK], &mut caches)?);
                 start += SHIFT;
             }
             let blank = self.blank(&enc)?;
@@ -1028,6 +1060,37 @@ pub(crate) mod runtime {
 
         /// End to end through the exported API: a synthetic phrase enrolled
         /// five times matches a new take of itself and not a different one.
+        /// Streaming (features as they arrive, caches carried) gives exactly
+        /// the whole-clip encoder frames, for every chunk that has arrived.
+        #[test]
+        fn streamed_frames_match_whole_clip_frames() {
+            let mut kws = Kws::open(&dir()).unwrap();
+            let x = crate::fbank::tests::golden_signal(0, 48_000);
+            let (whole, _) = kws.frames(&x, &|| false).unwrap();
+            let mut caches = kws.caches();
+            let mut fb = crate::fbank::Stream::default();
+            let (mut feats, mut streamed) = (Vec::new(), Vec::new());
+            for piece in x.chunks(320) {
+                feats.extend(fb.push(piece));
+                while feats.len() >= CHUNK {
+                    streamed.extend(kws.chunk(&feats[..CHUNK], &mut caches).unwrap());
+                    feats.drain(..SHIFT);
+                }
+            }
+            assert!(
+                streamed.len() + 12 >= whole.len() && streamed.len() <= whole.len(),
+                "{} {}",
+                streamed.len(),
+                whole.len()
+            );
+            let worst = streamed
+                .iter()
+                .zip(&whole)
+                .flat_map(|(a, b)| a.iter().zip(b).map(|(x, y)| (x - y).abs()))
+                .fold(0f32, f32::max);
+            assert!(worst < 1e-4, "max difference {worst}");
+        }
+
         #[test]
         fn exported_api_round_trip() {
             let models = dir().parent().unwrap().to_string_lossy().into_owned();
@@ -1094,6 +1157,18 @@ pub(crate) mod runtime {
             )
             .unwrap();
             assert!(silent.issue.is_some() && !silent.matched);
+            // Continuous listening: the phrase comes from the enrolment, and
+            // long silence in 20 ms packets never wakes it.
+            let listener =
+                super::super::PhoneticListener::new(models.clone(), model.clone()).unwrap();
+            assert_eq!(listener.phrase(), "hey ava");
+            for _ in 0..250 {
+                assert!(!listener.push_pcm16(vec![0; 640]).unwrap());
+            }
+            assert!(listener.push_pcm16(vec![0; 3]).is_err());
+            assert!(listener.push_pcm16(vec![0; 64_002]).is_err());
+            listener.reset();
+            assert!(!listener.push_pcm16(vec![0; 64_000]).unwrap());
             assert!(
                 super::super::phonetic_match(
                     models,
@@ -1283,6 +1358,199 @@ pub fn phonetic_available() -> bool {
     cfg!(all(feature = "personal-phonetic", not(windows)))
 }
 
+// ---- Continuous listening ----
+
+/// Window kept for matching: twice the longest phrase template (the DTW
+/// allows half speed) plus a few frames, so a whole phrase always fits.
+#[cfg_attr(
+    not(all(feature = "personal-phonetic", not(windows))),
+    allow(dead_code)
+)]
+fn window_frames(m: &Model) -> usize {
+    2 * m.positives.iter().map(Vec::len).max().unwrap_or(0) + 8
+}
+
+/// Matching over a rolling window of unit-length encoder frames: after each
+/// new chunk, the window is compared with the model exactly as a lab try is;
+/// a match fires once and clears the window, so one phrase wakes once.
+struct Window {
+    model: Model,
+    size: usize,
+    shortest: usize,
+    frames: std::collections::VecDeque<[f64; EMBED]>,
+}
+
+impl Window {
+    #[cfg_attr(
+        not(all(feature = "personal-phonetic", not(windows))),
+        allow(dead_code)
+    )]
+    fn new(model: Model) -> Self {
+        let size = window_frames(&model);
+        let shortest = model
+            .positives
+            .iter()
+            .map(Vec::len)
+            .min()
+            .unwrap_or(0)
+            .max(1);
+        Self {
+            model,
+            size,
+            shortest,
+            frames: std::collections::VecDeque::with_capacity(size + 8),
+        }
+    }
+
+    /// Add one chunk's frames; true if the phrase matched (the window is then cleared).
+    #[cfg_attr(
+        not(all(feature = "personal-phonetic", not(windows))),
+        allow(dead_code)
+    )]
+    fn push(&mut self, frames: Vec<[f64; EMBED]>) -> bool {
+        self.frames.extend(frames);
+        while self.frames.len() > self.size {
+            self.frames.pop_front();
+        }
+        if self.frames.len() < self.shortest {
+            return false;
+        }
+        let matched = compare(&self.model, self.frames.make_contiguous()).matched;
+        if matched {
+            self.frames.clear();
+        }
+        matched
+    }
+}
+
+#[cfg(all(feature = "personal-phonetic", not(windows)))]
+struct Encoder {
+    kws: runtime::Kws,
+    caches: runtime::Caches,
+    fbank: crate::fbank::Stream,
+    feats: Vec<[f32; crate::fbank::BINS]>,
+}
+
+struct Listen {
+    window: Window,
+    #[cfg(all(feature = "personal-phonetic", not(windows)))]
+    encoder: Encoder,
+}
+
+/// Continuous wake listening with a saved phonetic model: feed microphone
+/// audio as it arrives; [`PhoneticListener::push_pcm16`] says when the
+/// enrolled phrase was heard. The phrase is the one the model was enrolled
+/// for (any name). Audio is processed and dropped, never kept: only the
+/// encoder's caches, under one chunk of features and the last few seconds
+/// of encoder frames are held. Not speaker identification.
+#[derive(uniffi::Object)]
+pub struct PhoneticListener {
+    phrase: String,
+    inner: std::sync::Mutex<Listen>,
+}
+
+/// At most two seconds of 16 kHz audio per push.
+const MAX_PUSH_BYTES: usize = 2 * 2 * 16_000;
+
+#[uniffi::export]
+impl PhoneticListener {
+    /// `models` is the wake models folder; `model` a saved phonetic model.
+    #[uniffi::constructor]
+    pub fn new(models: String, model: Vec<u8>) -> Result<std::sync::Arc<Self>, MobileError> {
+        let m = decode_stored(&model)?;
+        drop(model);
+        #[cfg(all(feature = "personal-phonetic", not(windows)))]
+        {
+            let kws = runtime::Kws::open(&model_dir(&models))
+                .map_err(|detail| MobileError::Wake { detail })?;
+            let caches = kws.caches();
+            Ok(std::sync::Arc::new(Self {
+                phrase: m.phrase.clone(),
+                inner: std::sync::Mutex::new(Listen {
+                    window: Window::new(m),
+                    encoder: Encoder {
+                        kws,
+                        caches,
+                        fbank: Default::default(),
+                        feats: Vec::new(),
+                    },
+                }),
+            }))
+        }
+        #[cfg(not(all(feature = "personal-phonetic", not(windows))))]
+        {
+            let _ = (models, m);
+            Err(unavailable())
+        }
+    }
+
+    /// The enrolled wake phrase (normalised, as saved).
+    pub fn phrase(&self) -> String {
+        self.phrase.clone()
+    }
+
+    /// Feed 16 kHz mono PCM16 (little-endian), at most two seconds at a
+    /// time. True if the phrase was heard in this audio.
+    pub fn push_pcm16(&self, pcm16: Vec<u8>) -> Result<bool, MobileError> {
+        if !pcm16.len().is_multiple_of(2) || pcm16.len() > MAX_PUSH_BYTES {
+            return Err(invalid(
+                "push whole PCM16 samples, at most two seconds at a time",
+            ));
+        }
+        let x: Vec<f32> = pcm16
+            .chunks_exact(2)
+            .map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])) / 32768.)
+            .collect();
+        drop(pcm16);
+        let mut l = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        #[cfg(all(feature = "personal-phonetic", not(windows)))]
+        {
+            let Listen { window, encoder } = &mut *l;
+            let e = encoder;
+            let new = e.fbank.push(&x);
+            e.feats.extend(new);
+            let mut heard = false;
+            while e.feats.len() >= runtime::CHUNK_FRAMES {
+                let out = match e
+                    .kws
+                    .chunk(&e.feats[..runtime::CHUNK_FRAMES], &mut e.caches)
+                {
+                    Ok(out) => out,
+                    Err(detail) => {
+                        // Start afresh rather than continue from a broken state.
+                        e.caches = e.kws.caches();
+                        e.fbank = Default::default();
+                        e.feats.clear();
+                        window.frames.clear();
+                        return Err(MobileError::Wake { detail });
+                    }
+                };
+                e.feats.drain(..runtime::CHUNK_SHIFT);
+                heard |= window.push(unit(out));
+            }
+            Ok(heard)
+        }
+        #[cfg(not(all(feature = "personal-phonetic", not(windows))))]
+        {
+            let _ = (x, &mut l);
+            Err(unavailable())
+        }
+    }
+
+    /// Forget everything heard so far and start a new stream (after a gap,
+    /// such as the phone's own reply playing).
+    pub fn reset(&self) {
+        let mut l = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        l.window.frames.clear();
+        #[cfg(all(feature = "personal-phonetic", not(windows)))]
+        {
+            l.encoder.caches = l.encoder.kws.caches();
+            l.encoder.fbank = Default::default();
+            l.encoder.feats.clear();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1326,6 +1594,59 @@ mod tests {
         let other = compare(&m, &frames(40, 30));
         assert!(!other.matched, "{other:?}");
         assert!(compare(&m, &[]).nearest_phrase.is_none());
+    }
+
+    #[test]
+    fn a_window_fires_once_per_phrase_and_keeps_bounded_frames() {
+        let takes: Vec<Vec<u8>> = (0..5).map(|_| encode_take(&frames(1, 12))).collect();
+        let contrasts = vec![ContrastTake {
+            label: "Similar".into(),
+            features: encode_take(&frames(9, 12)),
+        }];
+        let built = build("Hey Harriet", &takes, &contrasts).unwrap();
+        // The listener reads the phrase from the enrolment itself.
+        let m = decode_stored(&built.model).unwrap();
+        assert_eq!(m.phrase, "hey harriet");
+        let mut w = Window::new(m);
+        assert_eq!(w.size, 2 * 12 + 8);
+        // Unrelated sound for a long time: no wake, bounded memory.
+        for _ in 0..50 {
+            assert!(!w.push(frames(40, 4)));
+            assert!(w.frames.len() <= w.size);
+        }
+        // The sound-alike, said in full: no wake.
+        let near = frames(9, 12);
+        assert!(!w.push(near[..6].to_vec()) && !w.push(near[6..].to_vec()));
+        // The rule is the lab's: while that sound-alike is still in the window
+        // it ties with the phrase, so the phrase must come after it has passed.
+        for _ in 0..8 {
+            assert!(!w.push(frames(40, 4)));
+        }
+        // The phrase arrives in chunks: one wake when its last frames arrive.
+        let phrase = frames(1, 12);
+        let fired: Vec<bool> = phrase.chunks(4).map(|c| w.push(c.to_vec())).collect();
+        assert_eq!(fired, [false, false, true]);
+        // The same phrase cannot fire twice; silence after it never fires.
+        assert!(w.frames.is_empty());
+        for _ in 0..10 {
+            assert!(!w.push(frames(40, 4)));
+        }
+        // Said again later: wakes again.
+        assert!(phrase.chunks(4).any(|c| w.push(c.to_vec())));
+    }
+
+    #[test]
+    fn the_listener_refuses_bad_models_and_bad_audio() {
+        assert!(PhoneticListener::new(".".into(), vec![1, 2, 3]).is_err());
+        let takes: Vec<Vec<u8>> = (0..3).map(|i| encode_take(&frames(i, 8))).collect();
+        let model = build("Hey Ava", &takes, &[]).unwrap().model;
+        let mut wrong = model.clone();
+        wrong[..4].copy_from_slice(b"NDPW");
+        assert!(PhoneticListener::new(".".into(), wrong).is_err());
+        // A stored phrase that is not in normal form is damage, not a phrase.
+        let mut odd = model.clone();
+        odd[7] = b'H';
+        assert!(decode_stored(&odd).is_err());
     }
 
     #[test]
