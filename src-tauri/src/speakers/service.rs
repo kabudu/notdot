@@ -571,6 +571,25 @@ impl Speakers {
         Ok(lock)
     }
 
+    /// Lock for a paired phone's voice turn: the profile bound at pairing,
+    /// with its current role and epoch. Never an open-mode fallback.
+    #[cfg(feature = "phones")]
+    pub fn device_lock(&self, profile: &ProfileId, request_id: &str) -> Result<TurnLock, String> {
+        let r = self.roster.lock().expect("roster");
+        let person = r
+            .profile(profile)
+            .ok_or("This phone's person is no longer on this computer")?;
+        let lock = TurnLock {
+            capture_token: request_id.to_owned(),
+            role: person.role,
+            epoch: person.epoch,
+            profile: profile.clone(),
+            open_fallback: false,
+        };
+        r.validate_lock(&lock).map_err(|e| e.to_string())?;
+        Ok(lock)
+    }
+
     pub fn validate(&self, lock: &TurnLock) -> Result<(), String> {
         self.roster
             .lock()

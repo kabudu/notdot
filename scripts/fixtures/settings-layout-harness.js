@@ -8,7 +8,7 @@
  const rect=e=>{const r=e.getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height,bottom:r.bottom,right:r.right};};
  try{
  for(let i=0;i<100&&!$('orb').hasAttribute('data-ready');i++)await sleep(50);
- $('orb').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));await sleep(150);
+ for(let i=0;i<20&&!$('panel').open;i++){ $('orb').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));await sleep(100); }
  check('modal opens and names itself',$('panel').open&&$('panel').getAttribute('aria-labelledby')==='heading');
  check('search autofocus',document.activeElement===$('settings-search'));
  const panel=rect($('panel')),footer=rect(document.querySelector('.settings-footer'));
@@ -20,6 +20,8 @@
   check(category.textContent+' uniquely selected',document.querySelectorAll('[role=tab][aria-selected=true]').length===1);
   for(const section of document.querySelectorAll('.settings-section:not([hidden])')){
    if(!section.open)section.querySelector('summary').click();await sleep(80);
+   for(const nested of section.querySelectorAll('details'))nested.open=true;
+   await sleep(50);
    const overflow=[...section.querySelectorAll('input,select,button,label,p,fieldset')].filter(shown).filter(e=>e.getBoundingClientRect().right>section.getBoundingClientRect().right+1||e.getBoundingClientRect().left<section.getBoundingClientRect().left-1).map(e=>({id:e.id,tag:e.tagName,rect:rect(e)}));
    check(section.id+' has no horizontal overflow',overflow.length===0,overflow);
    check(section.id+' scroll width fits',$('settings-content').scrollWidth<=$('settings-content').clientWidth+1,[$('settings-content').scrollWidth,$('settings-content').clientWidth]);

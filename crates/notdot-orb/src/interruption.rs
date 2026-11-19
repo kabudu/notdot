@@ -4,7 +4,7 @@
 //! notdot's own playback as its reference, and streams 16 kHz audio to the
 //! on-device speech detector. Playback holds on speech onset; the utterance
 //! it decides whether the reply stops, is replaced or carries on.
-use crate::{Shared, call, message, stop_audio};
+use super::{Shared, call, message, stop_audio};
 use serde_json::json;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
@@ -108,7 +108,7 @@ extern "C" {
 pub async fn check_support() -> Result<bool, String> {
     let result = JsFuture::from(interrupt_support())
         .await
-        .map_err(crate::js_error)?
+        .map_err(super::js_error)?
         .as_string()
         .unwrap_or_default();
     let ok = result == "ok";
@@ -146,7 +146,7 @@ pub fn wanted(view: &Shared) -> bool {
         && v.interrupt_hold.is_none()
         && v.confirmation_listening.is_none()
         && v.update_listening.is_none()
-        && !crate::dialog("panel").open()
+        && !super::dialog("panel").open()
         && v.audio.as_ref().is_some_and(|a| !a.paused() && !a.ended())
 }
 
@@ -180,7 +180,7 @@ pub fn sync(view: &Shared) {
                     on_detect.as_ref().unchecked_ref(),
                 ))
                 .await
-                .map_err(crate::js_error)?;
+                .map_err(super::js_error)?;
                 if ok.as_bool() != Some(true) {
                     return Err("Echo cancellation was not available".to_string());
                 }
@@ -228,7 +228,7 @@ pub async fn stop_listening() {
 
 /// Per-poll housekeeping: check support once when needed, keep listening in
 /// step with playback, and never leave a reply held without a capture.
-pub fn tick(view: &Shared, snapshot: &crate::Snapshot) {
+pub fn tick(view: &Shared, snapshot: &super::Snapshot) {
     let enabled = snapshot.settings.interrupt_enabled;
     let check = {
         let v = view.borrow();
@@ -266,9 +266,9 @@ pub fn tick(view: &Shared, snapshot: &crate::Snapshot) {
 }
 /// The orb's accessible name while interruption listening or a hold is on.
 /// Applied after the ordinary labels so it is not overwritten.
-pub fn label(view: &Shared, snapshot: &crate::Snapshot) {
+pub fn label(view: &Shared, snapshot: &super::Snapshot) {
     let v = view.borrow();
-    let orb = crate::element("orb");
+    let orb = super::element("orb");
     if v.interrupt_hold.is_some() {
         let _ = orb.set_attribute(
             "aria-label",
@@ -300,7 +300,7 @@ fn hold(view: &Shared) {
         v.local_phase = Some("listening");
         let _ = v.meter.wake_cue();
     }
-    let _ = crate::element("orb").set_attribute(
+    let _ = super::element("orb").set_attribute(
         "aria-label",
         "Listening. Paused my reply. Say your request, or Stop. Escape cancels.",
     );
@@ -408,7 +408,7 @@ pub async fn outcome(view: Shared, result: &serde_json::Value, token: &str, gene
                 if !busy {
                     break;
                 }
-                let _ = crate::speech_delay(100).await;
+                let _ = super::speech_delay(100).await;
                 if !still(&view) {
                     return;
                 }
@@ -416,7 +416,7 @@ pub async fn outcome(view: Shared, result: &serde_json::Value, token: &str, gene
             if !still(&view) {
                 return;
             }
-            if let Err(error) = crate::submit_transcript(view.clone(), text, after).await
+            if let Err(error) = super::submit_transcript(view.clone(), text, after).await
                 && still(&view)
             {
                 message(error);
@@ -437,19 +437,19 @@ pub fn render_settings(view: &Shared) {
         }
         None => "Checks this computer's echo cancellation when enabled.",
     };
-    crate::element("interrupt-status").set_text_content(Some(status));
+    super::element("interrupt-status").set_text_content(Some(status));
 }
 pub fn install(view: &Shared) {
     {
         let id = "interrupt-enabled";
         let target = view.clone();
-        crate::on(crate::element(id).as_ref(), "change", move |_| {
+        super::on(super::element(id).as_ref(), "change", move |_| {
             // An explicit user toggle is a retry, never a polling loop.
-            if crate::input("interrupt-enabled").checked() {
+            if super::input("interrupt-enabled").checked() {
                 target.borrow_mut().interrupt_supported = None;
             }
             render_settings(&target);
-            if crate::input("interrupt-enabled").checked()
+            if super::input("interrupt-enabled").checked()
                 && target.borrow().interrupt_supported.is_none()
                 && !target.borrow().interrupt_checking
             {
@@ -463,7 +463,7 @@ pub fn install(view: &Shared) {
                         v.interrupt_checking = false;
                     }
                     if !ok {
-                        crate::input("interrupt-enabled").set_checked(false);
+                        super::input("interrupt-enabled").set_checked(false);
                     }
                     render_settings(&checked);
                 });

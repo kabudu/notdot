@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSFaceIDUsageDescription</key>
+	<string>notdot asks for Face ID before your computer carries out a sensitive action you started from this phone.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>notdot listens for your companion's name on this phone. Wake audio stays on the phone; only what you say after the name goes to your computer.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>notdot connects directly to your computer when you are on the same network.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+</dict>
+</plist>

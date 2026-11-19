@@ -157,7 +157,7 @@ pub async fn qa_access_probe(provider: String) -> Result<serde_json::Value, Stri
     .map_err(|_| "Keychain diagnostic did not complete".to_owned())?
 }
 #[cfg(target_os = "macos")]
-fn non_interactive_keychain()
+pub(crate) fn non_interactive_keychain()
 -> Result<Option<security_framework::os::macos::keychain::KeychainUserInteractionLock>, String> {
     use security_framework::os::macos::keychain::SecKeychain;
     if SecKeychain::user_interaction_allowed().map_err(|_| "Could not verify keychain UI policy")? {

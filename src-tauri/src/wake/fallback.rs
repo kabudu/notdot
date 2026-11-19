@@ -1,10 +1,9 @@
 //! Local, speech-gated recognition for phrases the small keyword model misses.
 //! Audio is bounded, ephemeral, and never sent to a voice provider or written.
-use super::VoiceGate;
+use notdot_wake_kws::Utterances;
 use notdot_wake_runtime::engine::DecodeLimits;
 use std::time::{Duration, Instant};
 use std::{
-    collections::VecDeque,
     path::Path,
     sync::{
         Arc,
@@ -290,12 +289,7 @@ pub(super) struct Fallback {
     epoch: Arc<AtomicU64>,
     alive: Arc<AtomicBool>,
     busy: bool,
-    gate: VoiceGate,
-    tail: VecDeque<f32>,
-    samples: Vec<f32>,
-    silence: usize,
-    pause_ms: u32,
-    speech: usize,
+    utterances: Utterances,
     pub(super) error: Option<String>,
     pub(super) failures: u64,
 }
@@ -363,13 +357,8 @@ impl Fallback {
             epoch,
             alive,
             busy: false,
-            gate: VoiceGate::default(),
-            tail: VecDeque::new(),
-            samples: Vec::new(),
-            silence: 0,
-            // Keep a natural short pause between the greeting and name in one decode.
-            pause_ms: 350,
-            speech: 0,
+            // Keeps a natural short pause between the greeting and name in one decode.
+            utterances: Utterances::default(),
             error: initial_error,
             failures,
         })
@@ -391,11 +380,7 @@ impl Fallback {
     }
     pub(super) fn reset(&mut self) {
         self.epoch.fetch_add(1, Ordering::Relaxed);
-        self.tail.clear();
-        self.samples.clear();
-        self.speech = 0;
-        self.silence = 0;
-        self.gate = VoiceGate::default();
+        self.utterances.reset();
     }
     pub(super) fn accept(&mut self, rate: u32, samples: &[f32]) -> bool {
         while let Ok(event) = self.receiver.try_recv() {
@@ -428,54 +413,22 @@ impl Fallback {
                     Err(e) => {
                         self.failures = self.failures.saturating_add(1);
                         self.error = Some(e);
-                        self.samples.clear();
-                        self.tail.clear();
-                        self.speech = 0;
-                        self.silence = 0;
+                        self.utterances.clear();
                     }
                 }
             }
         }
-        let voiced = self.gate.observe(super::energy(samples));
-        if self.samples.is_empty() {
-            if voiced {
-                self.samples.extend(self.tail.drain(..));
-            } else {
-                self.tail.extend(samples.iter().copied());
-                while self.tail.len() > rate as usize / 2 {
-                    self.tail.pop_front();
-                }
-                return false;
-            }
-        }
-        let remaining = (rate as usize * 6).saturating_sub(self.samples.len());
-        self.samples
-            .extend_from_slice(&samples[..samples.len().min(remaining)]);
-        if voiced {
-            self.silence = 0;
-            self.speech += samples.len();
-        } else {
-            self.silence += samples.len();
-        }
-        if !self.busy
-            && (self.silence >= rate as usize * self.pause_ms as usize / 1000
-                || self.samples.len() >= rate as usize * 6)
-        {
-            let samples = std::mem::take(&mut self.samples);
-            if self.speech >= rate as usize / 5 && !self.busy {
-                let job = Job {
-                    epoch: self.epoch.load(Ordering::Relaxed),
-                    samples,
-                    rate,
-                    deadline: Instant::now() + Duration::from_secs(3),
-                };
-                self.busy = self
-                    .sender
-                    .as_ref()
-                    .is_some_and(|s| s.try_send(job).is_ok());
-            }
-            self.speech = 0;
-            self.silence = 0;
+        if let Some(samples) = self.utterances.push(rate, samples, !self.busy) {
+            let job = Job {
+                epoch: self.epoch.load(Ordering::Relaxed),
+                samples,
+                rate,
+                deadline: Instant::now() + Duration::from_secs(3),
+            };
+            self.busy = self
+                .sender
+                .as_ref()
+                .is_some_and(|s| s.try_send(job).is_ok());
         }
         false
     }
@@ -727,7 +680,7 @@ mod tests {
             !f.busy,
             "a natural pause must not send the greeting without the name"
         );
-        assert!(!f.samples.is_empty());
+        assert!(f.utterances.is_collecting());
     }
     #[test]
     fn only_direct_address_matches_the_configured_phrase() {
@@ -967,8 +920,9 @@ mod tests {
         )
         .unwrap();
         if let Ok(pause) = std::env::var("NOTDOT_WAKE_PAUSE_MS") {
-            fallback.pause_ms = pause.parse().unwrap();
-            assert!([200, 300, 350, 500].contains(&fallback.pause_ms));
+            let pause: u32 = pause.parse().unwrap();
+            assert!([200, 300, 350, 500].contains(&pause));
+            fallback.utterances.set_pause_ms(pause);
         }
         let start = Instant::now();
         let mut supplied = 0usize;
