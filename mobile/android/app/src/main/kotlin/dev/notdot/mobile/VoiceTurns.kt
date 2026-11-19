@@ -33,8 +33,45 @@ class PhoneLinkClient(private val link: () -> PhoneLink?) : VoiceTurnClient {
         if (link.pairedRecord() == null) throw MobileException.Offline("Link this phone to your computer first.")
         if (link.route() == LinkRoute.DISCONNECTED) link.connect(false)
     }
-    override suspend fun turn(requestId: String, pcm16: ByteArray, listener: VoiceReplyListener) =
-        current().voiceTurn(requestId, pcm16, listener)
+    /**
+     * Runs the turn and logs its route and timings to `notdot.turn` (never
+     * audio or text), so device checks can record which path a turn took.
+     */
+    override suspend fun turn(requestId: String, pcm16: ByteArray, listener: VoiceReplyListener): VoiceTurnResult {
+        val link = current()
+        val start = android.os.SystemClock.elapsedRealtime()
+        val before = link.route()
+        var heardMs = -1L
+        var clipMs = -1L
+        var clips = 0
+        var retries = 0u
+        val timed = object : VoiceReplyListener {
+            override fun heard(text: String) {
+                if (heardMs < 0) heardMs = android.os.SystemClock.elapsedRealtime() - start
+                listener.heard(text)
+            }
+            override fun replyText(text: String) = listener.replyText(text)
+            override fun replyClip(clip: UInt, mime: String, audio: ByteArray) {
+                if (clipMs < 0) clipMs = android.os.SystemClock.elapsedRealtime() - start
+                clips++
+                listener.replyClip(clip, mime, audio)
+            }
+            override fun reconnecting(attempt: UInt) {
+                retries = attempt
+                android.util.Log.i("notdot.turn", "reconnecting attempt=$attempt after_ms=${android.os.SystemClock.elapsedRealtime() - start}")
+                listener.reconnecting(attempt)
+            }
+        }
+        val outcome = runCatching { link.voiceTurn(requestId, pcm16, timed) }
+        android.util.Log.i(
+            "notdot.turn",
+            "turn route_start=$before route_end=${link.route()} request_ms=${pcm16.size / 32} " +
+                "heard_ms=$heardMs first_clip_ms=$clipMs clips=$clips reconnects=$retries " +
+                "total_ms=${android.os.SystemClock.elapsedRealtime() - start} " +
+                "outcome=${outcome.fold({ if (it.cancelled) "cancelled" else "ok" }, { it.javaClass.simpleName })}",
+        )
+        return outcome.getOrThrow()
+    }
     override suspend fun cancel(requestId: String) {
         current().cancelVoice(requestId)
     }
