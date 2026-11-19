@@ -40,6 +40,10 @@ use tokio::sync::watch;
 pub const MAX_STREAMS: u32 = 16;
 /// A pairing connection waits this long at most for the owner to decide.
 pub const APPROVAL_WAIT: Duration = Duration::from_secs(120);
+/// Tries to rebind the saved desktop port before taking a new one, and the
+/// pause between tries (at most about half a second in all).
+const SAVED_PORT_ATTEMPTS: u32 = 10;
+const SAVED_PORT_RETRY: Duration = Duration::from_millis(50);
 const CLOSE_OK: u32 = 0;
 
 fn refusal_code(refusal: Refusal) -> u32 {
@@ -272,21 +276,33 @@ impl Desktop {
             None => (DeviceRegistry::default(), None, None),
         };
         let alpns = vec![PAIR_ALPN.to_vec(), LINK_ALPN.to_vec()];
-        // Reuse the saved port when possible; another app may have taken it.
+        // Reuse the saved port when possible, so phones keep reaching the
+        // address they saved. Right after a close the OS may not have released
+        // it yet, so retry briefly (bounded) before taking a new one; another
+        // app may also have taken it for good.
         let saved_port = registry_port;
-        let endpoint = match saved_port {
-            Some(port) => match bind_on(
-                secret.clone(),
-                net,
-                alpns.clone(),
-                Some(port),
-                registry_ipv6_port,
-            )
-            .await
-            {
-                Ok(endpoint) => endpoint,
-                Err(_) => bind(secret, net, alpns).await?,
-            },
+        let mut endpoint = None;
+        if let Some(port) = saved_port {
+            for attempt in 0..SAVED_PORT_ATTEMPTS {
+                if attempt > 0 {
+                    tokio::time::sleep(SAVED_PORT_RETRY).await;
+                }
+                if let Ok(bound) = bind_on(
+                    secret.clone(),
+                    net,
+                    alpns.clone(),
+                    Some(port),
+                    registry_ipv6_port,
+                )
+                .await
+                {
+                    endpoint = Some(bound);
+                    break;
+                }
+            }
+        }
+        let endpoint = match endpoint {
+            Some(endpoint) => endpoint,
             None => bind(secret, net, alpns).await?,
         };
         let sockets = endpoint.bound_sockets();
