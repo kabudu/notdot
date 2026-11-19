@@ -28,9 +28,17 @@ object NotdotState {
     @Volatile
     var silent = false
 
-    /** The paired computer, set by the link screen (null until linked). */
+    /** The phrase hands-free listens for (an enrolled custom phrase, or the default). */
+    @Volatile
+    var wakePhrase = "Hey Ava"
+
+    /** The paired computer: restored at launch, replaced by the link screen. */
     @Volatile
     var link: uniffi.notdot_mobile_core.PhoneLink? = null
+
+    /** [link] has a paired computer (it can take voice turns). */
+    @Volatile
+    var linked = false
 
     private var session: VoiceSession? = null
     private val _effects = MutableStateFlow(
@@ -73,9 +81,9 @@ object NotdotState {
         val mode = if (hearing) OrbMode.THINKING else OrbMode.IDLE
         orb.value = orb.value.copy(mode = mode, level = (level * 12f).coerceIn(0f, 1f).toDouble())
         if (hearing) setStatus("Checking wake phrase locally…")
-        else setStatus("Listening hands-free · Say Hey Ava")
+        else setStatus(idleText())
     }
-    fun wakeHeard(linked: Boolean = link != null) {
+    fun wakeHeard(linked: Boolean = this.linked) {
         handle(SessionEvent.Activity)
         val generation = wakeFeedback.incrementAndGet()
         orb.value = orb.value.copy(mode = OrbMode.LISTENING)
@@ -87,7 +95,7 @@ object NotdotState {
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
             if (wakeFeedback.get() == generation && effects.value.microphone) {
                 orb.value = orb.value.copy(mode = OrbMode.IDLE)
-                setStatus("Listening hands-free · Say Hey Ava")
+                setStatus(idleText())
             }
         }, 2500)
     }
@@ -101,12 +109,20 @@ object NotdotState {
             is VoiceUi.Heard -> OrbMode.THINKING to "“${ui.text}”"
             is VoiceUi.Replying -> OrbMode.SPEAKING to ui.text
             is VoiceUi.Reconnecting -> OrbMode.THINKING to "Reconnecting to your computer…"
-            is VoiceUi.Finished -> OrbMode.IDLE to (if (ui.result.cancelled) "Stopped." else "Listening hands-free · Say Hey Ava")
+            is VoiceUi.Finished -> OrbMode.IDLE to (if (ui.result.cancelled) "Stopped." else idleText())
             is VoiceUi.NothingHeard -> OrbMode.IDLE to ui.reason
             is VoiceUi.Failed -> OrbMode.IDLE to ui.reason
         }
-        orb.value = orb.value.copy(mode = if (effects.value.microphone) mode else OrbMode.IDLE)
+        // Tap to talk runs without a hands-free session, so the orb follows every turn.
+        orb.value = orb.value.copy(mode = mode)
         setStatus(text)
+    }
+
+    /** What the status line says between turns. */
+    fun idleText(): String = when {
+        effects.value.microphone -> "Listening hands-free · Say $wakePhrase"
+        !linked -> "Link this phone to your computer to talk."
+        else -> "Tap to talk"
     }
 
     fun setStatus(text: String) {
@@ -115,7 +131,7 @@ object NotdotState {
 
     fun describe(state: SessionState): String = when (state) {
         SessionState.Off -> "Not listening"
-        SessionState.Foreground -> "Ready"
+        SessionState.Foreground -> if (!linked) "Link this phone to your computer to talk." else "Tap to talk"
         SessionState.HandsFree -> "Listening hands-free"
         is SessionState.Paused -> when (state.reason) {
             PauseReason.INTERRUPTED -> "Paused by a call"

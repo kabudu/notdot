@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// Voice-only home: the orb, one status line and one control. There is no
-/// conversation text field; text appears only in setup (pairing).
+/// Voice-only home: the orb, one status line and Tap to talk (the default
+/// way to speak to the computer); hands-free wake is an opt-in experiment.
+/// There is no conversation text field; text appears only in setup (pairing).
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
     @State private var showingLink = Self.openSensitive
@@ -22,13 +23,16 @@ struct ContentView: View {
                     .font(.title3)
                     .foregroundStyle(.white)
                     .accessibilityAddTraits(.updatesFrequently)
+                Button(talkTitle) { model.tapTalk() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .frame(minHeight: 44)
+                    .accessibilityHint("Listens for one request, sends it to your computer and plays the reply.")
                 if model.effects.surface {
-                    Button("Stop listening") { model.handle(.stop) }
-                        .buttonStyle(.borderedProminent)
+                    Button("Stop hands-free") { model.handle(.stop) }
                         .frame(minHeight: 44)
                 } else {
-                    Button("Start hands-free") { model.start(source: .app) }
-                        .buttonStyle(.borderedProminent)
+                    Button("Hands-free (experimental)") { model.start(source: .app) }
                         .frame(minHeight: 44)
                         .accessibilityHint("Listens for your companion's name until you stop or it goes quiet.")
                 }
@@ -38,6 +42,14 @@ struct ContentView: View {
             .padding()
         }
         .sheet(isPresented: $showingLink) { PairingView(link: model.link) }
+    }
+
+    private var talkTitle: String {
+        switch model.talk {
+        case .idle: "Tap to talk"
+        case .listening: "Listening · tap to stop"
+        case .replying: "Stop"
+        }
     }
 }
 

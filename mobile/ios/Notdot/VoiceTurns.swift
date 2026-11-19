@@ -69,6 +69,9 @@ final class VoiceTurns: @unchecked Sendable {
 
     var listening: Bool { lock.withLock { capture != nil } }
 
+    /// A request is being sent or its reply is still arriving.
+    var busy: Bool { lock.withLock { requestId != nil } }
+
     /// The wake phrase was heard: start capturing the request.
     func wake() {
         lock.withLock {
@@ -159,8 +162,19 @@ final class ReplyPlayer: NSObject, ReplySink, AVAudioPlayerDelegate, @unchecked 
     private var queue: [Data] = []
     private var player: AVAudioPlayer?
     private(set) var clipsReceived = 0
+    /// True when a reply starts sounding, false once it has finished or stopped.
+    var onPlaying: ((Bool) -> Void)?
+    private let state = NSLock()
+    private var audible = false
+    /// A reply is sounding (any thread).
+    var playing: Bool { state.withLock { audible } }
 
     init(silent: Bool) { self.silent = silent }
+
+    private func sounding(_ active: Bool) {
+        let changed = state.withLock { () -> Bool in defer { audible = active }; return audible != active }
+        if changed { onPlaying?(active) }
+    }
 
     func play(clip: UInt32, mime: String, audio: Data) {
         DispatchQueue.main.async { [self] in
@@ -176,6 +190,7 @@ final class ReplyPlayer: NSObject, ReplySink, AVAudioPlayerDelegate, @unchecked 
             queue.removeAll()
             player?.stop()
             player = nil
+            sounding(false)
         }
     }
 
@@ -187,9 +202,13 @@ final class ReplyPlayer: NSObject, ReplySink, AVAudioPlayerDelegate, @unchecked 
             if let p = try? AVAudioPlayer(data: audio) {
                 p.delegate = self
                 player = p
-                if p.play() { return }
+                if p.play() {
+                    sounding(true)
+                    return
+                }
             }
         }
+        sounding(false)
     }
 
     func audioPlayerDidFinishPlaying(_ p: AVAudioPlayer, successfully: Bool) {

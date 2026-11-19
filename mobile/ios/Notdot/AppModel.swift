@@ -16,6 +16,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var effects: Effects
     @Published var orb: OrbState
     @Published private(set) var status = "Ready"
+    /// Tap to talk: the default way to speak to the computer.
+    @Published private(set) var talk: TalkState = .idle
     let link = LinkModel()
 
     private let session: VoiceSession
@@ -29,6 +31,9 @@ final class AppModel: ObservableObject {
     #endif
     /// Voice turns to the paired computer (capture, send, play the reply).
     private nonisolated(unsafe) var voiceTurns: VoiceTurns?
+    private nonisolated(unsafe) var tapToTalk: TapToTalk?
+    /// Wake is ignored while a reply plays (and briefly after).
+    private nonisolated let playback = PlaybackGate()
 
     init() {
         let arguments = ProcessInfo.processInfo
@@ -50,17 +55,37 @@ final class AppModel: ObservableObject {
             }
         }
         #endif
-        voiceTurns = VoiceTurns(
+        let player = ReplyPlayer(silent: silent)
+        let turns = VoiceTurns(
             client: PhoneLinkClient(link: { await MainActor.run { AppModel.shared.link.current } }),
-            sink: ReplyPlayer(silent: silent),
+            sink: player,
             ui: { ui in Task { @MainActor in AppModel.shared.voice(ui) } })
+        voiceTurns = turns
+        let capture = self.capture
+        tapToTalk = TapToTalk(
+            turns: turns,
+            startMicrophone: { try MainActor.assumeIsolated { try capture.start() } },
+            stopMicrophone: { Task { @MainActor in if !AppModel.shared.effects.microphone { capture.stop() } } },
+            playing: { player.playing },
+            onState: { state in Task { @MainActor in AppModel.shared.talk = state } })
+        player.onPlaying = { [playback] active in
+            playback.playback(active)
+            Task { @MainActor in AppModel.shared.tapToTalk?.changed() }
+        }
         #if NOTDOT_WAKE
         if !silent, let models = Bundle.main.resourceURL?.appendingPathComponent("wake").path {
             wake = try? WakeEngine(models: models, name: "Ava", nameOnly: false)
         }
         var meter = (sum: Float(0), count: 0, peak: Float(0))
+        #endif
         capture.onSamples = { [weak self] samples, rate in
             guard let self else { return }
+            // A tap's request: its own capture, no wake word.
+            if let tap = self.tapToTalk, tap.isCapturing {
+                tap.feed(samples: samples, rate: rate)
+                return
+            }
+            #if NOTDOT_WAKE
             // Level only (never audio) for diagnostics, once a second.
             let rms = (samples.reduce(0) { $0 + $1 * $1 } / Float(max(samples.count, 1))).squareRoot()
             meter = (meter.sum + rms, meter.count + 1, max(meter.peak, rms))
@@ -72,12 +97,16 @@ final class AppModel: ObservableObject {
             }
             // After the wake phrase, the same audio is the request.
             if let turns = self.voiceTurns, turns.listening { turns.feed(samples: samples, rate: rate) }
+            // The phone's own reply (and its echo) never wakes it; the
+            // detector restarts afterwards rather than joining audio across it.
+            if self.playback.suppressed { return }
+            if self.playback.resumed() { self.wake?.reset() }
             guard let wake = self.wake, wake.accept(samples: samples, rate: rate) else { return }
             AppModel.log.info("wake detected")
             self.voiceTurns?.wake()
             Task { @MainActor in self.wakeHeard() }
+            #endif
         }
-        #endif
         capture.onInterruption = { [weak self] began, resume in
             Task { @MainActor in
                 self?.handle(began ? .interruptionBegan : .interruptionEnded(shouldResume: resume))
@@ -93,7 +122,10 @@ final class AppModel: ObservableObject {
     func scenePhase(_ phase: ScenePhase) {
         switch phase {
         case .active: handle(.appVisible)
-        case .background: handle(.appHidden)
+        case .background:
+            // Tap to talk only listens while the app is in use; a reply keeps playing.
+            tapToTalk?.hidden()
+            handle(.appHidden)
         default: break
         }
     }
@@ -113,6 +145,37 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Tap to talk (user action). While hands-free is running, a tap starts
+    /// a request there instead (one microphone owner).
+    func tapTalk() {
+        guard !silent else {
+            status = "Silent test mode: microphone stays off"
+            return
+        }
+        Task {
+            if !AudioCapture.permitted, await AudioCapture.requestPermission() == false {
+                status = "Microphone access is off. Turn it on in Settings to talk."
+                return
+            }
+            if effects.microphone {
+                voiceTurns?.wake()
+                wakeHeard()
+                return
+            }
+            guard let tap = tapToTalk else { return }
+            if tap.state == .idle, await link.current.pairedRecord() == nil {
+                status = "Link this phone to your computer to talk."
+                return
+            }
+            if !tap.tap() { status = "The microphone could not start." }
+        }
+    }
+
+    /// What the status line says between turns.
+    private var idleText: String {
+        effects.microphone ? "Listening hands-free · Say Hey Ava" : "Tap to talk"
+    }
+
     /// A wake word: open listening. No cue is played in this prototype.
     func wakeHeard() {
         handle(.activity)
@@ -130,10 +193,12 @@ final class AppModel: ObservableObject {
         case .heard(let text): (mode, status) = (.thinking, "“\(text)”")
         case .replying(let text): (mode, status) = (.speaking, text)
         case .reconnecting: (mode, status) = (.thinking, "Reconnecting to your computer…")
-        case .finished(let cancelled): (mode, status) = (.idle, cancelled ? "Stopped." : "Listening hands-free · Say Hey Ava")
+        case .finished(let cancelled): (mode, status) = (.idle, cancelled ? "Stopped." : idleText)
         case .nothingHeard(let reason), .failed(let reason): (mode, status) = (.idle, reason)
         }
-        orb.mode = effects.microphone ? mode : .idle
+        // Tap to talk runs without a hands-free session, so the orb follows every turn.
+        orb.mode = mode
+        tapToTalk?.changed()
     }
 
     func handle(_ event: SessionEvent) {
@@ -169,7 +234,7 @@ final class AppModel: ObservableObject {
     static func describe(_ state: SessionState) -> String {
         switch state {
         case .off: "Not listening"
-        case .foreground: "Ready"
+        case .foreground: "Tap to talk"
         case .handsFree: "Listening hands-free"
         case .paused(let reason):
             switch reason {

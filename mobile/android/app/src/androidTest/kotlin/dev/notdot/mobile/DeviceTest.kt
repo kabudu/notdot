@@ -139,6 +139,49 @@ class DeviceTest {
         assertEquals(1, link.listNotes().count { it == "Synthetic note" })
         println("emulator link: first route $first, then relay; retry committed once")
 
+        // Tap to talk end to end over the real link: a spoken request over
+        // the relay, then again after switching back to the first route. The
+        // simulator answers with a synthetic transcript and spoken clips.
+        // (On the emulator a direct-route upload is slow, about 20 s: its NAT
+        // UDP path, not the link; the iOS simulator does it in under 1 s.)
+        for ((relayOnly, expected) in listOf(true to LinkRoute.RELAY, false to first)) {
+            assertEquals(expected, link.connect(relayOnly))
+            val played = java.util.Collections.synchronizedList(mutableListOf<UInt>())
+            val seen = java.util.Collections.synchronizedList(mutableListOf<VoiceUi>())
+            val sink = object : ReplySink {
+                override fun play(clip: UInt, mime: String, audio: ByteArray) { played.add(clip) }
+                override fun stopAll() {}
+            }
+            val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
+            val turns = VoiceTurns(PhoneLinkClient { link }, sink, scope) { seen.add(it) }
+            val audio = tone(300, 20.0) + tone(1000, 6000.0) + tone(1000, 20.0)
+            var offset = 0
+            val mic = object : PcmSource {
+                override fun read(buffer: ByteArray): Int {
+                    val n = minOf(buffer.size, audio.size - offset)
+                    if (n <= 0) return -1
+                    audio.copyInto(buffer, 0, offset, offset + n)
+                    offset += n
+                    return n
+                }
+                override fun close() {}
+            }
+            val tap = TapToTalk(turns, { mic }, { false }, {})
+            val started = android.os.SystemClock.elapsedRealtime()
+            assertTrue(tap.tap())
+            val done = kotlinx.coroutines.withTimeoutOrNull(60_000) {
+                while (seen.toList().none { it is VoiceUi.Finished || it is VoiceUi.Failed }) kotlinx.coroutines.delay(20)
+            }
+            assertTrue("$expected: no outcome in 60 s; saw ${seen.toList()}, clips ${played.toList()}, route ${link.route()}", done != null)
+            val ui = seen.toList()
+            assertTrue("$expected: $ui", ui.last() is VoiceUi.Finished)
+            assertTrue("$ui", ui.any { it is VoiceUi.Heard && it.text.startsWith("synthetic request of") })
+            assertEquals("every spoken sentence arrives once, in order", listOf(0u, 1u, 2u), played.toList())
+            assertEquals(TalkState.IDLE, tap.state)
+            println("emulator tap to talk over $expected: ${ui.size} updates, ${played.size} clips, " +
+                "${android.os.SystemClock.elapsedRealtime() - started} ms")
+        }
+
         // The real refusal path: the emulator's key evidence goes to the
         // desktop simulator, whose verifier checks it against Google's
         // roots and refuses it. Nothing is enrolled.
@@ -163,6 +206,17 @@ class DeviceTest {
             val keystore = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
             assertFalse("a refused key is deleted", keystore.containsAlias(alias))
         }
+    }
+
+    private fun tone(ms: Int, amplitude: Double): ByteArray {
+        val n = 16_000 * ms / 1000
+        val out = ByteArray(n * 2)
+        for (k in 0 until n) {
+            val v = (Math.sin(k / 16_000.0 * 250.0 * 2 * Math.PI) * amplitude).toInt().toShort()
+            out[2 * k] = (v.toInt() and 0xff).toByte()
+            out[2 * k + 1] = (v.toInt() shr 8).toByte()
+        }
+        return out
     }
 
     /** 16 kHz mono 16-bit PCM WAV from the test assets, data chunk only. */

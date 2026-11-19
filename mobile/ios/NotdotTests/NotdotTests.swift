@@ -235,6 +235,21 @@ final class StepUpKeyStoreTests: XCTestCase {
 /// Pairs with a desktop simulator on the host (see mobile/README.md). Skipped
 /// unless the runner passes TEST_RUNNER_NOTDOT_TEST_QR_FILE.
 final class LinkEndToEndTests: XCTestCase {
+    private final class ClipSink: ReplySink, @unchecked Sendable {
+        private let lock = NSLock()
+        private var played: [UInt32] = []
+        var clips: [UInt32] { lock.withLock { played } }
+        func play(clip: UInt32, mime: String, audio: Data) { lock.withLock { played.append(clip) } }
+        func stopAll() {}
+    }
+
+    private final class Seen: @unchecked Sendable {
+        private let lock = NSLock()
+        private var all: [VoiceUi] = []
+        func add(_ ui: VoiceUi) { lock.withLock { all.append(ui) } }
+        var snapshot: [VoiceUi] { lock.withLock { all } }
+    }
+
     func testPairDirectThenRelayOnlyRetryCommitsOnce() async throws {
         guard let path = ProcessInfo.processInfo.environment["NOTDOT_TEST_QR_FILE"] else {
             throw XCTSkip("no desktop simulator; set TEST_RUNNER_NOTDOT_TEST_QR_FILE")
@@ -254,6 +269,30 @@ final class LinkEndToEndTests: XCTestCase {
         XCTAssertEqual(first, retried, "the retry returns the recorded outcome")
         let notes = try await link.listNotes()
         XCTAssertEqual(notes.filter { $0 == "Synthetic note" }.count, 1)
+
+        // Tap to talk end to end with the real link: a spoken request over the
+        // relay, then again after switching back to the direct route. The
+        // simulator answers with a synthetic transcript and spoken clips.
+        for relayOnly in [true, false] {
+            let route = try await link.connect(relayOnly: relayOnly)
+            XCTAssertEqual(route, relayOnly ? .relay : .direct)
+            let sink = ClipSink(), seen = Seen()
+            let turns = VoiceTurns(client: PhoneLinkClient(link: { link }), sink: sink, ui: { seen.add($0) })
+            let tap = TapToTalk(turns: turns, startMicrophone: {}, stopMicrophone: {}, playing: { false }, onState: { _ in })
+            XCTAssertTrue(tap.tap())
+            let speech = (0..<48_000).map { sin(Float($0) / 48_000 * 250 * 2 * .pi) * 0.2 as Float }
+            let audio = [Float](repeating: 0.0006, count: 14_400) + speech + [Float](repeating: 0.0006, count: 48_000)
+            for start in stride(from: 0, to: audio.count, by: 960) {
+                tap.feed(samples: Array(audio[start..<min(start + 960, audio.count)]), rate: 48_000)
+            }
+            for _ in 0..<1_000 where !seen.snapshot.contains(where: { if case .finished = $0 { return true }; return false }) {
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            XCTAssertEqual(seen.snapshot.last, .finished(cancelled: false), "route \(route): \(seen.snapshot)")
+            XCTAssertTrue(seen.snapshot.contains { if case .heard(let t) = $0 { return t.hasPrefix("synthetic request of") }; return false })
+            XCTAssertEqual(sink.clips, [0, 1, 2], "every spoken sentence arrives once, in order")
+            XCTAssertEqual(tap.state, .idle)
+        }
 
         // The real refusal path on the Simulator: no Secure Enclave and no
         // App Attest, so setting up fails here, before anything is sent,
@@ -451,5 +490,148 @@ final class VoiceTurnsTests: XCTestCase {
         XCTAssertTrue(client.lock.withLock { client.sent }.isEmpty)
         XCTAssertEqual(seen.snapshot.last, .nothingHeard("I didn't hear a request."))
         XCTAssertEqual(plainDetail(MobileError.Offline(detail: "Not connected to the computer.")), "Not connected to the computer.")
+    }
+}
+
+/// Tap to talk (no wake word) against the Rust core's endpointer, a fake
+/// microphone and a fake computer; and the reply-muting gate.
+final class TapToTalkTests: XCTestCase {
+    private func tone(ms: Int, amplitude: Float, rate: Int = 48_000) -> [Float] {
+        (0..<(rate * ms / 1000)).map { sin(Float($0) / Float(rate) * 250 * 2 * .pi) * amplitude }
+    }
+
+    private final class Computer: VoiceTurnClient, @unchecked Sendable {
+        let lock = NSLock()
+        var sent: [Data] = []
+        var cancelled: [String] = []
+        let hold: Bool
+        var release: CheckedContinuation<Void, Never>?
+        init(hold: Bool = false) { self.hold = hold }
+        func ensureConnected() async throws {}
+        func turn(requestId: String, pcm16: Data, listener: VoiceReplyListener) async throws -> VoiceTurnResult {
+            lock.withLock { sent.append(pcm16) }
+            listener.replyText(text: "Two tasks.")
+            listener.replyClip(clip: 0, mime: "audio/mpeg", audio: Data([1]))
+            if hold { await withCheckedContinuation { c in lock.withLock { release = c } } }
+            return VoiceTurnResult(heard: "what's running?", reply: "Two tasks.", cancelled: false)
+        }
+        func cancel(requestId: String) async { lock.withLock { cancelled.append(requestId) } }
+    }
+
+    private final class Sink: ReplySink, @unchecked Sendable {
+        let lock = NSLock()
+        var played: [UInt32] = []
+        var stops = 0
+        func play(clip: UInt32, mime: String, audio: Data) { lock.withLock { played.append(clip) } }
+        func stopAll() { lock.withLock { stops += 1 } }
+    }
+
+    private final class Mic: @unchecked Sendable {
+        let lock = NSLock()
+        var starts = 0, stops = 0
+        var fail = false
+        var open: Bool { lock.withLock { starts > stops } }
+    }
+
+    private final class Rig: @unchecked Sendable {
+        let computer: Computer, sink = Sink(), mic = Mic()
+        var turns: VoiceTurns!
+        var tap: TapToTalk!
+        init(_ computer: Computer) {
+            self.computer = computer
+            turns = VoiceTurns(client: computer, sink: sink, ui: { [weak self] _ in self?.tap?.changed() })
+            let mic = self.mic
+            tap = TapToTalk(turns: turns,
+                            startMicrophone: { if mic.fail { throw MobileError.Wake(detail: "no microphone") }; mic.lock.withLock { mic.starts += 1 } },
+                            stopMicrophone: { mic.lock.withLock { mic.stops += 1 } },
+                            playing: { false }, onState: { _ in })
+        }
+        /// What the microphone hears, while the tap is capturing.
+        func speak(_ audio: [Float]) {
+            stride(from: 0, to: audio.count, by: 960).forEach { tap.feed(samples: Array(audio[$0..<min($0 + 960, audio.count)]), rate: 48_000) }
+        }
+    }
+
+    private func wait(_ what: String, _ condition: () -> Bool) async throws {
+        for _ in 0..<500 where !condition() { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertTrue(condition(), what)
+    }
+
+    private var request: [Float] { tone(ms: 300, amplitude: 0.0006) + tone(ms: 1500, amplitude: 0.2) + tone(ms: 1000, amplitude: 0.0006) }
+
+    func testATapCapturesOneRequestSendsItAndClosesTheMicrophone() async throws {
+        let rig = Rig(Computer())
+        XCTAssertEqual(rig.tap.state, .idle)
+        rig.speak(tone(ms: 500, amplitude: 0.2)) // Ignored: not tapped.
+        XCTAssertTrue(rig.tap.tap())
+        XCTAssertEqual(rig.tap.state, .listening)
+        XCTAssertTrue(rig.mic.open)
+        rig.speak(request)
+        XCTAssertFalse(rig.mic.open, "the microphone closes when the request ends")
+        try await wait("sent") { rig.computer.lock.withLock { rig.computer.sent.count } == 1 }
+        try await wait("idle") { rig.tap.state == .idle }
+        let ms = rig.computer.lock.withLock { rig.computer.sent[0].count } / 2 * 1000 / 16_000
+        XCTAssertTrue((1500...2100).contains(ms), "\(ms) ms")
+        XCTAssertEqual(rig.sink.lock.withLock { rig.sink.played }, [0])
+    }
+
+    func testASecondTapWhileListeningStopsWithoutSending() async throws {
+        let rig = Rig(Computer())
+        rig.tap.tap()
+        rig.speak(tone(ms: 1000, amplitude: 0.2))
+        rig.tap.tap()
+        XCTAssertFalse(rig.mic.open)
+        XCTAssertEqual(rig.tap.state, .idle)
+        rig.speak(tone(ms: 1000, amplitude: 0.0006))
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertTrue(rig.computer.lock.withLock { rig.computer.sent }.isEmpty)
+    }
+
+    func testATapWhileReplyingStopsHereAndOnTheComputer() async throws {
+        let rig = Rig(Computer(hold: true))
+        rig.tap.tap()
+        rig.speak(request)
+        try await wait("reply") { !rig.sink.lock.withLock { rig.sink.played }.isEmpty }
+        XCTAssertEqual(rig.tap.state, .replying)
+        rig.tap.tap()
+        try await wait("cancelled") { !rig.computer.lock.withLock { rig.computer.cancelled }.isEmpty }
+        XCTAssertEqual(rig.tap.state, .idle)
+        try await wait("held") { rig.computer.lock.withLock { rig.computer.release } != nil }
+        rig.computer.lock.withLock { rig.computer.release }?.resume()
+    }
+
+    func testMicrophoneFailureAndHidingAreClean() async throws {
+        let failing = Rig(Computer())
+        failing.mic.fail = true
+        XCTAssertFalse(failing.tap.tap())
+        XCTAssertEqual(failing.tap.state, .idle)
+        XCTAssertFalse(failing.turns.listening)
+
+        let hidden = Rig(Computer())
+        hidden.tap.tap()
+        hidden.speak(tone(ms: 1000, amplitude: 0.2))
+        hidden.tap.hidden()
+        XCTAssertFalse(hidden.mic.open)
+        XCTAssertFalse(hidden.turns.listening)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertTrue(hidden.computer.lock.withLock { hidden.computer.sent }.isEmpty)
+    }
+
+    func testWakeIsMutedDuringAReplyAndBrieflyAfter() {
+        var now: TimeInterval = 100
+        let gate = PlaybackGate(hold: 0.4, now: { now })
+        XCTAssertFalse(gate.suppressed)
+        XCTAssertFalse(gate.resumed())
+        gate.playback(true)
+        now += 5
+        XCTAssertTrue(gate.suppressed)
+        gate.playback(false)
+        now += 0.39
+        XCTAssertTrue(gate.suppressed)
+        XCTAssertFalse(gate.resumed())
+        now += 0.02
+        XCTAssertFalse(gate.suppressed)
+        XCTAssertTrue(gate.resumed())
+        XCTAssertFalse(gate.resumed())
     }
 }

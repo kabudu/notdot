@@ -70,6 +70,9 @@ class VoiceTurns(
 
     val listening: Boolean get() = capture != null
 
+    /** A request is being sent or its reply is still arriving. */
+    val busy: Boolean get() = requestId != null
+
     /** The wake phrase was heard: start capturing the request. */
     @Synchronized
     fun wake() {

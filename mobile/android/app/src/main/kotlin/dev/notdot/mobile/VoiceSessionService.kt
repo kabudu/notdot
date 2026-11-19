@@ -68,7 +68,7 @@ class VoiceSessionService : Service() {
                     is WakeRecognizerStatus.Listening -> {
                         wakeReady = true
                         listeningSince = android.os.SystemClock.elapsedRealtime()
-                        NotdotState.setStatus("Listening hands-free · Say Hey Ava")
+                        NotdotState.setStatus(NotdotState.idleText())
                     }
                     is WakeRecognizerStatus.Ended -> {
                         wakeReady = false
@@ -125,6 +125,16 @@ class VoiceSessionService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             stop(SessionEvent.Stop)
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_TALK) {
+            // Tap to talk while hands-free owns the microphone: a request
+            // starts here (the same as hearing the wake phrase). Never starts
+            // a session by itself.
+            if (capturing && !microphoneSilenced) {
+                NotdotState.wakeHeard()
+                voiceTurns?.wake()
+            } else if (!capturing) stopSelf()
             return START_NOT_STICKY
         }
         val permitted = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
@@ -216,8 +226,10 @@ class VoiceSessionService : Service() {
             val native = phonetic == null && BuildConfig.NATIVE_WAKE
             if (phonetic != null) {
                 wakeReady = true
-                NotdotState.setStatus("Listening hands-free · Say ${displayPhrase(phonetic.phrase())}")
+                NotdotState.wakePhrase = displayPhrase(phonetic.phrase())
+                NotdotState.setStatus(NotdotState.idleText())
             } else if (native) {
+                NotdotState.wakePhrase = "Hey Ava"
                 main.post { if (capturing && recorder === record) startWake() }
             }
             val legacy = if (phonetic != null || native) null else WakeModels.engine(this)
@@ -226,6 +238,7 @@ class VoiceSessionService : Service() {
                 return@thread
             }
             legacy?.reset()
+            if (legacy != null) NotdotState.wakePhrase = "Hey Ava"
             var silenced = false
             while (capturing && recorder === record) {
                 val read = try { record.read(packet, 0, packet.size, AudioRecord.READ_BLOCKING) }
@@ -359,9 +372,15 @@ class VoiceSessionService : Service() {
         private const val CHANNEL = "hands-free"
         private const val NOTIFICATION_ID = 1
         const val ACTION_STOP = "dev.notdot.mobile.STOP"
+        const val ACTION_TALK = "dev.notdot.mobile.TALK"
 
         fun start(context: Context) {
             context.startForegroundService(Intent(context, VoiceSessionService::class.java))
+        }
+
+        /** Tap to talk while hands-free is running (see [ACTION_TALK]). */
+        fun talk(context: Context) {
+            context.startService(Intent(context, VoiceSessionService::class.java).setAction(ACTION_TALK))
         }
 
         fun stop(context: Context) {

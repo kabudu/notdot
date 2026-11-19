@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- **Mobile foundations.** Experimental paired-phone connections with private notes, saved permissions and verified approvals for sensitive actions.
+- **Mobile foundations.** Experimental paired-phone connections with tap to talk (spoken replies from your computer), private notes, saved permissions and verified approvals for sensitive actions.
 
 ## [0.8.0] - 2026-11-12
 

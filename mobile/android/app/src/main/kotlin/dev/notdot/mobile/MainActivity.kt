@@ -41,11 +41,19 @@ import uniffi.notdot_mobile_core.PairResult
 import uniffi.notdot_mobile_core.PhoneLink
 import uniffi.notdot_mobile_core.SessionEvent
 
-/** Voice-only home: orb, one status line, Start/Stop. Text only in setup. */
+/**
+ * Voice-only home: orb, one status line and Tap to talk (the default way to
+ * speak to the paired computer). Hands-free wake listening is a separate,
+ * opt-in experiment. Text only in setup.
+ */
 class MainActivity : ComponentActivity() {
     private val microphone = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
         if (granted[Manifest.permission.RECORD_AUDIO] == true) VoiceSessionService.start(this)
         else NotdotState.setStatus("Microphone access is off. Turn it on in Settings to talk hands-free.")
+    }
+
+    private val talkMicrophone = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) talk() else NotdotState.setStatus("Microphone access is off. Turn it on in Settings to talk.")
     }
 
     private val notification = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
@@ -59,9 +67,52 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // Debug-only: a scripted sensitive-actions backend for UI tests.
         val scenario = if (BuildConfig.DEBUG) intent.getStringExtra("notdotSensitiveScenario") else null
+        restoreLink()
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) { Home(::startHandsFree, ::openPermissions, scenario) }
+            MaterialTheme(colorScheme = darkColorScheme()) { Home(::talk, ::startHandsFree, ::openPermissions, scenario) }
         }
+    }
+
+    /** The paired computer, for voice turns, from launch (Keystore-sealed; off the main thread). */
+    private fun restoreLink() {
+        if (NotdotState.link != null) return
+        val store = IdentityStore.standard(this)
+        kotlin.concurrent.thread(name = "notdot-link-restore") {
+            val restored = runCatching { store.restoreLink() }.getOrNull() ?: return@thread
+            val paired = runCatching { kotlinx.coroutines.runBlocking { restored.pairedRecord() } != null }.getOrDefault(false)
+            synchronized(NotdotState) {
+                if (NotdotState.link == null) {
+                    NotdotState.link = restored
+                    NotdotState.linked = paired
+                    NotdotState.setStatus(NotdotState.idleText())
+                }
+            }
+        }
+    }
+
+    /**
+     * Tap to talk (user action, app visible). While hands-free is running,
+     * a tap starts a request there instead (one microphone owner).
+     */
+    private fun talk() {
+        if (NotdotState.silent) {
+            NotdotState.setStatus("Silent test mode: microphone stays off")
+            return
+        }
+        if (!permitted()) {
+            talkMicrophone.launch(Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        if (NotdotState.effects.value.microphone) {
+            VoiceSessionService.talk(this)
+            return
+        }
+        val tap = TalkPath.get()
+        if (tap.state == TalkState.IDLE && !NotdotState.linked) {
+            NotdotState.setStatus("Link this phone to your computer to talk.")
+            return
+        }
+        if (!tap.tap()) NotdotState.setStatus("The microphone could not start. Please try again.")
     }
 
     override fun onStart() {
@@ -76,6 +127,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        // Tap to talk only listens while the app is in use; a reply keeps playing.
+        TalkPath.get().hidden()
         NotdotState.handle(SessionEvent.AppHidden, permitted())
         super.onStop()
     }
@@ -102,8 +155,9 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun Home(start: () -> Unit, permissions: () -> Unit, scenario: String?) {
+private fun Home(talk: () -> Unit, start: () -> Unit, permissions: () -> Unit, scenario: String?) {
     val effects by NotdotState.effects.collectAsState()
+    val talking by TalkPath.state.collectAsState()
     val status by NotdotState.status.collectAsState()
     val orb by NotdotState.orb.collectAsState()
     var linking by remember { mutableStateOf(scenario != null) }
@@ -116,10 +170,19 @@ private fun Home(start: () -> Unit, permissions: () -> Unit, scenario: String?) 
         if (!linking) Orb(orb, Modifier.weight(1f).fillMaxWidth())
         Text(status, color = Color.White, style = MaterialTheme.typography.titleMedium)
         val context = androidx.compose.ui.platform.LocalContext.current
+        Button(talk, Modifier.heightIn(min = 56.dp).fillMaxWidth()) {
+            Text(
+                when (talking) {
+                    TalkState.IDLE -> "Tap to talk"
+                    TalkState.LISTENING -> "Listening · tap to stop"
+                    TalkState.REPLYING -> "Stop"
+                },
+            )
+        }
         if (effects.surface) {
-            Button({ VoiceSessionService.stop(context) }, Modifier.heightIn(min = 48.dp)) { Text("Stop listening") }
+            OutlinedButton({ VoiceSessionService.stop(context) }, Modifier.heightIn(min = 48.dp)) { Text("Stop hands-free") }
         } else {
-            Button(start, Modifier.heightIn(min = 48.dp)) { Text("Start hands-free") }
+            OutlinedButton(start, Modifier.heightIn(min = 48.dp)) { Text("Hands-free (experimental)") }
         }
         OutlinedButton({ linking = !linking }, Modifier.heightIn(min = 48.dp)) { Text("Linked computer") }
         if (BuildConfig.DEBUG && BuildConfig.PERSONAL_WAKE_LAB && !linking) {
@@ -142,9 +205,12 @@ private fun Pairing(scenario: String?) {
     val context = androidx.compose.ui.platform.LocalContext.current
     // Identity and paired computer survive restarts (Keystore-sealed).
     val store = remember { IdentityStore.standard(context) }
-    var link by remember { mutableStateOf(runCatching { store.restoreLink() }.getOrElse { PhoneLink() }) }
+    var link by remember { mutableStateOf(NotdotState.link ?: runCatching { store.restoreLink() }.getOrElse { PhoneLink() }) }
     // Voice turns use whichever link this screen holds.
-    LaunchedEffect(link) { NotdotState.link = link }
+    LaunchedEffect(link) {
+        NotdotState.link = link
+        NotdotState.linked = link.pairedRecord() != null
+    }
     var qr by remember { mutableStateOf("") }
     var message by remember { mutableStateOf("Not linked") }
     var showSensitive by remember { mutableStateOf(scenario != null) }
@@ -173,6 +239,7 @@ private fun Pairing(scenario: String?) {
                     when (val result = link.awaitApproval()) {
                         is PairResult.Approved -> {
                             store.savePairedRecord(link.pairedRecord())
+                            NotdotState.linked = true
                             "Linked (${link.connect(false)})"
                         }
                         PairResult.Denied -> "The computer said no."

@@ -72,7 +72,7 @@ class VoiceTurnsTest {
         turns.wake()
         feed(turns, tone(300, 20.0) + tone(1500, 6000.0) + tone(1000, 20.0))
         withTimeout(5_000) { client.done.await() }
-        withTimeout(5_000) { while (seen.none { it is VoiceUi.Finished }) kotlinx.coroutines.delay(10) }
+        withTimeout(5_000) { while (seen.toList().none { it is VoiceUi.Finished }) kotlinx.coroutines.delay(10) }
         assertEquals(1, client.sent.size)
         val ms = client.sent[0].size / 2 * 1000 / 16_000
         assertTrue("$ms ms", ms in 1500..2100)
@@ -119,7 +119,7 @@ class VoiceTurnsTest {
         val again = VoiceTurns(offline, Sink(), CoroutineScope(SupervisorJob() + Dispatchers.Default)) { failures.add(it) }
         again.wake()
         feed(again, tone(1500, 6000.0) + tone(1000, 20.0))
-        withTimeout(5_000) { while (failures.none { it is VoiceUi.Failed }) kotlinx.coroutines.delay(10) }
+        withTimeout(5_000) { while (failures.toList().none { it is VoiceUi.Failed }) kotlinx.coroutines.delay(10) }
         assertEquals(VoiceUi.Failed("Not connected to the computer."), failures.last())
     }
 }

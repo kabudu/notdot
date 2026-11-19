@@ -12,6 +12,9 @@ import android.media.MediaPlayer
  */
 class ReplyPlayer(private val onPlaying: (Boolean) -> Unit = {}) : ReplySink {
     private var audible = false
+
+    /** A reply is sounding (or queued to). */
+    val playing: Boolean get() = synchronized(this) { audible }
     private val queue = ArrayDeque<ByteArray>()
     private var player: MediaPlayer? = null
     @Volatile var clipsReceived = 0

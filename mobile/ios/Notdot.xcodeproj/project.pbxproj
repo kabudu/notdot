@@ -360,6 +360,7 @@
 				"56030A522E2313D0590B0AB6",
 				"1C86A7F0B60182EBBDFC43DB",
 				"2F490D45043662B45427798D",
+				"8AD7E66B99C9A78261D08C0D",
 				"7E8A492A5B6346AD30203FE6",
 				"3B040D781D2C520785CD636A",
 				CCB33F6B06E79FCCE29E7A2E,
@@ -444,6 +445,12 @@
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
 			};
 			name = Release;
+		};
+		8AD7E66B99C9A78261D08C0D = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Notdot/TapToTalk.swift;
+			sourceTree = "<group>";
 		};
 		8B10D2B922BD7D4632CC2727 = {
 			isa = PBXBuildFile;
@@ -642,6 +649,7 @@
 				"4B6D035A9DD7144007843650",
 				"5FA8E011D222575765E48AFF",
 				"862CA781AC0D13305FBCB2B0",
+				F1DE5AAA6E25615E21688FC2,
 				ACBF2248890D7DBF3328D0A6,
 				"3446C34BD12AE41001D720D9",
 				"0EDC5FAF4AC6AEDF6E68FAD6",
@@ -711,6 +719,10 @@
 			lastKnownFileType = sourcecode.swift;
 			path = Notdot/Intents.swift;
 			sourceTree = "<group>";
+		};
+		F1DE5AAA6E25615E21688FC2 = {
+			isa = PBXBuildFile;
+			fileRef = "8AD7E66B99C9A78261D08C0D";
 		};
 		F2CFED08E609FEAC28FE81BD = {
 			isa = PBXResourcesBuildPhase;
