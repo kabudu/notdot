@@ -1,4 +1,4 @@
-# Speech playback, interruption and web boundary — 15 November
+# Speech playback and interruption, 15 November
 
 Status: branch `claude/desktop-audio-runtime-559642`, not released. These are automated checks of software behaviour. Nobody has listened to the result yet. Real-person checks are listed at the end.
 
@@ -8,7 +8,6 @@ Status: branch `claude/desktop-audio-runtime-559642`, not released. These are au
 2. Playback briefly sounds about 1.5× faster, then returns to normal.
 3. Gaps or breakup between sentences.
 4. “Actually…” cannot interrupt without the wake phrase.
-5. Asked to search a website directly, notdot said it couldn't use the browser or the computer.
 
 ## Causes found
 
@@ -20,7 +19,6 @@ Status: branch `claude/desktop-audio-runtime-559642`, not released. These are au
 | 4 | Voice interruption is off by default, and the owner's saved settings have it off. With it off, nothing listens during a reply, by design. Separately, an utterance ended after 600 ms of silence, so pausing after “Actually” sent only “Actually”. | Settings inspected read-only. Native unit test for the endpoint. |
 | 3 (WebKit share) | After one clip ends, WebKit's media clock starts moving for the next clip about 280 ms after `play()` on the same element. This is media-pipeline start latency, not app code. It remains after this change and is probably the larger part of the audible gap. | Silent probe (`scripts/probe_webkit_playback_gap.mjs`), headless WebKit, muted, five boundaries × four runs: 280–284 ms on one element. Preloading the next clip in a second element gave 188–195 ms in most boundaries; in one run three of five boundaries stayed at about 282 ms. |
 | 2 | **Not identified.** The player's timebase is correct, so the speed-up is not a `playbackRate`, sample-rate or clock fault in the media element. The remaining **hypotheses** are untested. (a) Per-sentence ElevenLabs generations without context vary in pace; ElevenLabs documents “abrupt changes in prosody” between chunks, and `previous_text` is its continuity aid. (b) The output device is reconfigured, such as a Bluetooth headset switching profile when a microphone opens or closes near playback. | Silent probe (`scripts/probe_webkit_playback_rate.mjs`, real WebKit, muted, six 44.1 kHz mono MP3 sentences in ElevenLabs' default format) found: `playbackRate` and `defaultPlaybackRate` stay 1, `preservesPitch` stays true, and decoded and declared rates are both 44,100 Hz. Decoded duration equals element duration. The media clock never exceeded 1.005× in any 200 ms window. Real ElevenLabs output and per-chunk speaking rate were not measured, because that needs paid synthesis. |
-| 5 | notdot's Codex runtime turns off `browser_use` and `computer_use`. The owner's Codex desktop configuration does include browser and computer-use plugins and a `node_repl` MCP server wired to the ChatGPT app's browser backends; its `computer-use` MCP entry is disabled. These are host features of the Codex desktop app, and app-server clients have no documented way to provide them. Its web search follows the person's Codex `web_search` setting. The default, `cached`, searches an index and cannot open a site's current page. Trusted-voice profiles turn search off. The model was given no description of this boundary. | Code (`runtime_policy::companion`, `restrict_profile_tools`), official Codex configuration docs, and the installed runtime (`codex-cli 0.169.0-alpha.11.1`): `config/read` reports no `web_search` (so `cached`) and no requirements. No model turn was run. |
 
 ## Changes
 
@@ -30,7 +28,6 @@ Status: branch `claude/desktop-audio-runtime-559642`, not released. These are au
 - With interruption on, listening opens once per reply, covers the gaps, and closes as soon as the reply ends.
 - After less than 800 ms of speech, an interruption waits for 1.2 s of silence before ending (600 ms otherwise).
 - The previous sentence, at most 300 characters, is sent as ElevenLabs `previous_text`. ElevenLabs does not document whether this context is billed.
-- The companion is told its actual web boundary for its search mode. No capability or permission was enabled.
 - Settings now says interruption is off by default and that, while it is on, the microphone stays on during every reply, with only speech after a pause going to the recognition service. While a reply plays with interruption off, the orb's tooltip and accessible label say how to turn it on. The setting is never changed automatically. Interruption first appeared in v0.8.0, off by default, and no migration or onboarding step turns it on. The v0.8.0 changelog headline (“Say “Stop”, “Actually…”… without repeating the wake phrase”) is the likely source of the expectation.
 
 ## Automated evidence
@@ -69,18 +66,14 @@ Native tests cover:
 
 - pipeline ordering and bounds;
 - the `previous_text` request body, checked against a local HTTP server;
-- the lead-in endpoint;
-- the web-boundary instructions for each search mode;
-- `browser_use` and `computer_use` staying off.
+- the lead-in endpoint.
 
 ## Follow-ups
 
 - **Remaining WebKit gap of about 0.2–0.3 s per sentence.** Sample-accurate, gapless playback would mean decoding sentences into `AudioBuffer`s and scheduling them back to back on one `AudioContext`. That changes the output path v0.8.0 stabilised (Linux WebKit drops 15–40 ms after silence) and needs acoustic validation on each platform. A second preloaded element saves about 90 ms on most boundaries.
-- **`node_repl` MCP inheritance.** Single-person companions inherit the person's MCP servers with write approval required. The `node_repl` server can run code, and its write calls are refused because notdot rejects host approval requests. Disabling it explicitly, as trusted-voice profiles already do, would be clearer. That is a product decision.
 
-## Not established — needs a person
+## Pending listening checks
 
 - The cause of the pace jumps (problem 2). Listen to several long replies with ElevenLabs, noting the output device. If jumps continue with `previous_text`, try wired speakers to test the device hypothesis.
 - Real inter-sentence gaps with decoded MP3 on the owner's Mac and output device, including Bluetooth.
 - With interruption turned on: real “Actually, …” overlap, echo rejection and no self-interruption on the owner's speakers.
-- A real Codex turn asking for a website search, to hear the new explanation. This was not run because it uses the owner's account.

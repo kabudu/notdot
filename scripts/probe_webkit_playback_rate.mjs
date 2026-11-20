@@ -1,5 +1,5 @@
 // Optional developer probe; not part of CI. Muted: plays no sound.
-// Usage: NODE_PATH=<playwright>/node_modules node scripts/probe_webkit_playback_rate.mjs <dir of sNN.mp3 (+ sNN.txt)> 
+// Usage: NODE_PATH=<playwright>/node_modules node scripts/probe_webkit_playback_rate.mjs <dir of sNN.mp3 (+ sNN.txt)>
 // Silent (muted) real-WebKit playback-rate probe for sentence MP3s.
 import { createRequire } from 'node:module';
 const { webkit } = createRequire(import.meta.url)('playwright');
