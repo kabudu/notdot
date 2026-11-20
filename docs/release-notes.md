@@ -1,11 +1,9 @@
-Interrupt replies naturally, keep voice notes and lists, and protect your memories with encrypted backups.
+Check for updates without opening Settings, and interrupt spoken replies more naturally.
 
-- **Saved keys after unlocking.** A voice key that loads once the system keyring is unlocked now makes voice ready, without asking again.
+- **Quick update checks.** Choose **Check for Updates…** from the app or tray menu to check in a compact panel with download progress and retry controls.
+- **First-click controls on Mac.** Settings, About and update panels accept the first click when the app is inactive.
+- **Smoother spoken replies.** notdot prepares upcoming sentences in order and pauses playback when you interrupt.
+- **More time to interrupt.** With voice interruption enabled, a brief pause after “Actually” gives you time to finish your request.
 
-- **Smoother replies on Mac.** Speech uses direct playback to avoid repeated starts caused by the audio-metering connection.
-
-- **Natural interruption.** Say “Stop”, “Actually…” or a new request during replies, without repeating the wake phrase, with optional echo-cancelled listening.
-
-- **Voice notes and lists.** Dictate, read back, add to, tick off, rename, find, export and delete notes and lists by voice. “Add oat milk to that list” only uses the list you just used; anything unclear is asked about. Notes stay on this computer, separate for each person.
-- **Correct memories by speaking.** notdot reads back the exact saved detail it will replace and waits for “yes, replace that memory”. Quoted words can't change memory, and a replaced detail doesn't return later.
-- **Encrypted backup.** Save one person's memories and notes with a password, preview a restore before it happens, and keep keys, voices and permissions out of the file. An interrupted restore is undone at the next start.
+- **Quicker update checks.** **Check for Updates…** in the app and tray menus now opens a small update panel and checks straight away, instead of opening Settings. It shows checking, up to date, an available update with download progress, errors with **Try again**, and package-manager guidance on Linux. A check that is already running is shown rather than reported as an error.
+- **One click is enough.** Buttons in Settings and the update panel now respond to the first click on macOS, even when notdot isn't the active app.

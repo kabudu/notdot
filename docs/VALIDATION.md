@@ -6,6 +6,22 @@ Environment: macOS arm64; Rust/Cargo 1.97.0; Tauri 2.12.5; Trunk 0.22.1; install
 
 ## Verified
 
+### 2026-11-15: update panel and first-click fix
+
+Cause of the two-click Settings buttons: the main window used Tauri's default `acceptFirstMouse: false`, and on macOS the menu's `set_focus()` left notdot inactive while another app stayed in front. AppKit then used the first click only to activate notdot. This was reproduced on the unfixed build in an isolated QA profile: with Finder in front, one real hardware click on **About notdot** activated the app without opening About, and a second click opened it. Browser checks with real pointer events ruled out the alternatives: the poll does not replace the buttons, no blur handler or overlay intercepts clicks, and the buttons are never disabled at the moment they are clicked. The fix sets `acceptFirstMouse: true` on the main window only. The collapsed orb takes clicks through its separate input window, which this change does not touch.
+
+Native checks on a locally built QA bundle (`com.kabudu.notdot.qa`, run from the build output, not installed):
+
+- **Check for Updates…** in the app menu opens the compact update panel without opening Settings, and checks at once. It reported the latest published version.
+- Focus starts on **Close**. Tab reaches Close, and Enter, Space and Escape each dismiss the panel. Opened over Settings, closing the panel returned focus to the Settings search field. With nothing else open, the window shrinks back to the orb.
+- The accessibility tree exposes the heading "Software update", the status text and a button named "Close".
+- In Settings, with Finder still in front and keystrokes sent in the background, Tab moved focus from the update status text to **Check for updates**, and Space started a check, which reported the latest version. Tab then moved to **About notdot**, and Enter opened About. After **Check for Updates…** was opened from the menu, Tab kept focus on Close and Space dismissed the panel. Enter then reopened About, which shows that focus had returned to the **About notdot** button.
+- With Finder in front, one background click on Settings' **Check for updates** ran a check, and Finder stayed in front. Background clicks are delivered straight to the app and skip macOS's activation step, so they also acted on the first click in the unfixed build. They therefore do not prove the fix.
+
+Not verified natively: a real hardware click on the fixed build while notdot is inactive. Full-screen control was not approved; the manual test is: run the build, bring Finder to the front, and click **Check for updates** in Settings once, VoiceOver speech for the live region, use by a real person, and a real download and install. The QA profile blocks live installs.
+
+Automated: 141 desktop and 35 UI Rust tests pass. The new tests cover joining a check or download that is already running and update-control state. Native and WASM Clippy pass. 117 Python tests pass, including a guard that fails without `acceptFirstMouse`. Both JavaScript lifecycle scripts pass. The production-WASM Settings suite passes 176 checks at each of four window sizes. Those checks cover first-click activation of every update button, Enter and Space on native buttons, the panel's live region, focus entry and return, a repeated menu request joining the running check, determinate progress without motion, a lasting error with **Try again**, **Try again** after a failed download offering Install again, Linux package-manager guidance, and a single install from a double-clicked Settings **Install**.
+
 ### 2026-11-11: review fixes and Linux voice notes
 
 Independent Claude Code review found and fixed natural-list requests being intercepted as saved notes, misleading backup wording, and a failed-restore journal allowing later changes that recovery could discard. While recovery is pending, note and memory writes now fail closed; reading remains available. Native integration tests cover restart recovery, preserved unrelated settings, rejected writes and resumed writes after recovery. Saved-key readiness now follows successful native cache reads, including a silent voice-key read after unlocking a different service. Regression tests cover denied reads, deletion, provider changes and late startup results.

@@ -147,7 +147,15 @@ pub fn wanted(view: &Shared) -> bool {
         && v.confirmation_listening.is_none()
         && v.update_listening.is_none()
         && !crate::dialog("panel").open()
-        && v.audio.as_ref().is_some_and(|a| !a.paused() && !a.ended())
+        && speaking(&v)
+}
+/// A reply is being spoken: from its first sentence until its last ends,
+/// including the gaps between sentences, or a single clip is playing.
+/// Listening for the whole reply opens the echo-cancelled microphone once,
+/// instead of reopening it (and re-converging echo cancellation) per sentence.
+fn speaking(v: &crate::View) -> bool {
+    (v.speech_worker && v.speech_started == Some(v.generation))
+        || v.audio.as_ref().is_some_and(|a| !a.paused() && !a.ended())
 }
 
 /// Start, keep or stop listening to match the current state. Called each tick.
@@ -275,12 +283,28 @@ pub fn label(view: &Shared, snapshot: &crate::Snapshot) {
             "Listening. Paused my reply. Say your request, or Stop. Escape cancels.",
         );
     } else if v.interrupt_session.is_some() {
-        let _ = snapshot;
         let _ = orb.set_attribute(
             "aria-label",
             "Speaking. You can interrupt with Stop or a new request. Escape stops.",
         );
+    } else if reply_hint(&v, snapshot) {
+        let _ = orb.set_attribute("aria-label", REPLY_HINT);
     }
+}
+/// Shown while a reply plays with voice interruption off.
+pub const REPLY_HINT: &str = "Speaking. Escape stops me. To interrupt by voice, turn on Interrupt while notdot speaks in Settings.";
+/// Nothing listens during a reply unless interrupting is on; say so instead
+/// of letting "Actually…" go unheard. The setting is never turned on here.
+/// Not shown where turning it on would not help: echo cancellation is
+/// unavailable here, or the microphone is muted.
+pub fn reply_hint(v: &crate::View, snapshot: &crate::Snapshot) -> bool {
+    let s = &snapshot.settings;
+    v.interrupt_hold.is_none()
+        && speaking(v)
+        && !s.interrupt_enabled
+        && !s.microphone_muted
+        && s.onboarding_complete
+        && v.interrupt_supported != Some(false)
 }
 
 /// The wake phrase was heard during a reply: pause playback at once and
@@ -367,6 +391,8 @@ pub fn resume(view: &Shared, line: Option<&str>) {
             let _ = JsFuture::from(promise).await;
         });
     }
+    // A hold in the gap between sentences kept the next one waiting.
+    crate::wake_speech(view);
 }
 
 /// Handle the recognised request after the wake phrase. `token` and

@@ -321,3 +321,18 @@ dialog { overflow-wrap: anywhere; }
 @media (forced-colors: active) {
   #backup-section input[aria-invalid=true] { border: 2px dashed CanvasText; box-shadow: none; }
 }
+/* Compact update panel from the app and tray menus. The bar is drawn
+   statically (no native indeterminate animation), so it suits reduced motion. */
+#update-panel { width: min(360px, calc(100% - 24px)); border-radius: 20px; }
+#update-panel h1 { font-size: 20px; font-weight: 600; letter-spacing: -.4px; margin: 0 0 10px; }
+#update-panel-status { margin: 0; font-size: 13px; line-height: 1.45; min-height: 1.45em; color: var(--surface-text); }
+#update-panel-progress { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+#update-panel-progress[hidden] { display: none; }
+#update-panel-bar { flex: 1; height: 8px; appearance: none; -webkit-appearance: none; border: 0; border-radius: 4px; background: hsl(var(--hue), 24%, 20%); overflow: hidden; }
+#update-panel-bar::-webkit-progress-bar { background: hsl(var(--hue), 24%, 20%); border-radius: 4px; }
+#update-panel-bar::-webkit-progress-value { background: hsl(var(--hue), 70%, 65%); border-radius: 4px; }
+#update-panel-bar::-moz-progress-bar { background: hsl(var(--hue), 70%, 65%); }
+#update-panel-percent { font-size: 12px; min-width: 4ch; text-align: right; font-variant-numeric: tabular-nums; color: var(--secondary-text); }
+#update-panel .update-panel-actions { flex-wrap: wrap; margin: 18px 0 0; }
+#update-panel .primary-action { background: hsl(var(--hue), 52%, 28%); border-color: hsl(var(--hue), 55%, 53%); }
+@media (prefers-reduced-motion: reduce) { #update-panel, #update-panel * { transition: none; animation: none; } }

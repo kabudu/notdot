@@ -85,6 +85,66 @@
  check('About returns to Settings',$('panel').open&&document.activeElement===$('show-about'));
  // Private notes and backups never outlive Settings or the active person.
  const reopen=async()=>{$('orb').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));await sleep(200);$('settings-category-memory').click();await sleep(50);};
+ // Update controls act on the first pointer click, stay native buttons for
+ // Enter/Space, and the menu opens a compact panel instead of Settings.
+ const updates=name=>harnessLog.filter(e=>e.event===name).length;
+ // Background tabs clamp timers, so wait for conditions rather than fixed delays.
+ const until=async(f,ms=5000)=>{for(let t=0;t<ms&&!f();t+=50)await sleep(50);return f();};
+ const pointerClick=el=>{const r=el.getBoundingClientRect(),o={bubbles:true,cancelable:true,clientX:r.x+r.width/2,clientY:r.y+r.height/2,button:0,buttons:1};el.dispatchEvent(new PointerEvent('pointerdown',o));el.dispatchEvent(new MouseEvent('mousedown',o));el.focus();el.dispatchEvent(new PointerEvent('pointerup',{...o,buttons:0}));el.dispatchEvent(new MouseEvent('mouseup',{...o,buttons:0}));el.dispatchEvent(new MouseEvent('click',{...o,buttons:0}));};
+ const available={phase:'available',version:'9.9.9',message:'notdot 9.9.9 is available',received:0,total:null,prompt:false};
+ const current={phase:'current',version:null,message:'You have the latest published version',received:0,total:null,prompt:false};
+ $('settings-category-app').click();if(!$('startup-section').open)$('startup-section').querySelector('summary').click();await sleep(50);
+ let before=updates('update-check');window.updateCheckResult=available;pointerClick($('check-updates'));await sleep(50);
+ check('Settings check runs on the first click',updates('update-check')===before+1);
+ await until(()=>!$('defer-update').hidden);
+ const laterButton=$('defer-update');
+ check('available update shows Settings actions',!$('install-update').hidden&&!laterButton.hidden);
+ before=updates('update-defer');pointerClick(laterButton);await sleep(50);
+ check('Settings Later acts on the first click',updates('update-defer')===before+1);
+ await sleep(1200);
+ check('status polling never replaces update buttons',$('defer-update')===laterButton&&document.activeElement===laterButton);
+ check('update controls are native buttons, so Enter and Space activate them',['check-updates','install-update','defer-update','update-panel-install','update-panel-later','update-panel-retry','update-panel-close'].every(id=>$(id).tagName==='BUTTON'&&$(id).type==='button'&&$(id).textContent.trim()));
+ before=updates('update-install');pointerClick($('install-update'));pointerClick($('install-update'));await sleep(50);
+ check('Settings Install starts once, even on a double click',updates('update-install')===before+1&&$('install-update').hidden&&$('defer-update').hidden&&document.activeElement===$('check-updates'));
+ $('close').click();await sleep(150);
+ $('orb').focus();const opener=document.activeElement;
+ window.updateCheckDelay=3000;before=updates('update-check');
+ window.dispatchEvent(new Event('notdot-updates'));await sleep(50);
+ check('menu opens the compact update panel, not Settings',$('update-panel').open&&!$('panel').open&&$('update-panel').getAttribute('aria-labelledby')==='update-panel-title');
+ check('update panel starts checking at once',updates('update-check')===before+1&&$('update-panel-status').textContent.startsWith('Checking')&&$('update-panel').getAttribute('aria-busy')==='true');
+ check('update panel status is a polite live region',$('update-panel-status').getAttribute('role')==='status'&&$('update-panel-status').getAttribute('aria-live')==='polite');
+ check('update panel focus starts on Close, the safe control',document.activeElement===$('update-panel-close'));
+ window.dispatchEvent(new Event('notdot-updates'));await sleep(50);
+ check('a repeated menu request keeps showing the running check',$('update-panel').open&&$('update-panel-status').textContent.startsWith('Checking'));
+ await until(()=>!$('update-panel-install').hidden,8000);
+ check('available update offers Install and Later',!$('update-panel-install').hidden&&!$('update-panel-later').hidden&&$('update-panel-retry').hidden&&$('update-panel-status').textContent.includes('9.9.9'));
+ before=updates('update-install');pointerClick($('update-panel-install'));await sleep(50);
+ check('panel Install acts on the first click',updates('update-install')===before+1);
+ await until(()=>$('update-panel-bar').getAttribute('value')==='25');
+ check('download progress is determinate, labelled and without motion',!$('update-panel-progress').hidden&&$('update-panel-bar').getAttribute('value')==='25'&&$('update-panel-percent').textContent==='25%'&&$('update-panel-bar').getAttribute('aria-label')==='Download progress'&&getComputedStyle($('update-panel-bar')).animationName==='none');
+ check('hidden actions hand focus to Close',document.activeElement===$('update-panel-close'));
+ $('update-panel').close();await sleep(50);
+ check('closing returns focus to where it was',!$('update-panel').open&&document.activeElement===opener);
+ window.settingsFixture.state.updates={phase:'idle',version:null,message:'',received:0,total:null,prompt:false};
+ window.updateCheckDelay=0;window.updateCheckResult={phase:'error',message:'Couldn’t check for updates. Check your connection and try again.'};
+ window.dispatchEvent(new Event('notdot-updates'));await until(()=>!$('update-panel-retry').hidden);
+ check('a failed check offers Try again',!$('update-panel-retry').hidden&&$('update-panel-install').hidden&&$('update-panel-status').textContent.startsWith('Couldn'));
+ await sleep(700);
+ check('the error stays until the person acts',!$('update-panel-retry').hidden);
+ window.updateCheckResult=current;before=updates('update-check');pointerClick($('update-panel-retry'));await until(()=>$('update-panel-status').textContent.includes('latest'));
+ check('Try again checks once and keeps focus in the panel',updates('update-check')===before+1&&$('update-panel-retry').hidden&&document.activeElement===$('update-panel-close')&&$('update-panel-status').textContent.includes('latest'));
+ // A download that fails offers Try again, which checks again and offers Install once more.
+ window.updateCheckResult=available;pointerClick($('update-panel-close'));await sleep(50);window.dispatchEvent(new Event('notdot-updates'));await until(()=>!$('update-panel-install').hidden);
+ window.installError='Update download timed out';before=updates('update-install');pointerClick($('update-panel-install'));await until(()=>!$('update-panel-retry').hidden);
+ check('a failed download offers Try again',updates('update-install')===before+1&&!$('update-panel-retry').hidden&&$('update-panel-install').hidden&&$('update-panel-progress').hidden&&$('update-panel-status').textContent.includes('timed out')&&$('update-panel').getAttribute('aria-busy')==='false');
+ before=updates('update-check');$('update-panel-retry').focus();$('update-panel-retry').click();await until(()=>!$('update-panel-install').hidden);
+ check('Try again after a failed download checks once and offers Install again',updates('update-check')===before+1&&!$('update-panel-install').hidden&&$('update-panel-retry').hidden&&$('update-panel').contains(document.activeElement)&&!document.activeElement.hidden);
+ window.updateCheckResult={phase:'package_manager',message:'Update notdot using your Linux package manager. In-app installation is available for the AppImage version.'};
+ pointerClick($('update-panel-close'));await sleep(50);window.dispatchEvent(new Event('notdot-updates'));await until(()=>$('update-panel-status').textContent.includes('package manager'));
+ check('package manager installs get guidance and only Close',$('update-panel-status').textContent.includes('package manager')&&['update-panel-install','update-panel-later','update-panel-retry'].every(id=>$(id).hidden));
+ $('update-panel-close').click();await sleep(50);
+ window.updateCheckResult=undefined;window.settingsFixture.state.updates={phase:'idle',version:null,message:'',received:0,total:null,prompt:false};
+ await reopen();
  const notesText=()=>$('voice-notes').textContent+$('notes').textContent;
  $('settings-category-memory').click();await sleep(50);
  $('review-voice-notes').click();await sleep(250);

@@ -1915,7 +1915,11 @@ async fn transcribe_audio(
     quota::finish(state, &provider, generation, "stt", result).await
 }
 #[tauri::command]
-async fn speak(state: State<'_, Arc<AppState>>, text: String) -> Result<EncodedAudio, String> {
+async fn speak(
+    state: State<'_, Arc<AppState>>,
+    text: String,
+    previous: Option<String>,
+) -> Result<EncodedAudio, String> {
     let _permit = state
         .voice_gate
         .try_acquire()
@@ -1926,7 +1930,7 @@ async fn speak(state: State<'_, Arc<AppState>>, text: String) -> Result<EncodedA
     let generation = state.quota.generation();
     let result = backend(&state, Some(provider.clone()))
         .await?
-        .synthesize(&text, &voice)
+        .synthesize_after(&text, &voice, previous.as_deref())
         .await;
     quota::finish(&state, &provider, generation, "tts", result)
         .await
@@ -2380,6 +2384,8 @@ fn main() {
             TrayIconBuilder::new().icon(icon).menu(&menu).build(app)?;
             app.on_menu_event(|app, event| match event.id.as_ref() {
                 "check-updates" => {
+                    // The compact update panel starts the check itself and
+                    // joins one that is already running; Settings stays closed.
                     if let Some(w) = app.get_webview_window("main") {
                         let _ = w.show();
                         orb_input::refresh(w.app_handle());
@@ -2387,11 +2393,6 @@ fn main() {
                         let _ = w.set_focus();
                         let _ = w.eval("window.dispatchEvent(new Event('notdot-updates'))");
                     }
-                    let handle = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let updates = handle.state::<Arc<updates::Updates>>();
-                        let _ = updates::check_updates(handle.clone(), updates).await;
-                    });
                 }
                 "quit" => app.exit(0),
                 "mute" => {

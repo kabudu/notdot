@@ -56,8 +56,22 @@ pub trait VoiceBackend: Send + Sync {
     }
 
     async fn synthesize(&self, text: &str, voice: &str) -> Result<AudioClip, VoiceError>;
+    /// Synthesize one part of a longer reply. `previous` is the end of the
+    /// part before it, as context only, so a backend that supports it can keep
+    /// pace and prosody consistent across separately synthesized sentences.
+    async fn synthesize_after(
+        &self,
+        text: &str,
+        voice: &str,
+        previous: Option<&str>,
+    ) -> Result<AudioClip, VoiceError> {
+        let _ = previous;
+        self.synthesize(text, voice).await
+    }
     async fn preview(&self, voice: &str) -> Result<AudioClip, VoiceError>;
 }
+/// Largest `previous` context sent with a sentence, in bytes.
+pub const MAX_SPEECH_CONTEXT: usize = 400;
 pub fn providers() -> Vec<ProviderInfo> {
     vec![ProviderInfo {
         id: "elevenlabs",
@@ -376,17 +390,34 @@ impl VoiceBackend for ElevenLabs {
         }
     }
     async fn synthesize(&self, text: &str, voice: &str) -> Result<AudioClip, VoiceError> {
+        self.synthesize_after(text, voice, None).await
+    }
+    async fn synthesize_after(
+        &self,
+        text: &str,
+        voice: &str,
+        previous: Option<&str>,
+    ) -> Result<AudioClip, VoiceError> {
         if !valid_id(voice) {
             return Err("Choose a voice in Settings".into());
         }
         if text.trim().is_empty() || text.len() > 12_000 {
             return Err("Speech text must contain 1–12,000 bytes".into());
         }
+        let mut request = serde_json::json!({"text":text,"model_id":"eleven_flash_v2_5"});
+        // Documented continuity context for concatenated generations. Bounded
+        // and never spoken; only the sentence just before is sent.
+        if let Some(previous) = previous
+            .map(str::trim)
+            .filter(|p| !p.is_empty() && p.len() <= MAX_SPEECH_CONTEXT)
+        {
+            request["previous_text"] = previous.into();
+        }
         let response = self
             .client
             .post(format!("{}/v1/text-to-speech/{voice}", self.endpoint))
             .header("xi-api-key", self.key.clone())
-            .json(&serde_json::json!({"text":text,"model_id":"eleven_flash_v2_5"}))
+            .json(&request)
             .send()
             .await
             .map_err(|_| {
@@ -480,6 +511,68 @@ mod tests {
         );
         assert!(p.voices(&"x".repeat(201), None).await.is_err());
         assert!(provider("missing", "".into(), http_client().unwrap()).is_err());
+    }
+    #[tokio::test]
+    async fn sentence_context_is_sent_as_previous_text_and_never_spoken() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for previous in [Some("The first sentence."), None, Some("  ")] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let task = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                let body = loop {
+                    let mut chunk = [0; 4096];
+                    let n = socket.read(&mut chunk).await.unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&chunk[..n]);
+                    if let Some(split) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&bytes[..split]).to_ascii_lowercase();
+                        let size: usize = headers
+                            .lines()
+                            .find_map(|l| {
+                                l.strip_prefix("content-length:")
+                                    .map(|n| n.trim().parse().unwrap())
+                            })
+                            .unwrap();
+                        if bytes.len() >= split + 4 + size {
+                            break serde_json::from_slice::<serde_json::Value>(
+                                &bytes[split + 4..split + 4 + size],
+                            )
+                            .unwrap();
+                        }
+                    }
+                };
+                socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nmp3",
+                    )
+                    .await
+                    .unwrap();
+                body
+            });
+            let p = ElevenLabs {
+                key: sensitive_key("fake").unwrap(),
+                client: http_client().unwrap(),
+                endpoint: format!("http://{addr}"),
+                language: None,
+            };
+            let clip = p
+                .synthesize_after("The second sentence.", "voice1", previous)
+                .await
+                .unwrap();
+            assert_eq!(clip.bytes, b"mp3");
+            let body = task.await.unwrap();
+            assert_eq!(
+                body["text"], "The second sentence.",
+                "only the sentence is spoken"
+            );
+            match previous.map(str::trim).filter(|p| !p.is_empty()) {
+                Some(previous) => assert_eq!(body["previous_text"], previous),
+                None => assert!(body.get("previous_text").is_none()),
+            }
+            assert!(body.get("next_text").is_none());
+        }
     }
     #[tokio::test]
     async fn voice_search_decodes_pagination_and_sends_search() {

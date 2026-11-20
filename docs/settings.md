@@ -201,7 +201,7 @@ Choose which suggested check-ins may be spoken. Quiet hours, the daily limit and
 
 ## Startup and updates
 
-Choose **notdot → Check for Updates…** from the app menu, or open **Startup & updates** here. The same command is in the tray menu. On macOS, the notdot menu sits beside the Apple menu. Checks show their result in Settings; installing always needs your approval.
+Choose **notdot → Check for Updates…** from the app menu, or open **Startup & updates** here. The same command is in the tray menu. On macOS, the notdot menu sits beside the Apple menu. The menu command checks straight away in a small update panel, without opening Settings; press Escape or **Close** to dismiss it. Installing always needs your approval.
 
 **Start when I sign in** opens notdot after you sign in. You can choose to wait until Codex / ChatGPT opens. notdot’s conversation service runs separately, so the desktop window does not have to stay in front. Opening the desktop app in the background is available on macOS.
 

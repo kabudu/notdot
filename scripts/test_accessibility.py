@@ -135,3 +135,41 @@ class Accessibility(unittest.TestCase):
         icons=Icons((ROOT/'index.html').read_text()).icons
         self.assertEqual(icons['voice-toggle'],('0 0 24 24','16','16'))
         self.assertEqual(icons['voice-toggle'],icons['preview-voice'])
+
+    def test_inactive_window_controls_act_on_the_first_click(self):
+        # macOS gives an inactive app's first click to window activation unless
+        # the web view accepts first mouse. Menu-opened panels are always in an
+        # inactive app (cooperative activation), so every button needed two clicks.
+        import json
+        config=json.loads((ROOT/'src-tauri/tauri.conf.json').read_text())
+        main=next(w for w in config['app']['windows'] if w['label']=='main')
+        self.assertIs(main.get('acceptFirstMouse'),True)
+
+    def test_update_panel_is_a_compact_accessible_dialog(self):
+        controls={a.get('id'):(t,a) for t,a in self.markup.tags if a.get('id')}
+        tag,panel=controls['update-panel']
+        self.assertEqual(tag,'dialog')
+        self.assertEqual(panel['aria-labelledby'],'update-panel-title')
+        status=controls['update-panel-status'][1]
+        self.assertEqual((status['role'],status['aria-live'],status['aria-atomic']),('status','polite','true'))
+        self.assertEqual(controls['update-panel-bar'][1]['aria-label'],'Download progress')
+        self.assertEqual(controls['update-panel-percent'][1]['aria-hidden'],'true')
+        for ident in ('update-panel-install','update-panel-later','update-panel-retry'):
+            self.assertEqual(controls[ident][0],'button')
+            self.assertEqual(controls[ident][1]['type'],'button')
+            self.assertIn('hidden',controls[ident][1])
+        self.assertNotIn('hidden',controls['update-panel-close'][1])
+        # WebKit focuses the dialog itself when nothing has autofocus; Close is
+        # the safe control present in every state.
+        self.assertIn('autofocus',controls['update-panel-close'][1])
+
+    def test_update_menu_opens_the_panel_not_settings(self):
+        ui=(ROOT/'crates/notdot-orb/src/lib.rs').read_text()
+        handler=ui.split('"notdot-updates", move |_| {',1)[1].split('});',1)[0]
+        self.assertIn('update_panel::open',handler)
+        self.assertNotIn('open_panel',handler)
+        native=(ROOT/'src-tauri/src/main.rs').read_text()
+        arm=native.split('"check-updates" => {',1)[1].split('"quit" =>',1)[0]
+        self.assertIn("notdot-updates",arm)
+        self.assertNotIn('check_updates',arm)
+        self.assertNotIn('notdot-settings',arm)
