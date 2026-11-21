@@ -68,10 +68,19 @@ struct Snapshot {
     initiative: initiative::Status,
     version: String,
     desktop_launch_supported: bool,
-    /// Whether Codex Browser Use and Computer Use can reach this runtime.
-    host_controls_available: bool,
+    /// Whether notdot's own browser and desktop control can run now,
+    /// shown separately from the owner's saved preferences.
+    host_controls: notdot_host::Readiness,
+    /// A pending browser/desktop confirmation from the companion's turn.
+    host_confirmation: Option<HostConfirmation>,
     session_pending: Option<String>,
     settings_pending: Option<String>,
+}
+#[derive(Clone, Serialize)]
+struct HostConfirmation {
+    id: String,
+    message: String,
+    timeout_ms: u64,
 }
 impl Snapshot {
     /// Whether the selected voice service's key can be used now. A key in
@@ -709,6 +718,47 @@ async fn set_microphone_muted(state: State<'_, Arc<AppState>>, muted: bool) -> R
     mute_microphone(&state, muted).await
 }
 
+/// The person's answer to a browser/desktop confirmation. Unknown, expired
+/// or replayed ids are refused by the bridge, so they can never approve.
+#[tauri::command]
+async fn answer_host_confirmation(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    allow: bool,
+) -> Result<(), String> {
+    let bridge = state
+        .context()
+        .bridge
+        .lock()
+        .await
+        .clone()
+        .ok_or("notdot is not connected")?;
+    let result = bridge.answer_confirmation(&id, allow).await;
+    let mut snapshot = state.snapshot.lock().await;
+    if snapshot
+        .host_confirmation
+        .as_ref()
+        .is_some_and(|c| c.id == id)
+    {
+        snapshot.host_confirmation = None;
+    }
+    result
+}
+/// Re-check readiness, for example after the person changed an OS
+/// permission. A change takes effect when notdot reconnects.
+#[tauri::command]
+async fn refresh_host_controls(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    state.snapshot.lock().await.host_controls = notdot_host::readiness();
+    Ok(())
+}
+/// The person pressed "Set up" for Computer Use: show the system's own
+/// Accessibility prompt. This grants nothing by itself.
+#[tauri::command]
+async fn set_up_computer_use(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    notdot_host::desktop::request_setup();
+    state.snapshot.lock().await.host_controls = notdot_host::readiness();
+    Ok(())
+}
 #[tauri::command]
 async fn model_catalog(state: State<'_, Arc<AppState>>) -> Result<Value, String> {
     let context = state.context();
@@ -969,6 +1019,8 @@ async fn connect(state: Arc<AppState>, allow_interrupt: bool) -> Result<(), Stri
         }
     }
     let settings = state.snapshot.lock().await.settings.clone();
+    let host = notdot_host::readiness();
+    state.snapshot.lock().await.host_controls = host.clone();
     let cwd = state.path.parent().ok_or("App data directory missing")?;
     let tid = bridge
         .thread_with_options(
@@ -980,6 +1032,9 @@ async fn connect(state: Arc<AppState>, allow_interrupt: bool) -> Result<(), Stri
                 live_web_search: settings.live_web_search,
                 browser_use: settings.browser_use,
                 computer_use: settings.computer_use,
+                browser_ready: host.browser.ready(),
+                desktop_ready: host.desktop.ready(),
+                headless_browser: false,
             },
         )
         .await?;
@@ -1129,6 +1184,7 @@ async fn connect(state: Arc<AppState>, allow_interrupt: bool) -> Result<(), Stri
                         }
                         "notdot/disconnected" => {
                             event_context.learning.cancel();
+                            s.host_confirmation = None;
                             s.active_turn = None;
                             s.phase = "error".into();
                             s.error = Some(
@@ -1139,6 +1195,24 @@ async fn connect(state: Arc<AppState>, allow_interrupt: bool) -> Result<(), Stri
                                 bridge.shutdown().await;
                             }
                             break;
+                        }
+                        "notdot/confirmation" => {
+                            // Shown as notdot's own dialog; no answer means no.
+                            s.host_confirmation = Some(HostConfirmation {
+                                id: event["params"]["id"].as_str().unwrap_or("").to_owned(),
+                                message: event["params"]["message"]
+                                    .as_str()
+                                    .unwrap_or("")
+                                    .to_owned(),
+                                timeout_ms: event["params"]["timeoutMs"].as_u64().unwrap_or(0),
+                            });
+                        }
+                        "notdot/confirmationClosed" => {
+                            if s.host_confirmation.as_ref().is_some_and(|c| {
+                                event["params"]["id"].as_str() == Some(c.id.as_str())
+                            }) {
+                                s.host_confirmation = None;
+                            }
                         }
                         "notdot/unsupportedRequest" => {
                             s.error=Some("This action requires a host interaction notdot cannot yet fulfil. No approval was granted.".into());
@@ -1988,6 +2062,23 @@ async fn voice_smoke() -> Result<(), String> {
 fn main() {
     if std::env::args_os()
         .nth(1)
+        .is_some_and(|a| a == "--host-control")
+    {
+        let policy = std::env::args()
+            .nth(2)
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or_else(|| {
+                eprintln!("Invalid host control policy");
+                std::process::exit(2);
+            });
+        if let Err(error) = notdot_core::host_tools::serve(policy) {
+            eprintln!("Host control failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if std::env::args_os()
+        .nth(1)
         .is_some_and(|a| a == "--codex-chat-tools")
     {
         let Some(runtime) = std::env::args_os().nth(2) else {
@@ -2095,6 +2186,9 @@ fn main() {
             session_question,
             answer_session,
             cancel_session,
+            answer_host_confirmation,
+            refresh_host_controls,
+            set_up_computer_use,
             voice_settings::settings_question,
             voice_settings::answer_settings,
             voice_settings::cancel_settings,
@@ -2278,7 +2372,8 @@ fn main() {
                     initiative: initiative::Status::default(),
                     version: app.package_info().version.to_string(),
                     desktop_launch_supported: cfg!(target_os = "macos"),
-                    host_controls_available: notdot_core::bridge::HOST_CONTROLS_AVAILABLE,
+                    host_controls: notdot_host::readiness(),
+                    host_confirmation: None,
                     session_pending: None,
                     settings_pending: None,
                 }),
@@ -2550,7 +2645,11 @@ pub(crate) mod test_support {
                 initiative: initiative::Status::default(),
                 version: "test".into(),
                 desktop_launch_supported: false,
-                host_controls_available: false,
+                host_controls: notdot_host::Readiness {
+                    browser: notdot_host::Status::Unsupported("test".into()),
+                    desktop: notdot_host::Status::Unsupported("test".into()),
+                },
+                host_confirmation: None,
                 session_pending: None,
                 settings_pending: None,
             }),

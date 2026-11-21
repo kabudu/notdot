@@ -52,6 +52,7 @@ async fn main() -> Result<(), String> {
                 live_web_search: live,
                 browser_use: true,
                 computer_use: true,
+                ..ThreadOptions::default()
             },
         )
         .await?;

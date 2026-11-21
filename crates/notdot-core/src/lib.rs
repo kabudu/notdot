@@ -16,6 +16,7 @@ pub mod spoken_reply;
 pub mod request_cancel;
 
 pub mod chat_tools;
+pub mod host_tools;
 
 pub mod session_control;
 

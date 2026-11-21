@@ -148,12 +148,36 @@ struct Snapshot {
     version: String,
     desktop_launch_supported: bool,
     #[serde(default)]
-    host_controls_available: bool,
+    host_controls: HostControls,
+    #[serde(default)]
+    host_confirmation: Option<HostConfirmation>,
     updates: UpdateStatus,
     quota: Value,
     wake: Value,
     learning: Value,
     initiative: Value,
+}
+/// Readiness of notdot's own browser and desktop control.
+#[derive(Clone, Default, Deserialize, PartialEq)]
+struct HostControls {
+    #[serde(default)]
+    browser: HostStatus,
+    #[serde(default)]
+    desktop: HostStatus,
+}
+#[derive(Clone, Default, Deserialize, PartialEq)]
+struct HostStatus {
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    detail: String,
+}
+#[derive(Clone, Default, Deserialize, PartialEq)]
+struct HostConfirmation {
+    id: String,
+    message: String,
+    #[serde(default)]
+    timeout_ms: u64,
 }
 #[derive(Clone, Default, Deserialize)]
 struct SpeechText {
@@ -1195,29 +1219,102 @@ fn refresh_models(view: &Shared, model: String, effort: String) {
         }
     });
 }
-/// Show the owner's Browser Use and Computer Use preferences as saved, and say
-/// separately whether the capability is actually available to notdot.
+/// Show the owner's Browser Use and Computer Use preferences as saved, and
+/// say separately whether notdot's own capability can run now.
 fn render_host_controls(view: &Shared, s: &Settings) {
-    let available = view.borrow().snapshot.host_controls_available;
-    for (id, on, label) in [
-        ("browser-use", s.browser_use, "Browser Use"),
-        ("computer-use", s.computer_use, "Computer Use"),
+    input("browser-use").set_checked(s.browser_use);
+    input("computer-use").set_checked(s.computer_use);
+    render_host_status(&view.borrow().snapshot.host_controls);
+}
+/// The readiness line under each switch follows the switch as shown (saved
+/// or not) and the latest readiness, which can change while Settings is open.
+fn render_host_status(controls: &HostControls) {
+    for (id, label, status) in [
+        ("browser-use", "Browser Use", &controls.browser),
+        ("computer-use", "Computer Use", &controls.desktop),
     ] {
-        input(id).set_checked(on);
-        let status = match (available, on) {
-            (true, _) => format!("{label} is available. Codex still asks before acting."),
-            (false, true) => format!(
-                "Not available in notdot, so it stays off for now. {label} works only inside the ChatGPT desktop app, which doesn't share it with other apps."
-            ),
-            (false, false) => format!("Off. {label} isn't available in notdot either way."),
-        };
-        element(&format!("{id}-status")).set_text_content(Some(&status));
+        element(&format!("{id}-status")).set_text_content(Some(&host_status_text(
+            label,
+            input(id).checked(),
+            status,
+        )));
+    }
+    let setup = controls.desktop.state == "setup_required";
+    let _ = element("computer-use-setup").toggle_attribute_with_force("hidden", !setup);
+}
+fn host_status_text(label: &str, on: bool, status: &HostStatus) -> String {
+    match (status.state.as_str(), on) {
+        ("ready", true) => {
+            "Ready. notdot asks before using each new site or app, and before sensitive actions."
+                .into()
+        }
+        ("ready", false) => format!("Off. {label} is ready if you turn it on."),
+        ("setup_required", true) => {
+            format!("Setup needed: {} Until then it stays off.", status.detail)
+        }
+        ("setup_required", false) => format!("Off. Setup is also needed: {}", status.detail),
+        ("unsupported", _) => format!("Not available on this computer: {}", status.detail),
+        _ => "Checking…".into(),
+    }
+}
+thread_local! {
+    /// The question the person last answered. A snapshot taken before the
+    /// native side has cleared it must not show it again for a second answer.
+    static ANSWERED_HOST_CONFIRMATION: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+/// Show or close notdot's confirmation dialog to match the snapshot. Closing
+/// it without choosing (Escape) answers "Don't allow".
+fn render_host_confirmation(
+    previous: Option<&HostConfirmation>,
+    current: Option<&HostConfirmation>,
+) {
+    let host = dialog("host-confirm");
+    let answered =
+        |id: &str| ANSWERED_HOST_CONFIRMATION.with(|a| a.borrow().as_deref() == Some(id));
+    match current {
+        Some(question) if answered(&question.id) => {}
+        Some(question) if previous != Some(question) || !host.open() => {
+            element("host-confirm-message").set_text_content(Some(&question.message));
+            let seconds = (question.timeout_ms / 1000).max(1);
+            element("host-confirm-timeout").set_text_content(Some(&format!(
+                "If you don't answer within {seconds} seconds, notdot won't do it."
+            )));
+            let _ = host.set_attribute("data-id", &question.id);
+            if !host.open() {
+                let _ = resize(430., 360.);
+                let _ = host.show_modal();
+            }
+            if let Some(deny) = document().get_element_by_id("host-confirm-deny") {
+                let _ = deny.unchecked_into::<web_sys::HtmlElement>().focus();
+            }
+        }
+        None if host.open() => {
+            let _ = host.remove_attribute("data-id");
+            host.close();
+        }
+        _ => {}
+    }
+}
+fn answer_host_confirmation(allow: bool) {
+    let host = dialog("host-confirm");
+    let id = host.get_attribute("data-id");
+    let _ = host.remove_attribute("data-id");
+    host.close();
+    if let Some(id) = id {
+        ANSWERED_HOST_CONFIRMATION.with(|a| a.replace(Some(id.clone())));
+        spawn_local(async move {
+            if let Err(e) = call("answer_host_confirmation", json!({"id":id,"allow":allow})).await {
+                message(e);
+            }
+        });
     }
 }
 fn open_panel(view: &Shared) {
     spawn_local(async {
         let _ = call("cancel_session", json!({})).await;
         let _ = call("cancel_settings", json!({})).await;
+        // An OS permission may have changed since the last check.
+        let _ = call("refresh_host_controls", json!({})).await;
     });
     if view.borrow().conversation.active()
         || view.borrow().capture_token.is_some()
@@ -2182,6 +2279,30 @@ pub fn start() -> Result<(), JsValue> {
                 target.borrow_mut().local_phase = None;
                 message(&e);
                 open_panel(&target);
+            }
+        });
+    });
+    on(element("host-confirm-allow").as_ref(), "click", |_| {
+        answer_host_confirmation(true);
+    });
+    on(element("host-confirm-deny").as_ref(), "click", |_| {
+        answer_host_confirmation(false);
+    });
+    // Escape or any other dismissal is a "no", never a silent pending yes.
+    on(element("host-confirm").as_ref(), "cancel", |event| {
+        event.prevent_default();
+        answer_host_confirmation(false);
+    });
+    for id in ["browser-use", "computer-use"] {
+        let target = view.clone();
+        on(element(id).as_ref(), "change", move |_| {
+            render_host_status(&target.borrow().snapshot.host_controls);
+        });
+    }
+    on(element("computer-use-setup").as_ref(), "click", |_| {
+        spawn_local(async {
+            if let Err(e) = call("set_up_computer_use", json!({})).await {
+                message(e);
             }
         });
     });
@@ -3362,6 +3483,15 @@ pub fn start() -> Result<(), JsValue> {
                         apply_theme(snapshot.settings.hue);
                     }
                     let onboard = !snapshot.settings.onboarding_complete;
+                    render_host_confirmation(
+                        target.borrow().snapshot.host_confirmation.as_ref(),
+                        snapshot.host_confirmation.as_ref(),
+                    );
+                    if dialog("panel").open()
+                        && target.borrow().snapshot.host_controls != snapshot.host_controls
+                    {
+                        render_host_status(&snapshot.host_controls);
+                    }
                     target.borrow_mut().snapshot = snapshot;
                     let recovery = target.borrow().snapshot.setup_required;
                     if !recovery {
