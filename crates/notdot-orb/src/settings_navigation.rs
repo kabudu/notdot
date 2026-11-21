@@ -4,7 +4,7 @@ use std::{cell::RefCell, rc::Rc};
 use wasm_bindgen::{JsCast, JsValue};
 
 const CATEGORIES: [&str; 5] = ["personalise", "voice", "codex", "memory", "app"];
-const SECTIONS: [(&str, usize, &str); 14] = [
+const SECTIONS: [(&str, usize, &str); 15] = [
     (
         "appearance-section",
         0,
@@ -39,6 +39,11 @@ const SECTIONS: [(&str, usize, &str); 14] = [
         "session-section",
         2,
         "codex chat control permission task completion result report confirmation",
+    ),
+    (
+        "web-section",
+        2,
+        "web search internet live pages browser website online",
     ),
     (
         "memory-section",

@@ -68,6 +68,8 @@ struct Snapshot {
     initiative: initiative::Status,
     version: String,
     desktop_launch_supported: bool,
+    /// Whether Codex Browser Use and Computer Use can reach this runtime.
+    host_controls_available: bool,
     session_pending: Option<String>,
     settings_pending: Option<String>,
 }
@@ -969,11 +971,16 @@ async fn connect(state: Arc<AppState>, allow_interrupt: bool) -> Result<(), Stri
     let settings = state.snapshot.lock().await.settings.clone();
     let cwd = state.path.parent().ok_or("App data directory missing")?;
     let tid = bridge
-        .thread_with_selection(
+        .thread_with_options(
             existing_thread.as_deref(),
             cwd,
             &settings.name,
             &settings.selection(),
+            notdot_core::bridge::ThreadOptions {
+                live_web_search: settings.live_web_search,
+                browser_use: settings.browser_use,
+                computer_use: settings.computer_use,
+            },
         )
         .await?;
     {
@@ -2271,6 +2278,7 @@ fn main() {
                     initiative: initiative::Status::default(),
                     version: app.package_info().version.to_string(),
                     desktop_launch_supported: cfg!(target_os = "macos"),
+                    host_controls_available: notdot_core::bridge::HOST_CONTROLS_AVAILABLE,
                     session_pending: None,
                     settings_pending: None,
                 }),
@@ -2542,6 +2550,7 @@ pub(crate) mod test_support {
                 initiative: initiative::Status::default(),
                 version: "test".into(),
                 desktop_launch_supported: false,
+                host_controls_available: false,
                 session_pending: None,
                 settings_pending: None,
             }),
