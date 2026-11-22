@@ -138,7 +138,9 @@ All chats were archived. The fixture app was closed and was not running afterwar
 
 **Live spoken approval retest.** On a disposable macOS QA profile, Deepgram processed one segment for each answer. “Allow this action” returned one acceptance and “Do not allow” returned one decline. The test runtime performed no external action.
 
-**Pending native checks.** Audible VoiceOver output and the system Accessibility setup prompt remain unverified.
+**VoiceOver.** The tester confirmed that the audible announcement was clear during the live approval retest. The native accessibility tree exposed the question and controls, with initial focus on **Don’t allow**.
+
+**Pending native check.** The system Accessibility setup prompt remains unverified.
 
 ## Automated tests
 
