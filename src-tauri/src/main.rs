@@ -256,6 +256,22 @@ fn qa_identifier(identifier: &str) -> bool {
 fn is_qa(app: &tauri::AppHandle) -> bool {
     qa_identifier(&app.config().identifier)
 }
+fn app_data_directory(app: &tauri::AppHandle) -> Result<std::path::PathBuf, std::io::Error> {
+    #[cfg(debug_assertions)]
+    if is_qa(app)
+        && let Some(value) = std::env::var_os("NOTDOT_QA_DATA_DIR")
+    {
+        let dir = std::path::PathBuf::from(value);
+        if !dir.is_absolute() || !dir.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "NOTDOT_QA_DATA_DIR must be an existing absolute directory",
+            ));
+        }
+        return dir.canonicalize();
+    }
+    app.path().app_data_dir().map_err(std::io::Error::other)
+}
 fn isolated_stt_vault() -> bool {
     qa_identifier(&app_context().config().identifier)
 }
@@ -363,7 +379,7 @@ async fn snapshot(
         .pending();
     #[cfg(debug_assertions)]
     if is_qa(&app)
-        && let Ok(dir) = app.path().app_data_dir()
+        && let Ok(dir) = app_data_directory(&app)
     {
         let _ = std::fs::write(
             dir.join("voice-stream-status.json"),
@@ -380,7 +396,7 @@ async fn snapshot(
     // QA-only, bounded diagnostics. Never contains samples, transcripts or keys.
     #[cfg(debug_assertions)]
     if is_qa(&app)
-        && let Ok(dir) = app.path().app_data_dir()
+        && let Ok(dir) = app_data_directory(&app)
     {
         let diagnostic = serde_json::json!({"wake": &snapshot.wake,
             "phase": &snapshot.phase, "key_configured": snapshot.key_configured,
@@ -1613,7 +1629,7 @@ async fn stop(state: State<'_, Arc<AppState>>, request_id: Option<String>) -> Re
 async fn confirmation_evidence(app: &tauri::AppHandle, state: &AppState, event: &str) {
     #[cfg(debug_assertions)]
     if is_qa(app)
-        && let Ok(dir) = app.path().app_data_dir()
+        && let Ok(dir) = app_data_directory(&app)
     {
         let context = state.context();
         let count = context
@@ -1965,7 +1981,7 @@ async fn authorize_voice_key(
     let _ = state.credentials.read(&provider, true).await?;
     #[cfg(all(debug_assertions, target_os = "macos"))]
     if is_qa(&_app)
-        && let Ok(dir) = _app.path().app_data_dir()
+        && let Ok(dir) = app_data_directory(&_app)
     {
         let diagnostic = credentials::qa_access_probe(provider.clone())
             .await
@@ -2373,7 +2389,7 @@ fn main() {
                     "Orb click-through unavailable; keeping the main window interactive: {error}"
                 );
             }
-            let dir = app.path().app_data_dir()?;
+            let dir = app_data_directory(app.handle())?;
             std::fs::create_dir_all(&dir)?;
             #[cfg(unix)]
             {
