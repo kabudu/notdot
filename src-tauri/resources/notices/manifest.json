@@ -26,7 +26,7 @@
       "source_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
     }
   ],
-  "cargo_lock_sha256": "f89ec4a824e0ec2a8fff7b2ab2606419d8bd2683e6e4c4f223caa0cc25dbcee0",
+  "cargo_lock_sha256": "60e43e8ca73b82b124e5e15d1cbb6aafb8c025b6ce8ccd0553dabc1f9a314e8f",
   "first_party_license": "Apache-2.0",
   "native_source_components": [
     {
@@ -12233,7 +12233,7 @@
       "standard_terms": {
         "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
       },
-      "version": "0.8.1"
+      "version": "0.8.2"
     },
     {
       "id": "workspace:notdot-orb@0.7.0",
@@ -12252,7 +12252,7 @@
       "standard_terms": {
         "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
       },
-      "version": "0.8.1"
+      "version": "0.8.2"
     },
     {
       "id": "workspace:notdot-speakers@0.7.0",
@@ -12276,7 +12276,7 @@
       "standard_terms": {
         "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
       },
-      "version": "0.8.1"
+      "version": "0.8.2"
     },
     {
       "id": "workspace:notdot-voice@0.7.0",
@@ -12295,7 +12295,7 @@
       "standard_terms": {
         "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
       },
-      "version": "0.8.1"
+      "version": "0.8.2"
     },
     {
       "id": "workspace:notdot-wake-runtime@0.7.0",
@@ -12314,7 +12314,7 @@
       "standard_terms": {
         "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
       },
-      "version": "0.8.1"
+      "version": "0.8.2"
     },
     {
       "id": "workspace:notdot@0.7.0",
@@ -12334,7 +12334,7 @@
       "standard_terms": {
         "Apache-2.0": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
       },
-      "version": "0.8.1"
+      "version": "0.8.2"
     }
   ],
   "remaining_distribution_gates": [

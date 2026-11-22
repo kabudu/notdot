@@ -2708,7 +2708,7 @@ dependencies = [
 
 [[package]]
 name = "notdot"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2719,6 +2719,7 @@ dependencies = [
  "hound",
  "keyring",
  "notdot-core",
+ "notdot-host",
  "notdot-speakers",
  "notdot-voice",
  "notdot-wake-runtime",
@@ -2747,19 +2748,37 @@ dependencies = [
 
 [[package]]
 name = "notdot-core"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
+ "base64 0.22.1",
  "mnemara",
+ "notdot-host",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "url",
  "uuid",
 ]
 
 [[package]]
+name = "notdot-host"
+version = "0.8.2"
+dependencies = [
+ "core-foundation 0.10.1",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "windows",
+ "windows-sys 0.61.2",
+ "zbus",
+]
+
+[[package]]
 name = "notdot-orb"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "js-sys",
  "serde",
@@ -2772,7 +2791,7 @@ dependencies = [
 
 [[package]]
 name = "notdot-speakers"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "hound",
  "ring",
@@ -2784,7 +2803,7 @@ dependencies = [
 
 [[package]]
 name = "notdot-voice"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2799,7 +2818,7 @@ dependencies = [
 
 [[package]]
 name = "notdot-wake-runtime"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "hound",
  "rubato",

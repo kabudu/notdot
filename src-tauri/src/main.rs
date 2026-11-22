@@ -68,10 +68,19 @@ struct Snapshot {
     initiative: initiative::Status,
     version: String,
     desktop_launch_supported: bool,
-    /// Whether Codex Browser Use and Computer Use can reach this runtime.
-    host_controls_available: bool,
+    /// Whether notdot's own browser and desktop control can run now,
+    /// shown separately from the owner's saved preferences.
+    host_controls: notdot_host::Readiness,
+    /// A pending browser/desktop confirmation from the companion's turn.
+    host_confirmation: Option<HostConfirmation>,
     session_pending: Option<String>,
     settings_pending: Option<String>,
+}
+#[derive(Clone, Serialize)]
+struct HostConfirmation {
+    id: String,
+    message: String,
+    timeout_ms: u64,
 }
 impl Snapshot {
     /// Whether the selected voice service's key can be used now. A key in
@@ -247,6 +256,22 @@ fn qa_identifier(identifier: &str) -> bool {
 fn is_qa(app: &tauri::AppHandle) -> bool {
     qa_identifier(&app.config().identifier)
 }
+fn app_data_directory(app: &tauri::AppHandle) -> Result<std::path::PathBuf, std::io::Error> {
+    #[cfg(debug_assertions)]
+    if is_qa(app)
+        && let Some(value) = std::env::var_os("NOTDOT_QA_DATA_DIR")
+    {
+        let dir = std::path::PathBuf::from(value);
+        if !dir.is_absolute() || !dir.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "NOTDOT_QA_DATA_DIR must be an existing absolute directory",
+            ));
+        }
+        return dir.canonicalize();
+    }
+    app.path().app_data_dir().map_err(std::io::Error::other)
+}
 fn isolated_stt_vault() -> bool {
     qa_identifier(&app_context().config().identifier)
 }
@@ -354,7 +379,7 @@ async fn snapshot(
         .pending();
     #[cfg(debug_assertions)]
     if is_qa(&app)
-        && let Ok(dir) = app.path().app_data_dir()
+        && let Ok(dir) = app_data_directory(&app)
     {
         let _ = std::fs::write(
             dir.join("voice-stream-status.json"),
@@ -371,7 +396,7 @@ async fn snapshot(
     // QA-only, bounded diagnostics. Never contains samples, transcripts or keys.
     #[cfg(debug_assertions)]
     if is_qa(&app)
-        && let Ok(dir) = app.path().app_data_dir()
+        && let Ok(dir) = app_data_directory(&app)
     {
         let diagnostic = serde_json::json!({"wake": &snapshot.wake,
             "phase": &snapshot.phase, "key_configured": snapshot.key_configured,
@@ -709,6 +734,177 @@ async fn set_microphone_muted(state: State<'_, Arc<AppState>>, muted: bool) -> R
     mute_microphone(&state, muted).await
 }
 
+/// The person's answer to a browser/desktop confirmation. Unknown, expired
+/// or replayed ids are refused by the bridge, so they can never approve.
+#[tauri::command]
+async fn answer_host_confirmation(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    allow: bool,
+) -> Result<(), String> {
+    let bridge = state
+        .context()
+        .bridge
+        .lock()
+        .await
+        .clone()
+        .ok_or("notdot is not connected")?;
+    let result = bridge.answer_confirmation(&id, allow).await;
+    let mut snapshot = state.snapshot.lock().await;
+    if snapshot
+        .host_confirmation
+        .as_ref()
+        .is_some_and(|c| c.id == id)
+    {
+        snapshot.host_confirmation = None;
+    }
+    result
+}
+async fn host_voice_question(state: &AppState, id: &str) -> Result<String, String> {
+    let snapshot = state.snapshot.lock().await;
+    if snapshot.settings.microphone_muted || state.speakers.needs_identification() {
+        return Err(
+            "Voice approval is unavailable with this microphone or profile setting.".into(),
+        );
+    }
+    snapshot
+        .host_confirmation
+        .as_ref()
+        .filter(|question| question.id == id)
+        .map(|question| question.message.clone())
+        .ok_or_else(|| "That question has already closed".into())
+}
+
+#[tauri::command]
+async fn speak_host_question(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+    let question = host_voice_question(&state, &id).await?;
+    system_speech::speak(&format!(
+        "{question} After I finish, say allow this action, or do not allow."
+    ))
+    .await?;
+    host_voice_question(&state, &id).await?;
+    Ok(())
+}
+
+fn host_voice_answer(text: &str) -> Option<bool> {
+    match text
+        .trim()
+        .trim_end_matches(['.', '!', '?'])
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "allow this action" => Some(true),
+        "do not allow" | "don't allow" => Some(false),
+        _ => None,
+    }
+}
+
+fn host_voice_token(id: &str, attempt: u64) -> String {
+    format!("host-voice-{id}-{attempt}")
+}
+
+#[tauri::command]
+async fn start_host_voice_capture(
+    window: tauri::WebviewWindow,
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    attempt: u64,
+) -> Result<(), String> {
+    if !window.is_visible().unwrap_or(false) || window.is_minimized().unwrap_or(true) {
+        return Err("Show notdot before speaking".into());
+    }
+    host_voice_question(&state, &id).await?;
+    let snapshot = state.snapshot.lock().await;
+    if !state
+        .credentials
+        .cached(snapshot.settings.transcription_id())
+    {
+        return Err("Allow access to your saved speech recognition key in Settings first.".into());
+    }
+    state.wake.start_manual(&host_voice_token(&id, attempt), 12)
+}
+
+#[tauri::command]
+async fn poll_host_voice_capture(
+    window: tauri::WebviewWindow,
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    attempt: u64,
+) -> Result<wake::Status, String> {
+    if !window.is_visible().unwrap_or(false) || window.is_minimized().unwrap_or(true) {
+        return Err("Show notdot before speaking".into());
+    }
+    host_voice_question(&state, &id).await?;
+    if !state.wake.renew_manual(&host_voice_token(&id, attempt)) {
+        return Err("The approval recording ended before an answer was heard.".into());
+    }
+    Ok(state.wake.status())
+}
+
+#[tauri::command]
+async fn answer_host_by_voice(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    attempt: u64,
+    request_id: u64,
+) -> Result<(), String> {
+    host_voice_question(&state, &id).await?;
+    let token = host_voice_token(&id, attempt);
+    let status = state.wake.status();
+    if status.capture_token.as_deref() != Some(&token) || status.request_id != Some(request_id) {
+        return Err("That approval recording is no longer active.".into());
+    }
+    let provider = state
+        .snapshot
+        .lock()
+        .await
+        .settings
+        .transcription_id()
+        .to_owned();
+    let generation = state.quota.generation();
+    let audio = state.wake.take(request_id)?;
+    let transcript = recognise_capture(&state, provider, generation, &token, audio)
+        .await
+        .map_err(|error| match error {
+            Heard::Refused(message) | Heard::Failed(message) => message,
+        })?;
+    let allow = host_voice_answer(&transcript)
+        .ok_or("Say “Allow this action” or “Do not allow”, or use the buttons.")?;
+    host_voice_question(&state, &id).await?;
+    answer_host_confirmation(state, id, allow).await
+}
+
+#[cfg(test)]
+#[test]
+fn host_voice_approval_requires_the_complete_phrase() {
+    assert_eq!(host_voice_answer("Allow this action."), Some(true));
+    assert_eq!(host_voice_answer("Do not allow."), Some(false));
+    for ambiguous in [
+        "yes",
+        "not allow this action",
+        "please allow this action",
+        "allow this action, maybe",
+        "",
+    ] {
+        assert_eq!(host_voice_answer(ambiguous), None);
+    }
+}
+
+/// Re-check readiness, for example after the person changed an OS
+/// permission. A change takes effect when notdot reconnects.
+#[tauri::command]
+async fn refresh_host_controls(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    state.snapshot.lock().await.host_controls = notdot_host::readiness();
+    Ok(())
+}
+/// The person pressed "Set up" for Computer Use: show the system's own
+/// Accessibility prompt. This grants nothing by itself.
+#[tauri::command]
+async fn set_up_computer_use(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    notdot_host::desktop::request_setup();
+    state.snapshot.lock().await.host_controls = notdot_host::readiness();
+    Ok(())
+}
 #[tauri::command]
 async fn model_catalog(state: State<'_, Arc<AppState>>) -> Result<Value, String> {
     let context = state.context();
@@ -969,6 +1165,8 @@ async fn connect(state: Arc<AppState>, allow_interrupt: bool) -> Result<(), Stri
         }
     }
     let settings = state.snapshot.lock().await.settings.clone();
+    let host = notdot_host::readiness();
+    state.snapshot.lock().await.host_controls = host.clone();
     let cwd = state.path.parent().ok_or("App data directory missing")?;
     let tid = bridge
         .thread_with_options(
@@ -980,6 +1178,9 @@ async fn connect(state: Arc<AppState>, allow_interrupt: bool) -> Result<(), Stri
                 live_web_search: settings.live_web_search,
                 browser_use: settings.browser_use,
                 computer_use: settings.computer_use,
+                browser_ready: host.browser.ready(),
+                desktop_ready: host.desktop.ready(),
+                headless_browser: false,
             },
         )
         .await?;
@@ -1129,6 +1330,7 @@ async fn connect(state: Arc<AppState>, allow_interrupt: bool) -> Result<(), Stri
                         }
                         "notdot/disconnected" => {
                             event_context.learning.cancel();
+                            s.host_confirmation = None;
                             s.active_turn = None;
                             s.phase = "error".into();
                             s.error = Some(
@@ -1139,6 +1341,24 @@ async fn connect(state: Arc<AppState>, allow_interrupt: bool) -> Result<(), Stri
                                 bridge.shutdown().await;
                             }
                             break;
+                        }
+                        "notdot/confirmation" => {
+                            // Shown as notdot's own dialog; no answer means no.
+                            s.host_confirmation = Some(HostConfirmation {
+                                id: event["params"]["id"].as_str().unwrap_or("").to_owned(),
+                                message: event["params"]["message"]
+                                    .as_str()
+                                    .unwrap_or("")
+                                    .to_owned(),
+                                timeout_ms: event["params"]["timeoutMs"].as_u64().unwrap_or(0),
+                            });
+                        }
+                        "notdot/confirmationClosed" => {
+                            if s.host_confirmation.as_ref().is_some_and(|c| {
+                                event["params"]["id"].as_str() == Some(c.id.as_str())
+                            }) {
+                                s.host_confirmation = None;
+                            }
                         }
                         "notdot/unsupportedRequest" => {
                             s.error=Some("This action requires a host interaction notdot cannot yet fulfil. No approval was granted.".into());
@@ -1426,7 +1646,7 @@ async fn stop(state: State<'_, Arc<AppState>>, request_id: Option<String>) -> Re
 async fn confirmation_evidence(app: &tauri::AppHandle, state: &AppState, event: &str) {
     #[cfg(debug_assertions)]
     if is_qa(app)
-        && let Ok(dir) = app.path().app_data_dir()
+        && let Ok(dir) = app_data_directory(app)
     {
         let context = state.context();
         let count = context
@@ -1764,6 +1984,12 @@ async fn save_voice_key(
     Ok(())
 }
 #[tauri::command]
+async fn save_deepgram_key(state: State<'_, Arc<AppState>>, key: String) -> Result<(), String> {
+    let key = zeroize::Zeroizing::new(key);
+    state.credentials.save("deepgram", &key).await
+}
+
+#[tauri::command]
 async fn authorize_voice_key(
     _app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
@@ -1772,7 +1998,7 @@ async fn authorize_voice_key(
     let _ = state.credentials.read(&provider, true).await?;
     #[cfg(all(debug_assertions, target_os = "macos"))]
     if is_qa(&_app)
-        && let Ok(dir) = _app.path().app_data_dir()
+        && let Ok(dir) = app_data_directory(&_app)
     {
         let diagnostic = credentials::qa_access_probe(provider.clone())
             .await
@@ -1988,6 +2214,23 @@ async fn voice_smoke() -> Result<(), String> {
 fn main() {
     if std::env::args_os()
         .nth(1)
+        .is_some_and(|a| a == "--host-control")
+    {
+        let policy = std::env::args()
+            .nth(2)
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or_else(|| {
+                eprintln!("Invalid host control policy");
+                std::process::exit(2);
+            });
+        if let Err(error) = notdot_core::host_tools::serve(policy) {
+            eprintln!("Host control failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if std::env::args_os()
+        .nth(1)
         .is_some_and(|a| a == "--codex-chat-tools")
     {
         let Some(runtime) = std::env::args_os().nth(2) else {
@@ -2095,6 +2338,13 @@ fn main() {
             session_question,
             answer_session,
             cancel_session,
+            answer_host_confirmation,
+            speak_host_question,
+            start_host_voice_capture,
+            poll_host_voice_capture,
+            answer_host_by_voice,
+            refresh_host_controls,
+            set_up_computer_use,
             voice_settings::settings_question,
             voice_settings::answer_settings,
             voice_settings::cancel_settings,
@@ -2114,6 +2364,7 @@ fn main() {
             voice_providers,
             save_voice_key,
             authorize_voice_key,
+            save_deepgram_key,
             voice_catalog,
             preview_voice,
             report_visual,
@@ -2156,7 +2407,7 @@ fn main() {
                     "Orb click-through unavailable; keeping the main window interactive: {error}"
                 );
             }
-            let dir = app.path().app_data_dir()?;
+            let dir = app_data_directory(app.handle())?;
             std::fs::create_dir_all(&dir)?;
             #[cfg(unix)]
             {
@@ -2278,7 +2529,8 @@ fn main() {
                     initiative: initiative::Status::default(),
                     version: app.package_info().version.to_string(),
                     desktop_launch_supported: cfg!(target_os = "macos"),
-                    host_controls_available: notdot_core::bridge::HOST_CONTROLS_AVAILABLE,
+                    host_controls: notdot_host::readiness(),
+                    host_confirmation: None,
                     session_pending: None,
                     settings_pending: None,
                 }),
@@ -2550,7 +2802,11 @@ pub(crate) mod test_support {
                 initiative: initiative::Status::default(),
                 version: "test".into(),
                 desktop_launch_supported: false,
-                host_controls_available: false,
+                host_controls: notdot_host::Readiness {
+                    browser: notdot_host::Status::Unsupported("test".into()),
+                    desktop: notdot_host::Status::Unsupported("test".into()),
+                },
+                host_confirmation: None,
                 session_pending: None,
                 settings_pending: None,
             }),

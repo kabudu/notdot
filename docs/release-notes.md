@@ -1,9 +1,6 @@
-Check for updates without opening Settings, and interrupt spoken replies more naturally.
+Ask your own notdot companion to look up current information, work in a separate browser or use approved Mac apps.
 
-- **Quick update checks.** Choose **Check for Updates…** from the app or tray menu to check in a compact panel with download progress and retry controls.
-- **First-click controls on Mac.** Settings, About and update panels accept the first click when the app is inactive.
-- **Smoother spoken replies.** notdot prepares upcoming sentences in order and pauses playback when you interrupt.
-- **More time to interrupt.** With voice interruption enabled, a brief pause after “Actually” gives you time to finish your request.
-
-- **Quicker update checks.** **Check for Updates…** in the app and tray menus now opens a small update panel and checks straight away, instead of opening Settings. It shows checking, up to date, an available update with download progress, errors with **Try again**, and package-manager guidance on Linux. A check that is already running is shown rather than reported as an error.
-- **One click is enough.** Buttons in Settings and the update panel now respond to the first click on macOS, even when notdot isn't the active app.
+- **Live web search.** Turn on current web results in Settings for your own companion.
+- **Browser Use.** Open sites, switch tabs and interact in a separate browser on macOS, Windows and Linux, with approval for new sites and sensitive actions. An installed Chrome, Chromium, Edge or Brave is required.
+- **Computer Use (preview).** Read and press controls in approved apps on macOS, Windows and Linux. macOS requires Accessibility permission.
+- **Screenshots and spoken approvals.** Approve browser screenshots and Mac window captures individually, or answer a permission prompt by voice.
