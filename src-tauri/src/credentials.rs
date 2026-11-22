@@ -173,10 +173,33 @@ fn search_identity(provider: &str, qa: bool) -> (&'static str, &str) {
     // Silent restoration must query the same vault as explicit reads and writes.
     (super::credential_service(provider, qa), provider)
 }
+fn interactive_read_error(error: keyring::Error, provider: &str, isolated: bool) -> String {
+    match error {
+        keyring::Error::NoEntry if provider == "deepgram" && isolated => {
+            "No Deepgram key is saved for notdot QA. Enter your key in this QA app and save it to its separate key store.".into()
+        }
+        keyring::Error::NoEntry => "No key is saved for this voice service. Enter one in Settings.".into(),
+        keyring::Error::NoStorageAccess(_) => "The system key store is unavailable. Unlock it, then try again.".into(),
+        keyring::Error::BadEncoding(_) => "The saved key is unreadable. Enter your key again in Settings.".into(),
+        _ => "The system key store did not allow access. Approve its prompt, then try again.".into(),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn a_missing_qa_deepgram_key_is_not_reported_as_denied() {
+    let missing = interactive_read_error(keyring::Error::NoEntry, "deepgram", true);
+    assert!(missing.contains("No Deepgram key is saved for notdot QA"));
+    let installed = interactive_read_error(keyring::Error::NoEntry, "deepgram", false);
+    assert!(!installed.contains("QA"));
+}
+
 fn os_read(provider: &str, interactive: bool) -> Result<String, String> {
     let entry = super::credential_for(provider)?;
     if interactive {
-        return entry.get_password().map_err(|_|"Voice key access was not granted. Authorize the saved key in Settings, or enter a new key.".into());
+        return entry
+            .get_password()
+            .map_err(|error| interactive_read_error(error, provider, super::isolated_stt_vault()));
     }
     #[cfg(target_os = "macos")]
     {
