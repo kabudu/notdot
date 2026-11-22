@@ -290,6 +290,21 @@ impl Wake {
         i.lease = Some(Instant::now());
         Ok(())
     }
+    /// Renew only the current, still-live manual capture, never the wake listener.
+    pub fn renew_manual(&self, token: &str) -> bool {
+        let mut state = self.inner.lock().expect("wake state");
+        if state.manual_token.as_deref() != Some(token)
+            || state.config.muted
+            || state.suspended.is_some()
+            || !state
+                .lease
+                .is_some_and(|lease| lease.elapsed() < Duration::from_secs(3))
+        {
+            return false;
+        }
+        state.lease = Some(Instant::now());
+        true
+    }
     pub fn finish_manual(&self, token: &str) -> Result<(), String> {
         let mut i = self.inner.lock().expect("wake state");
         if i.manual_token.as_deref() != Some(token) {

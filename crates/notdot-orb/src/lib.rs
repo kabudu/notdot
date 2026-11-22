@@ -1323,9 +1323,14 @@ async fn answer_host_with_microphone(view: &Shared, id: &str) -> Result<(), Stri
             if !open() {
                 return Ok(());
             }
-            let capture: Value =
-                serde_wasm_bindgen::from_value(call("capture_status", json!({})).await?)
-                    .map_err(|error| error.to_string())?;
+            let capture: Value = serde_wasm_bindgen::from_value(
+                call(
+                    "poll_host_voice_capture",
+                    json!({"id":id,"attempt":attempt}),
+                )
+                .await?,
+            )
+            .map_err(|error| error.to_string())?;
             if capture["capture_token"].as_str() == Some(&token) {
                 if let Some(request_id) = capture["request_id"].as_u64() {
                     status.set_text_content(Some("Checking your reply…"));

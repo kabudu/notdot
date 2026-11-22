@@ -825,6 +825,23 @@ async fn start_host_voice_capture(
 }
 
 #[tauri::command]
+async fn poll_host_voice_capture(
+    window: tauri::WebviewWindow,
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    attempt: u64,
+) -> Result<wake::Status, String> {
+    if !window.is_visible().unwrap_or(false) || window.is_minimized().unwrap_or(true) {
+        return Err("Show notdot before speaking".into());
+    }
+    host_voice_question(&state, &id).await?;
+    if !state.wake.renew_manual(&host_voice_token(&id, attempt)) {
+        return Err("The approval recording ended before an answer was heard.".into());
+    }
+    Ok(state.wake.status())
+}
+
+#[tauri::command]
 async fn answer_host_by_voice(
     state: State<'_, Arc<AppState>>,
     id: String,
@@ -2324,6 +2341,7 @@ fn main() {
             answer_host_confirmation,
             speak_host_question,
             start_host_voice_capture,
+            poll_host_voice_capture,
             answer_host_by_voice,
             refresh_host_controls,
             set_up_computer_use,
