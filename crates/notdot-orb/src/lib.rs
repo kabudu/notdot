@@ -2568,6 +2568,26 @@ pub fn start() -> Result<(), JsValue> {
     on(element("stt-provider").as_ref(), "change", |_| {
         show_stt_fields();
     });
+    on(element("save-stt-key").as_ref(), "click", |_| {
+        let button = element("save-stt-key").unchecked_into::<web_sys::HtmlButtonElement>();
+        let key = input("stt-key").value();
+        if key.trim().is_empty() {
+            element("stt-key-status").set_text_content(Some("Enter your Deepgram key first."));
+            return;
+        }
+        button.set_disabled(true);
+        spawn_local(async move {
+            let result = call("save_deepgram_key", json!({"key":key})).await;
+            button.set_disabled(false);
+            match result {
+                Ok(_) => {
+                    input("stt-key").set_value("");
+                    element("stt-key-status").set_text_content(Some("Deepgram key saved."));
+                }
+                Err(error) => element("stt-key-status").set_text_content(Some(&error)),
+            }
+        });
+    });
     on(element("authorize-stt-key").as_ref(), "click", |_| {
         let _ = element("authorize-stt-key").set_attribute("disabled", "");
         element("stt-key-status").set_text_content(Some(

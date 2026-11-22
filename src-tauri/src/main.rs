@@ -1951,6 +1951,12 @@ async fn save_voice_key(
     Ok(())
 }
 #[tauri::command]
+async fn save_deepgram_key(state: State<'_, Arc<AppState>>, key: String) -> Result<(), String> {
+    let key = zeroize::Zeroizing::new(key);
+    state.credentials.save("deepgram", &key).await
+}
+
+#[tauri::command]
 async fn authorize_voice_key(
     _app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
@@ -2324,6 +2330,7 @@ fn main() {
             voice_providers,
             save_voice_key,
             authorize_voice_key,
+            save_deepgram_key,
             voice_catalog,
             preview_voice,
             report_visual,
