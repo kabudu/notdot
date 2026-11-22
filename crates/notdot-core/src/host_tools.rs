@@ -163,6 +163,46 @@ fn definitions(policy: &HostPolicy) -> Value {
 /// Apps notdot never controls: itself, the runtime, terminals, security and
 /// password tools, system settings, and browsers (the person's own profile).
 pub fn app_blocked(bundle_id: &str) -> bool {
+    if let Some((image, _)) = bundle_id
+        .strip_prefix("win:")
+        .and_then(|id| id.split_once(':'))
+    {
+        const BLOCKED_IMAGES: &[&str] = &[
+            "notdot.exe",
+            "chatgpt.exe",
+            "codex.exe",
+            "claude.exe",
+            "windowsterminal.exe",
+            "cmd.exe",
+            "conhost.exe",
+            "openconsole.exe",
+            "powershell.exe",
+            "pwsh.exe",
+            "systemsettings.exe",
+            "applicationframehost.exe",
+            "credentialuibroker.exe",
+            "consent.exe",
+            "logonui.exe",
+            "lockapp.exe",
+            "taskmgr.exe",
+            "regedit.exe",
+            "securityhealthsystray.exe",
+            "sechealthui.exe",
+            "chrome.exe",
+            "chromium.exe",
+            "msedge.exe",
+            "brave.exe",
+            "firefox.exe",
+            "opera.exe",
+            "vivaldi.exe",
+            "1password.exe",
+            "bitwarden.exe",
+            "keepass.exe",
+            "keepassxc.exe",
+            "lastpass.exe",
+        ];
+        return BLOCKED_IMAGES.contains(&image);
+    }
     const BLOCKED: &[&str] = &[
         "com.kabudu.notdot",
         "com.openai.chat",
@@ -612,7 +652,7 @@ impl Host {
         } else {
             label.clone()
         };
-        if sensitive_label(&label)
+        if (bundle.starts_with("win:") || sensitive_label(&label))
             && !confirm
                 .confirm(format!("Allow notdot to press “{shown}” in {}?", app.name))
                 .await

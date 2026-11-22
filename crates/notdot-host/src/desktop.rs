@@ -5,8 +5,7 @@
 //! that permission; it asks the system to show its prompt only when the person
 //! presses notdot's own setup button ([`request_setup`]).
 //!
-//! Windows (UI Automation) and Linux (AT-SPI over D-Bus) are not implemented;
-//! [`readiness`] reports them as unsupported rather than pretending.
+//! Windows uses UI Automation. Linux reports desktop control as unsupported.
 use crate::Status;
 use serde::Serialize;
 
@@ -36,6 +35,11 @@ pub struct Node {
     pub disabled: bool,
 }
 
+#[cfg(windows)]
+#[allow(unsafe_code)]
+#[path = "desktop_windows.rs"]
+mod windows;
+
 pub fn readiness() -> Status {
     #[cfg(target_os = "macos")]
     {
@@ -49,9 +53,7 @@ pub fn readiness() -> Status {
     }
     #[cfg(target_os = "windows")]
     {
-        Status::Unsupported(
-            "Desktop control on Windows (UI Automation) is not available yet.".into(),
-        )
+        windows::readiness()
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
@@ -78,7 +80,11 @@ pub fn apps() -> Result<Vec<App>, String> {
     {
         macos::apps()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        windows::apps()
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         Err("Desktop control is not available on this system".into())
     }
@@ -90,7 +96,11 @@ pub fn observe(pid: i32) -> Result<Vec<Node>, String> {
     {
         macos::observe(pid)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        windows::observe(pid)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = pid;
         Err("Desktop control is not available on this system".into())
@@ -104,7 +114,11 @@ pub fn press(pid: i32, reference: &str, role: &str, label: &str) -> Result<(), S
     {
         macos::press(pid, reference, role, label)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        windows::press(pid, reference, role, label)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = (pid, reference, role, label);
         Err("Desktop control is not available on this system".into())
