@@ -213,3 +213,14 @@ async fn follows_a_new_tab_and_invalidates_old_element_refs() {
         format!("{address}/second")
     );
 }
+
+#[tokio::test]
+#[ignore = "launches a real browser with a disposable profile"]
+async fn captures_a_bounded_jpeg_of_the_private_viewport() {
+    let (address, _) = serve().await;
+    let mut browser = Browser::launch(true).await.unwrap();
+    browser.navigate(&address).await.unwrap();
+    let image = browser.screenshot().await.unwrap();
+    assert!(image.starts_with("/9j/"));
+    assert!(image.len() <= 1_500_000);
+}

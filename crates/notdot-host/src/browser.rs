@@ -252,6 +252,37 @@ impl Browser {
         Ok(())
     }
 
+    /// Capture only the visible viewport of the currently selected private tab.
+    pub async fn screenshot(&self) -> Result<String, String> {
+        let layout = self.page("Page.getLayoutMetrics", json!({})).await?;
+        let viewport = &layout["cssVisualViewport"];
+        let width = viewport["clientWidth"]
+            .as_f64()
+            .filter(|v| *v >= 1.0)
+            .ok_or("No visible viewport")?;
+        let height = viewport["clientHeight"]
+            .as_f64()
+            .filter(|v| *v >= 1.0)
+            .ok_or("No visible viewport")?;
+        let x = viewport["pageX"].as_f64().ok_or("No visible viewport")?;
+        let y = viewport["pageY"].as_f64().ok_or("No visible viewport")?;
+        let scale = (1280.0 / width).min(900.0 / height).min(1.0);
+        let result = self
+            .page(
+                "Page.captureScreenshot",
+                json!({
+                    "format":"jpeg", "quality":65, "captureBeyondViewport":false,
+                    "clip":{"x":x,"y":y,"width":width,"height":height,"scale":scale}
+                }),
+            )
+            .await?;
+        let data = result["data"]
+            .as_str()
+            .filter(|data| !data.is_empty() && data.len() <= 1_500_000)
+            .ok_or("The screenshot could not be captured within the size limit")?;
+        Ok(data.to_owned())
+    }
+
     /// The page's current address, read from the browser, not the page.
     pub async fn url(&self) -> Result<String, String> {
         let history = self.page("Page.getNavigationHistory", json!({})).await?;
@@ -557,6 +588,9 @@ pub struct Browser;
 #[cfg(not(unix))]
 impl Browser {
     const UNSUPPORTED: &str = "notdot's private browser is not available on Windows yet.";
+    pub async fn screenshot(&self) -> Result<String, String> {
+        Err(Self::UNSUPPORTED.into())
+    }
     pub async fn tabs(&self) -> Result<Vec<Tab>, String> {
         Err(Self::UNSUPPORTED.into())
     }
