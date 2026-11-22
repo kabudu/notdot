@@ -54,6 +54,14 @@ Open the single Intelligence card to choose a model, then its **thinking level**
 
 The choices come from your installed Codex tool and account. notdot checks them again before saving and sending a request. If a choice disappears, it asks you to choose another instead of switching silently. The same choice is used for replies and background memory checks.
 
+## Web search
+
+notdot can look things up with Codex web search. By default it uses your Codex search setting, which normally searches an index of published pages and cannot open a particular site's current page.
+
+Turn on **Live web search** to let your own companion read current web pages for an answer, for example **“Open example.com and tell me its main heading.”** It is off by default. It is search only: notdot cannot open a browser, sign in, fill in forms, act on websites or control your computer. Web pages are treated as untrusted, and nothing on a page can tell notdot to use a tool or change anything. It is not used while other people are set up or trusted voices are on; their conversations keep web search off. Voice requests cannot change this setting.
+
+**Browser Use** and **Computer Use** in the same section record your preference. Both are on by default, and turning one off is remembered. Neither is available in notdot yet, and each switch says so. The ChatGPT desktop app keeps these tools for the Codex runtime it starts itself and refuses other apps, so notdot doesn't send them to Codex and doesn't try to work around the check. Use the ChatGPT desktop app for browser or computer control.
+
 ## Other Codex chats
 
 Ask something like **“Find my Codex chat about the website and remind me what we decided.”** notdot can find saved local chats by title and read relevant messages. If several match, it can ask which one you mean.
@@ -102,7 +110,7 @@ With wake listening off, click the orb once. A short chime tells you the microph
 
 Say **“That’s all”** while it is listening, or press **Escape**, to end the exchange. It also stops on silence, mute, opening Settings or About, hiding the window, loss of voice-service access or an error. Ending an exchange returns to the usual wake or click mode.
 
-**Interrupt while notdot speaks** is off by default. Turn it on to change a reply while it is playing. Say “Stop”, “Actually…” or a new request; no wake phrase is needed. The orb glows and pauses the reply when it detects speech. A clear stop ends it, a new request replaces it, and empty, unclear or refused speech lets it carry on. Escape always cancels. If listening cannot start, notdot stops trying; toggle the setting off and on to retry.
+**Interrupt while notdot speaks** is off by default. Turn it on to change a reply while it is playing. Say “Stop”, “Actually…” or a new request; no wake phrase is needed. The orb glows and pauses the reply when it detects speech. A clear stop ends it, a new request replaces it, and empty, unclear or refused speech lets it carry on. Escape always cancels. If listening cannot start, notdot stops trying; toggle the setting off and on to retry. Listening covers the whole reply, including the short pauses between sentences, and the next sentence waits while notdot is listening to you.
 
 The setting stays unavailable if the microphone cannot provide echo cancellation. Speech detected during a reply goes to your selected recognition service, with its usual usage charges; idle audio stays local. A reply or background sound can still be mistaken for speech, so use mute whenever you want listening to stop.
 

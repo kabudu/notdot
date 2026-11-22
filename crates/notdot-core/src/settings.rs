@@ -37,6 +37,16 @@ pub struct Settings {
     /// Independent of wake listening; uses the selected recognition backend.
     pub interrupt_enabled: bool,
     pub microphone_muted: bool,
+    /// Codex live web search for the owner's own companion. Off by default.
+    /// Members, shared rosters and trusted-voice mode keep web search off.
+    pub live_web_search: bool,
+    /// Owner preferences for Codex Browser Use and Computer Use: on by default
+    /// (the owner's product choice), including for settings saved before they
+    /// existed; an explicit off choice is kept. A preference is not readiness:
+    /// neither capability is sent to Codex while
+    /// `bridge::HOST_CONTROLS_AVAILABLE` is false.
+    pub browser_use: bool,
+    pub computer_use: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -65,6 +75,9 @@ impl Default for Settings {
             wake_name_only: false,
             interrupt_enabled: false,
             microphone_muted: false,
+            live_web_search: false,
+            browser_use: true,
+            computer_use: true,
         }
     }
 }
@@ -74,6 +87,9 @@ impl Settings {
         self.name != previous.name
             || self.selection() != previous.selection()
             || self.session_control != previous.session_control
+            || self.live_web_search != previous.live_web_search
+            || self.browser_use != previous.browser_use
+            || self.computer_use != previous.computer_use
     }
 
     pub fn transcription_id(&self) -> &str {
@@ -157,6 +173,20 @@ mod tests {
         assert!(!cosmetic.requires_reconnect(&original));
         cosmetic.name = "Luna".into();
         assert!(cosmetic.requires_reconnect(&original));
+        let mut search = original.clone();
+        search.live_web_search = true;
+        assert!(
+            search.requires_reconnect(&original),
+            "thread config changes"
+        );
+    }
+    #[test]
+    fn live_web_search_is_off_by_default_and_for_older_settings() {
+        assert!(!Settings::default().live_web_search);
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("settings.json");
+        std::fs::write(&path, br#"{"name":"Ava"}"#).unwrap();
+        assert!(!Settings::load(&path).unwrap().live_web_search);
     }
 
     #[test]
@@ -273,5 +303,27 @@ mod tests {
         s.hue = 500;
         assert!(s.save(&p).is_err());
         assert_eq!(Settings::load(&p).unwrap().hue, 192);
+    }
+}
+
+#[cfg(test)]
+mod control_settings_tests {
+    use super::*;
+    #[test]
+    fn control_preferences_default_on_and_saved_choices_survive() {
+        let legacy: Settings = serde_json::from_str(r#"{"name":"Ava"}"#).unwrap();
+        assert!(legacy.browser_use && legacy.computer_use);
+        assert!(Settings::default().browser_use && Settings::default().computer_use);
+        let off: Settings =
+            serde_json::from_str(r#"{"browser_use":false,"computer_use":true}"#).unwrap();
+        let restored: Settings =
+            serde_json::from_str(&serde_json::to_string(&off).unwrap()).unwrap();
+        assert!(!restored.browser_use && restored.computer_use);
+        let mut browser = legacy.clone();
+        browser.browser_use = false;
+        assert!(browser.requires_reconnect(&legacy));
+        let mut computer = legacy.clone();
+        computer.computer_use = false;
+        assert!(computer.requires_reconnect(&legacy));
     }
 }

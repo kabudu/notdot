@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **Live web search.** Turn on current web results for your own companion in Settings.
+- **Browser and computer preferences.** Choose your preferences and see when the tools are available.
+
 ## [0.8.1] - 2026-11-20
 
 Check for updates without opening Settings, and interrupt spoken replies more naturally.
