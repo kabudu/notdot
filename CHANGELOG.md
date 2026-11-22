@@ -2,9 +2,13 @@
 
 ## [Unreleased]
 
-- **Live web search.** Turn on current web results for your own companion in Settings.
-- **Browser Use.** Open and interact with sites in a separate browser, with approval for new sites and sensitive actions.
-- **Computer Use on macOS (preview).** Allow Accessibility access to use controls in approved apps. Settings shows readiness for both tools.
+## [0.8.2] - 2026-11-22
+
+Ask your own notdot companion to look up current information, work in a separate browser or use approved Mac apps.
+
+- **Live web search.** Turn on current web results in Settings for your own companion.
+- **Browser Use on macOS and Linux.** Open and interact with sites in a separate browser, with approval for new sites and sensitive actions. An installed Chrome, Chromium, Edge or Brave is required.
+- **Computer Use on macOS (preview).** Grant Accessibility permission to interact with approved apps. Settings shows when each tool is ready.
 
 ## [0.8.1] - 2026-11-20
 
