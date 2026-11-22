@@ -134,7 +134,9 @@ All chats were archived. The fixture app was closed and was not running afterwar
 2. The readiness lines were drawn only when Settings opened, and followed the saved setting rather than the switch on screen. After **Set up Computer Use…** they kept saying "Setup needed". They now follow the switch, and they update when readiness changes.
 3. The UI never called `refresh_host_controls`, so a permission granted in System Settings showed only after a restart. Opening Settings now refreshes readiness.
 
-**Not covered here.** Clicking and VoiceOver in the native WebKit window were not exercised, because desktop control of the QA app was declined. Pressing **Set up Computer Use…** in the native app was also skipped, so that no system Accessibility prompt was shown unasked.
+**Native confirmation retest.** A later QA build with spoken approvals used a disposable profile and the same stand-in runtime. Clicking **Allow** produced one acceptance. Clicking **Don’t allow**, pressing Escape and ending the turn each produced one decline and closed the dialog. The native accessibility tree exposed the heading, question, voice option and both choices, and initial focus was on **Don’t allow**. With the microphone muted, **Answer by voice** displayed the refusal without opening capture.
+
+**Pending native checks.** Audible VoiceOver output, a spoken answer through the configured recognition service and the system Accessibility setup prompt remain unverified.
 
 ## Automated tests
 
