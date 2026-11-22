@@ -203,6 +203,52 @@ pub fn app_blocked(bundle_id: &str) -> bool {
         ];
         return BLOCKED_IMAGES.contains(&image);
     }
+    if let Some((image, _)) = bundle_id
+        .strip_prefix("linux:")
+        .and_then(|id| id.split_once(':'))
+    {
+        const BLOCKED_IMAGES: &[&str] = &[
+            "notdot",
+            "codex",
+            "chatgpt",
+            "claude",
+            "bash",
+            "sh",
+            "zsh",
+            "fish",
+            "gnome-terminal-server",
+            "kgx",
+            "konsole",
+            "xfce4-terminal",
+            "xterm",
+            "alacritty",
+            "kitty",
+            "wezterm-gui",
+            "ghostty",
+            "tilix",
+            "terminator",
+            "gnome-control-center",
+            "gnome-shell",
+            "systemsettings",
+            "polkit-gnome-authentication-agent-1",
+            "seahorse",
+            "keepassxc",
+            "keepass",
+            "1password",
+            "bitwarden",
+            "firefox",
+            "firefox-bin",
+            "chrome",
+            "chromium",
+            "chromium-browser",
+            "brave",
+            "brave-browser",
+            "msedge",
+            "vivaldi-bin",
+            "opera",
+        ];
+        return BLOCKED_IMAGES.contains(&image);
+    }
     const BLOCKED: &[&str] = &[
         "com.kabudu.notdot",
         "com.openai.chat",
@@ -652,7 +698,7 @@ impl Host {
         } else {
             label.clone()
         };
-        if (bundle.starts_with("win:") || sensitive_label(&label))
+        if (bundle.starts_with("win:") || bundle.starts_with("linux:") || sensitive_label(&label))
             && !confirm
                 .confirm(format!("Allow notdot to press “{shown}” in {}?", app.name))
                 .await

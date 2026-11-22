@@ -5,7 +5,7 @@
 //! that permission; it asks the system to show its prompt only when the person
 //! presses notdot's own setup button ([`request_setup`]).
 //!
-//! Windows uses UI Automation. Linux reports desktop control as unsupported.
+//! Windows uses UI Automation. Linux uses the AT-SPI accessibility bus.
 use crate::Status;
 use serde::Serialize;
 
@@ -40,6 +40,10 @@ pub struct Node {
 #[path = "desktop_windows.rs"]
 mod windows;
 
+#[cfg(target_os = "linux")]
+#[path = "desktop_linux.rs"]
+mod linux;
+
 pub fn readiness() -> Status {
     #[cfg(target_os = "macos")]
     {
@@ -55,9 +59,13 @@ pub fn readiness() -> Status {
     {
         windows::readiness()
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
     {
-        Status::Unsupported("Desktop control on Linux (AT-SPI) is not available yet.".into())
+        linux::readiness()
+    }
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+    {
+        Status::Unsupported("Desktop control is unavailable on this system.".into())
     }
 }
 
@@ -84,7 +92,11 @@ pub fn apps() -> Result<Vec<App>, String> {
     {
         windows::apps()
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::apps()
+    }
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
     {
         Err("Desktop control is not available on this system".into())
     }
@@ -100,7 +112,11 @@ pub fn observe(pid: i32) -> Result<Vec<Node>, String> {
     {
         windows::observe(pid)
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::observe(pid)
+    }
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
     {
         let _ = pid;
         Err("Desktop control is not available on this system".into())
@@ -118,7 +134,11 @@ pub fn press(pid: i32, reference: &str, role: &str, label: &str) -> Result<(), S
     {
         windows::press(pid, reference, role, label)
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::press(pid, reference, role, label)
+    }
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
     {
         let _ = (pid, reference, role, label);
         Err("Desktop control is not available on this system".into())
