@@ -226,3 +226,5 @@ Voice recordings go to the selected recognition service, and spoken replies are 
 If fallback wake recognition fails on a phrase, the primary detector keeps listening and the fallback can retry on the next phrase. Settings shows a short warning while that fallback failure remains unresolved. Initial model-loading or microphone errors still need attention; notdot does not silently grant microphone permission.
 
 For a browser or desktop approval prompt, choose **Answer by voice** to hear the question and record a short reply. After the prompt finishes, say “Allow this action” or “Do not allow”. Your speech recognition service receives the short recording. You can also answer with the buttons or press Escape to decline.
+
+On macOS, a desktop screenshot needs Screen Recording permission and separate approval for each image shared with Codex. Leave one window of the approved app visible before asking for a screenshot.

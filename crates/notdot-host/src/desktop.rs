@@ -124,6 +124,27 @@ pub fn bundle_root(executable: &str) -> Option<&str> {
     Some(root)
 }
 
+/// Visible, ordinary windows owned by the selected application.
+pub fn screenshot_windows(pid: i32) -> Result<Vec<u32>, String> {
+    #[cfg(target_os = "macos")]
+    return macos::screenshot_windows(pid);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        Err("Window screenshots are unavailable on this system".into())
+    }
+}
+
+pub async fn screenshot(pid: i32, window: u32) -> Result<Vec<u8>, String> {
+    #[cfg(target_os = "macos")]
+    return macos::screenshot(pid, window).await;
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (pid, window);
+        Err("Window screenshots are unavailable on this system".into())
+    }
+}
+
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 mod macos {
@@ -155,6 +176,81 @@ mod macos {
         fn AXUIElementPerformAction(element: AxRef, action: CFStringRef) -> i32;
         fn AXUIElementSetMessagingTimeout(element: AxRef, seconds: f32) -> i32;
         static kAXTrustedCheckOptionPrompt: CFStringRef;
+    }
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGPreflightScreenCaptureAccess() -> bool;
+        fn CGWindowListCopyWindowInfo(options: u32, relative_to: u32) -> CFArrayRef;
+    }
+
+    pub(super) fn screenshot_windows(pid: i32) -> Result<Vec<u32>, String> {
+        // SAFETY: these calls have no pointers supplied by the caller.
+        let list = unsafe {
+            if !CGPreflightScreenCaptureAccess() {
+                return Err(
+                    "Window capture requires macOS Screen Recording permission for notdot.".into(),
+                );
+            }
+            let list = CGWindowListCopyWindowInfo(1 | 16, 0);
+            if list.is_null() {
+                return Err("macOS could not list visible windows.".into());
+            }
+            core_foundation::array::CFArray::<CFDictionary<CFString, CFType>>::wrap_under_create_rule(list)
+        };
+        let number = |window: &CFDictionary<CFString, CFType>, key: &str| {
+            window
+                .find(CFString::new(key))?
+                .downcast::<CFNumber>()?
+                .to_i64()
+        };
+        Ok(list
+            .iter()
+            .take(1024)
+            .filter_map(|window| {
+                (number(&window, "kCGWindowOwnerPID")? == i64::from(pid)
+                    && number(&window, "kCGWindowLayer")? == 0)
+                    .then(|| u32::try_from(number(&window, "kCGWindowNumber")?).ok())
+                    .flatten()
+            })
+            .take(16)
+            .collect())
+    }
+
+    pub(super) async fn screenshot(pid: i32, window: u32) -> Result<Vec<u8>, String> {
+        if !screenshot_windows(pid)?.contains(&window) {
+            return Err("The selected window is no longer visible in that app.".into());
+        }
+        let temp =
+            tempfile::tempdir().map_err(|e| format!("Could not prepare window capture: {e}"))?;
+        let file = temp.path().join("window.jpg");
+        let mut command = tokio::process::Command::new("/usr/sbin/screencapture");
+        command
+            .args(["-x", "-o", "-t", "jpg"])
+            .arg(format!("-l{window}"))
+            .arg(&file)
+            .kill_on_drop(true)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let status = tokio::time::timeout(std::time::Duration::from_secs(8), command.status())
+            .await
+            .map_err(|_| "Window capture timed out")?
+            .map_err(|e| format!("Window capture failed: {e}"))?;
+        if !status.success() || !screenshot_windows(pid)?.contains(&window) {
+            return Err("The selected window could not be captured.".into());
+        }
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        std::fs::File::open(file)
+            .map_err(|_| "Window capture produced no image")?
+            .take(1_125_001)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "Could not read the captured image")?;
+        if bytes.len() > 1_125_000 || !bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+            return Err("The window image exceeded the capture limit or was invalid.".into());
+        }
+        Ok(bytes)
     }
 
     pub(super) fn trusted() -> bool {

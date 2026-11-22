@@ -2750,6 +2750,7 @@ dependencies = [
 name = "notdot-core"
 version = "0.8.2"
 dependencies = [
+ "base64 0.22.1",
  "mnemara",
  "notdot-host",
  "serde",
