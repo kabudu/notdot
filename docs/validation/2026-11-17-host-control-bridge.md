@@ -171,7 +171,7 @@ All chats were archived. The fixture app was closed and was not running afterwar
 
 - **Desktop:** macOS only. `desktop_apps` gives the model the names and bundle IDs of running apps, so the companion can name the app to ask about. Reading or pressing still needs a per-app confirmation, and blocked apps are refused. Windows (UI Automation) and Linux (AT-SPI over D-Bus) report `unsupported`. The outline comes from the accessibility tree and requires Accessibility access. A separately approved single-window screenshot on macOS requires Screen Recording access. Live capture is pending verification.
 - **Browser:** needs an installed Chrome, Chromium, Edge or Brave, and runs on macOS and Linux only.
-  - On Windows it reports `unsupported`, because handing a browser a private pipe needs inheritable handles. Playwright does this, and notdot would need the same.
+  - The Windows candidate passes exactly two inherited pipe handles to the browser. The Windows CI smoke test exercises the private pipe with a local fixture.
   - Pages opened in new tabs or windows are not followed. Only the main frame's text and controls are read, and cross-origin iframes are not.
   - The companion's browser has no sign-ins by design, so sites that need an account cannot be used.
 - **Confirmations:**

@@ -1,6 +1,6 @@
 //! Real-browser checks on a disposable local page. Needs a Chromium-family
 //! browser; run with `cargo test -p notdot-host -- --ignored`.
-#![cfg(unix)]
+#![cfg(any(unix, windows))]
 use notdot_host::browser::Browser;
 use std::sync::{Arc, Mutex};
 use tokio::{

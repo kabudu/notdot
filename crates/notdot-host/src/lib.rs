@@ -13,7 +13,7 @@
 #![deny(unsafe_code)]
 
 pub mod browser;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod cdp;
 pub mod desktop;
 

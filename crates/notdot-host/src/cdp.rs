@@ -7,9 +7,8 @@ use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Read, Write},
-    os::fd::AsRawFd,
     path::Path,
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -17,6 +16,15 @@ use std::{
     time::Duration,
 };
 use tokio::sync::oneshot;
+
+#[cfg(unix)]
+use std::{os::fd::AsRawFd, process::Child};
+#[cfg(windows)]
+#[allow(unsafe_code)]
+#[path = "cdp_windows.rs"]
+mod windows;
+#[cfg(windows)]
+use windows::Child;
 
 /// Largest single protocol message accepted from the browser.
 const MAX_MESSAGE: usize = 8 * 1024 * 1024;
@@ -50,11 +58,17 @@ pub(crate) fn sweep_stale_profiles(dir: &Path) {
     }
 }
 
+#[cfg(unix)]
 #[allow(unsafe_code)]
 fn process_alive(pid: i32) -> bool {
     // SAFETY: signal 0 only checks that the process exists.
     let result = unsafe { libc::kill(pid, 0) };
     result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(windows)]
+fn process_alive(pid: i32) -> bool {
+    windows::process_alive(pid as u32)
 }
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;
@@ -108,21 +122,33 @@ impl Cdp {
         if headless {
             command.arg("--headless=new");
         }
-        let child_read = to_browser_read.as_raw_fd();
-        let child_write = from_browser_write.as_raw_fd();
-        place_pipe_fds(&mut command, child_read, child_write);
-        let child = command
-            .spawn()
+        #[cfg(unix)]
+        let mut child = {
+            place_pipe_fds(
+                &mut command,
+                to_browser_read.as_raw_fd(),
+                from_browser_write.as_raw_fd(),
+            );
+            command
+                .spawn()
+                .map_err(|e| format!("Start the private browser: {e}"))?
+        };
+        #[cfg(windows)]
+        let mut child = windows::spawn(&command, &to_browser_read, &from_browser_write)
             .map_err(|e| format!("Start the private browser: {e}"))?;
         // The child holds its own copies; closing ours makes EOF reliable.
         drop(to_browser_read);
         drop(from_browser_write);
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let replies = pending.clone();
-        std::thread::Builder::new()
+        if let Err(error) = std::thread::Builder::new()
             .name("notdot-cdp-reader".into())
             .spawn(move || read_loop(from_browser_read, replies))
-            .map_err(|e| e.to_string())?;
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error.to_string());
+        }
         Ok(Self {
             child: Mutex::new(child),
             writer: Mutex::new(to_browser_write),
@@ -241,6 +267,7 @@ fn read_loop(reader: std::io::PipeReader, pending: Pending) {
     }
 }
 
+#[cfg(unix)]
 /// Make the child's fd 3 our command pipe and fd 4 our reply pipe.
 #[allow(unsafe_code)]
 fn place_pipe_fds(command: &mut Command, read: i32, write: i32) {

@@ -5,8 +5,7 @@
 //! cookies, passwords and private windows are never reachable. Control uses
 //! the DevTools pipe, never a debugging port. Page scripts cannot see notdot's
 //! element references: they live in a separate isolated JavaScript world.
-// The driver needs a Unix pipe launch; Windows builds keep only the stub.
-#![cfg_attr(not(unix), allow(dead_code, unused_imports))]
+#![cfg_attr(not(any(unix, windows)), allow(dead_code, unused_imports))]
 use crate::{Status, clean};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -53,7 +52,24 @@ fn candidates() -> Vec<PathBuf> {
             })
             .unwrap_or_default()
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        ["LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)"]
+            .into_iter()
+            .filter_map(std::env::var_os)
+            .flat_map(|root| {
+                [
+                    "Google/Chrome/Application/chrome.exe",
+                    "Chromium/Application/chrome.exe",
+                    "Microsoft/Edge/Application/msedge.exe",
+                    "BraveSoftware/Brave-Browser/Application/brave.exe",
+                ]
+                .into_iter()
+                .map(move |name| PathBuf::from(&root).join(name))
+            })
+            .collect()
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         Vec::new()
     }
@@ -64,9 +80,9 @@ pub fn executable() -> Option<PathBuf> {
 }
 
 pub fn readiness() -> Status {
-    if !cfg!(unix) {
+    if !cfg!(any(unix, windows)) {
         return Status::Unsupported(
-            "notdot's private browser is not available on Windows yet.".into(),
+            "notdot's private browser is unavailable on this system.".into(),
         );
     }
     match executable() {
@@ -117,7 +133,7 @@ pub struct Tab {
     pub current: bool,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub struct Browser {
     cdp: crate::cdp::Cdp,
     session: String,
@@ -126,7 +142,7 @@ pub struct Browser {
     generation: u64,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl Browser {
     pub async fn launch(headless: bool) -> Result<Self, String> {
         let executable = executable().ok_or("No supported browser is installed")?;
@@ -582,12 +598,12 @@ const FOCUS: &str = r#"
 "#;
 
 /// Windows has no private-pipe launch yet; every call reports that plainly.
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub struct Browser;
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 impl Browser {
-    const UNSUPPORTED: &str = "notdot's private browser is not available on Windows yet.";
+    const UNSUPPORTED: &str = "notdot's private browser is unavailable on this system.";
     pub async fn screenshot(&self) -> Result<String, String> {
         Err(Self::UNSUPPORTED.into())
     }
