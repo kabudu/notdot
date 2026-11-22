@@ -136,7 +136,9 @@ All chats were archived. The fixture app was closed and was not running afterwar
 
 **Native confirmation retest.** A later QA build with spoken approvals used a disposable profile and the same stand-in runtime. Clicking **Allow** produced one acceptance. Clicking **Don’t allow**, pressing Escape and ending the turn each produced one decline and closed the dialog. The native accessibility tree exposed the heading, question, voice option and both choices, and initial focus was on **Don’t allow**. With the microphone muted, **Answer by voice** displayed the refusal without opening capture.
 
-**Pending native checks.** Audible VoiceOver output, a spoken answer through the configured recognition service and the system Accessibility setup prompt remain unverified.
+**Live spoken approval retest.** On a disposable macOS QA profile, Deepgram processed one segment for each answer. “Allow this action” returned one acceptance and “Do not allow” returned one decline. The test runtime performed no external action.
+
+**Pending native checks.** Audible VoiceOver output and the system Accessibility setup prompt remain unverified.
 
 ## Automated tests
 
