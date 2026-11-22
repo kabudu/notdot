@@ -140,7 +140,7 @@ All chats were archived. The fixture app was closed and was not running afterwar
 
 **VoiceOver.** The tester confirmed that the audible announcement was clear during the live approval retest. The native accessibility tree exposed the question and controls, with initial focus on **Don’t allow**.
 
-**Native setup check.** Clicking **Set up Computer Use…** opened the macOS **Device Control and Data Access** pane with notdot QA selected. The rebuilt ad-hoc QA app still reported **Setup needed** after the listed entry was toggled and the app restarted.
+**Native setup check.** Clicking **Set up Computer Use…** opened the macOS **Device Control and Data Access** pane with notdot QA selected. Replacing the stale ad-hoc permission with an entry for the exact Developer ID-signed QA bundle made the native Settings panel report **Ready** after reopening it.
 
 ## Automated tests
 

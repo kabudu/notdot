@@ -1646,7 +1646,7 @@ async fn stop(state: State<'_, Arc<AppState>>, request_id: Option<String>) -> Re
 async fn confirmation_evidence(app: &tauri::AppHandle, state: &AppState, event: &str) {
     #[cfg(debug_assertions)]
     if is_qa(app)
-        && let Ok(dir) = app_data_directory(&app)
+        && let Ok(dir) = app_data_directory(app)
     {
         let context = state.context();
         let count = context
