@@ -116,7 +116,7 @@ pub fn configuration(executable: &Path, policy: &HostPolicy) -> Result<Value, St
 pub fn instructions(browser: bool, desktop: bool) -> String {
     let mut parts = Vec::new();
     if browser {
-        parts.push("notdot's own private browser (notdot_host browser_open, browser_look, browser_click, browser_type). It is a separate, empty browser, not the person's own: it has no saved sign-ins, so never try to sign in, pay or enter passwords");
+        parts.push("notdot's own private browser (notdot_host browser_open, browser_look, browser_click, browser_type, browser_tabs, browser_switch_tab). It is a separate, empty browser, not the person's own: it has no saved sign-ins, so never try to sign in, pay or enter passwords");
     }
     if desktop {
         parts.push("notdot's desktop control (notdot_host desktop_apps, desktop_look, desktop_press), which can read and press controls in apps the person allows");
@@ -140,6 +140,10 @@ fn definitions(policy: &HostPolicy) -> Value {
         tools.push(json!({"name":"browser_look","description":"Return the current page's address, text and interactive elements with refs.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"openWorldHint":true}}));
         tools.push(json!({"name":"browser_click","description":"Click an element from the latest snapshot. Sensitive buttons need the person's confirmation.","inputSchema":{"type":"object","properties":{"snapshot":snapshot,"ref":reference},"required":["snapshot","ref"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"openWorldHint":true}}));
         tools.push(json!({"name":"browser_type","description":"Type text into a field from the latest snapshot. The person confirms every entry; passwords and payment fields are refused.","inputSchema":{"type":"object","properties":{"snapshot":snapshot,"ref":reference,"text":{"type":"string","maxLength":MAX_TYPED}},"required":["snapshot","ref","text"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"openWorldHint":true}}));
+    }
+    if policy.browser {
+        tools.push(json!({"name":"browser_tabs","description":"List tabs in the private browser, including links opened in new tabs. Only their sites are shown.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"openWorldHint":true}}));
+        tools.push(json!({"name":"browser_switch_tab","description":"Switch to a tab from browser_tabs and read it after any required site approval.","inputSchema":{"type":"object","properties":{"tab":{"type":"string","maxLength":128}},"required":["tab"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"openWorldHint":true}}));
     }
     if policy.desktop {
         let app = json!({"type":"string","maxLength":200,"description":"The app's bundle id from desktop_apps"});
@@ -258,6 +262,8 @@ impl Host {
             "browser_look" => self.browser_look().await,
             "browser_click" => self.browser_click(arguments, confirm).await,
             "browser_type" => self.browser_type(arguments, confirm).await,
+            "browser_tabs" => self.browser_tabs().await,
+            "browser_switch_tab" => self.browser_switch_tab(arguments, confirm).await,
             "desktop_apps" => desktop_apps().await,
             "desktop_look" => self.desktop_look(arguments, confirm).await,
             "desktop_press" => self.desktop_press(arguments, confirm).await,
@@ -307,6 +313,54 @@ impl Host {
         self.browser_look().await
     }
 
+    async fn browser_tabs(&mut self) -> Result<String, String> {
+        let tabs = self
+            .open_browser()?
+            .tabs()
+            .await?
+            .into_iter()
+            .filter_map(|tab| {
+                let origin = site(&tab.url).ok()?;
+                Some(json!({"tab":tab.id,"site":origin,"current":tab.current}))
+            })
+            .collect::<Vec<_>>();
+        Ok(untrusted("the private browser", json!(tabs)))
+    }
+
+    async fn browser_switch_tab(
+        &mut self,
+        arguments: &Value,
+        confirm: &dyn Confirm,
+    ) -> Result<String, String> {
+        let id = arguments["tab"]
+            .as_str()
+            .filter(|id| !id.is_empty() && id.len() <= 128)
+            .ok_or("tab is required")?;
+        let tab = self
+            .open_browser()?
+            .tabs()
+            .await?
+            .into_iter()
+            .find(|tab| tab.id == id)
+            .ok_or("That tab has closed. List tabs again.")?;
+        let origin = site(&tab.url)?;
+        if !self.sites.contains(&origin) {
+            if !confirm
+                .confirm(format!(
+                    "Allow notdot to read {origin} in its private browser for this conversation?"
+                ))
+                .await
+            {
+                return Err(format!(
+                    "The person did not allow {origin}. Do not try again unless they ask."
+                ));
+            }
+            self.sites.insert(origin);
+        }
+        self.open_browser()?.switch_tab(id).await?;
+        self.browser_look().await
+    }
+
     /// The page, but only while it is on a site the person allowed.
     async fn browser_look(&mut self) -> Result<String, String> {
         let sites = self.sites.clone();
@@ -319,6 +373,9 @@ impl Host {
             ));
         }
         let page = browser.snapshot().await?;
+        if site(&page.url)? != origin {
+            return Err("The tab moved to a different site. Look again before acting.".into());
+        }
         Ok(untrusted(
             &origin,
             serde_json::to_value(page).map_err(|e| e.to_string())?,
@@ -903,7 +960,7 @@ mod tests {
             .iter()
             .all(|n| n.starts_with("desktop_"))
         );
-        assert_eq!(names(&policy).len(), 7);
+        assert_eq!(names(&policy).len(), 9);
         let config = configuration(Path::new("/synthetic/notdot"), &policy).unwrap();
         assert_eq!(config["args"][0], "--host-control");
         let round: HostPolicy = serde_json::from_str(config["args"][1].as_str().unwrap()).unwrap();

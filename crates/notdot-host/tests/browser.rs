@@ -9,7 +9,7 @@ use tokio::{
 };
 
 const PAGE: &str = r#"<!doctype html><title>notdot fixture</title>
-<h1>Fixture</h1><p id="status">Not clicked</p>
+<h1>Fixture</h1><a href="/second" target="_blank">Open fixture tab</a><p id="status">Not clicked</p>
 <button onclick="fetch('/clicked',{method:'POST'}).then(r=>r.text()).then(t=>document.getElementById('status').textContent=t)">Mark as seen</button>
 <label for="note">Note</label><input id="note">
 <input type="password" aria-label="Password">
@@ -180,5 +180,36 @@ async fn a_closed_browser_is_reported_not_hidden() {
     assert!(
         started.elapsed() < std::time::Duration::from_secs(11),
         "bounded"
+    );
+}
+
+#[tokio::test]
+#[ignore = "launches a real browser with a disposable profile"]
+async fn follows_a_new_tab_and_invalidates_old_element_refs() {
+    let (address, _) = serve().await;
+    let mut browser = Browser::launch(true).await.unwrap();
+    browser.navigate(&address).await.unwrap();
+    let page = browser.snapshot().await.unwrap();
+    let link = page
+        .elements
+        .iter()
+        .find(|item| item.label == "Open fixture tab")
+        .unwrap();
+    browser
+        .click(page.snapshot, link.reference, &link.label)
+        .await
+        .unwrap();
+    let target = browser
+        .tabs()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|tab| !tab.current && tab.url == format!("{address}/second"))
+        .expect("new tab for the fixture link");
+    browser.switch_tab(&target.id).await.unwrap();
+    assert!(browser.target(page.snapshot, link.reference).await.is_err());
+    assert_eq!(
+        browser.snapshot().await.unwrap().url,
+        format!("{address}/second")
     );
 }

@@ -110,10 +110,18 @@ pub struct Target {
     pub editable: bool,
 }
 
+/// A page target in the disposable browser.
+pub struct Tab {
+    pub id: String,
+    pub url: String,
+    pub current: bool,
+}
+
 #[cfg(unix)]
 pub struct Browser {
     cdp: crate::cdp::Cdp,
     session: String,
+    target: String,
     world: Option<(u64, i64)>,
     generation: u64,
 }
@@ -166,6 +174,7 @@ impl Browser {
         Ok(Self {
             cdp,
             session,
+            target,
             world: None,
             generation: 0,
         })
@@ -187,6 +196,60 @@ impl Browser {
         self.cdp
             .call(Some(&self.session), method, params, STEP)
             .await
+    }
+
+    pub async fn tabs(&self) -> Result<Vec<Tab>, String> {
+        let result = self
+            .cdp
+            .call(None, "Target.getTargets", json!({}), STEP)
+            .await?;
+        let targets = result["targetInfos"]
+            .as_array()
+            .ok_or("Browser did not report its tabs")?;
+        Ok(targets
+            .iter()
+            .filter(|tab| tab["type"] == "page")
+            .take(32)
+            .filter_map(|tab| {
+                let id = tab["targetId"].as_str()?;
+                Some(Tab {
+                    id: id.to_owned(),
+                    url: tab["url"].as_str()?.to_owned(),
+                    current: id == self.target,
+                })
+            })
+            .collect())
+    }
+
+    pub async fn switch_tab(&mut self, target: &str) -> Result<(), String> {
+        if target == self.target {
+            return Ok(());
+        }
+        let session = self
+            .cdp
+            .call(
+                None,
+                "Target.attachToTarget",
+                json!({"targetId":target,"flatten":true}),
+                STEP,
+            )
+            .await?["sessionId"]
+            .as_str()
+            .ok_or("Browser did not attach to the tab")?
+            .to_owned();
+        let previous = std::mem::replace(&mut self.session, session);
+        self.target = target.to_owned();
+        self.world = None;
+        let _ = self
+            .cdp
+            .call(
+                None,
+                "Target.detachFromTarget",
+                json!({"sessionId":previous}),
+                STEP,
+            )
+            .await;
+        Ok(())
     }
 
     /// The page's current address, read from the browser, not the page.
@@ -320,7 +383,10 @@ impl Browser {
             .take(MAX_TEXT)
             .collect();
         Ok(Snapshot {
-            url: self.url().await?,
+            url: raw["url"]
+                .as_str()
+                .ok_or("The page address is unavailable")?
+                .to_owned(),
             title: clean(raw["title"].as_str().unwrap_or(""), 200),
             elements,
             text,
@@ -446,7 +512,7 @@ const SNAPSHOT_SCRIPT: &str = r#"(() => {
       disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true'});
   }
   const text = document.body ? document.body.innerText.replace(/\n{3,}/g, '\n\n') : '';
-  return {title: document.title, elements: out, text: text.slice(0, 20000)};
+  return {url: location.href, title: document.title, elements: out, text: text.slice(0, 20000)};
 })()"#;
 
 /// Shared lookup: `el` is the referenced element or the script throws.
@@ -491,6 +557,12 @@ pub struct Browser;
 #[cfg(not(unix))]
 impl Browser {
     const UNSUPPORTED: &str = "notdot's private browser is not available on Windows yet.";
+    pub async fn tabs(&self) -> Result<Vec<Tab>, String> {
+        Err(Self::UNSUPPORTED.into())
+    }
+    pub async fn switch_tab(&mut self, _target: &str) -> Result<(), String> {
+        Err(Self::UNSUPPORTED.into())
+    }
     pub async fn launch(_headless: bool) -> Result<Self, String> {
         Err(Self::UNSUPPORTED.into())
     }
