@@ -783,20 +783,58 @@ fn host_voice_answer(text: &str) -> Option<bool> {
     }
 }
 
+fn host_voice_token(id: &str, attempt: u64) -> String {
+    format!("host-voice-{id}-{attempt}")
+}
+
+#[tauri::command]
+async fn start_host_voice_capture(
+    window: tauri::WebviewWindow,
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    attempt: u64,
+) -> Result<(), String> {
+    if !window.is_visible().unwrap_or(false) || window.is_minimized().unwrap_or(true) {
+        return Err("Show notdot before speaking".into());
+    }
+    host_voice_question(&state, &id).await?;
+    let snapshot = state.snapshot.lock().await;
+    if !state
+        .credentials
+        .cached(snapshot.settings.transcription_id())
+    {
+        return Err("Allow access to your saved speech recognition key in Settings first.".into());
+    }
+    state.wake.start_manual(&host_voice_token(&id, attempt), 12)
+}
+
 #[tauri::command]
 async fn answer_host_by_voice(
     state: State<'_, Arc<AppState>>,
     id: String,
-    audio: Vec<u8>,
-    mime: String,
+    attempt: u64,
+    request_id: u64,
 ) -> Result<(), String> {
-    if !(1..=1_000_000).contains(&audio.len())
-        || !matches!(mime.as_str(), "audio/mp4" | "audio/webm")
-    {
-        return Err("Invalid approval recording".into());
-    }
     host_voice_question(&state, &id).await?;
-    let transcript = transcribe_audio(&state, audio, mime).await?;
+    let token = host_voice_token(&id, attempt);
+    let status = state.wake.status();
+    if status.capture_token.as_deref() != Some(&token) || status.request_id != Some(request_id) {
+        return Err("That approval recording is no longer active.".into());
+    }
+    let provider = state
+        .snapshot
+        .lock()
+        .await
+        .settings
+        .transcription_id()
+        .to_owned();
+    let generation = state.quota.generation();
+    let audio = state.wake.take(request_id)?;
+    let transcript = recognise_capture(&state, provider, generation, &token, audio)
+        .await
+        .map_err(|error| match error {
+            Heard::Refused(message) | Heard::Failed(message) => message,
+        })?;
     let allow = host_voice_answer(&transcript)
         .ok_or("Say “Allow this action” or “Do not allow”, or use the buttons.")?;
     host_voice_question(&state, &id).await?;
@@ -2263,6 +2301,7 @@ fn main() {
             cancel_session,
             answer_host_confirmation,
             speak_host_question,
+            start_host_voice_capture,
             answer_host_by_voice,
             refresh_host_controls,
             set_up_computer_use,

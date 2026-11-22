@@ -1309,86 +1309,44 @@ async fn answer_host_with_microphone(view: &Shared, id: &str) -> Result<(), Stri
     if !open() {
         return Ok(());
     }
-    let constraints = web_sys::MediaStreamConstraints::new();
-    constraints.set_audio(&JsValue::TRUE);
-    let stream: web_sys::MediaStream = JsFuture::from(
-        window()
-            .navigator()
-            .media_devices()
-            .map_err(js_error)?
-            .get_user_media_with_constraints(&constraints)
-            .map_err(js_error)?,
+    let attempt = js_sys::Date::now() as u64;
+    call(
+        "start_host_voice_capture",
+        json!({"id":id,"attempt":attempt}),
     )
-    .await
-    .map_err(js_error)?
-    .dyn_into()
-    .map_err(js_error)?;
+    .await?;
+    let token = format!("host-voice-{id}-{attempt}");
     let result = async {
-        if !open() {
-            return Ok(());
-        }
-        let options = web_sys::MediaRecorderOptions::new();
-        let mime = if web_sys::MediaRecorder::is_type_supported("audio/mp4") {
-            "audio/mp4"
-        } else {
-            "audio/webm"
-        };
-        options.set_mime_type(mime);
-        let recorder = web_sys::MediaRecorder::new_with_media_stream_and_media_recorder_options(
-            &stream, &options,
-        )
-        .map_err(js_error)?;
-        let pieces = js_sys::Array::new();
-        let collected = pieces.clone();
-        let data =
-            Closure::<dyn FnMut(web_sys::BlobEvent)>::new(move |event: web_sys::BlobEvent| {
-                if let Some(blob) = event.data() {
-                    collected.push(&blob);
-                }
-            });
-        recorder.set_ondataavailable(Some(data.as_ref().unchecked_ref()));
-        let stopped = js_sys::Promise::new(&mut |resolve, _| {
-            recorder.set_onstop(Some(&resolve));
-        });
-        recorder.start().map_err(js_error)?;
-        status.set_text_content(Some("Listening for “Allow this action” or “Do not allow”."));
-        for _ in 0..40 {
+        status.set_text_content(Some("Starting microphone…"));
+        for _ in 0..150 {
             if !open() {
-                break;
+                return Ok(());
+            }
+            let capture: Value =
+                serde_wasm_bindgen::from_value(call("capture_status", json!({})).await?)
+                    .map_err(|error| error.to_string())?;
+            if capture["capture_token"].as_str() == Some(&token) {
+                if let Some(request_id) = capture["request_id"].as_u64() {
+                    status.set_text_content(Some("Checking your reply…"));
+                    call(
+                        "answer_host_by_voice",
+                        json!({"id":id,"attempt":attempt,"requestId":request_id}),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                if capture["phase"] == "capturing" {
+                    status.set_text_content(Some(
+                        "Listening for “Allow this action” or “Do not allow”.",
+                    ));
+                }
             }
             speech_delay(100).await?;
         }
-        recorder.stop().map_err(js_error)?;
-        // Close the microphone before sending the short answer for recognition.
-        for track in stream.get_tracks() {
-            track.unchecked_into::<web_sys::MediaStreamTrack>().stop();
-        }
-        JsFuture::from(stopped).await.map_err(js_error)?;
-        let blob = web_sys::Blob::new_with_blob_sequence(&pieces).map_err(js_error)?;
-        if !open() {
-            return Ok(());
-        }
-        if blob.size() > 1_000_000. || blob.size() == 0. {
-            return Err("Could not record a short voice answer.".into());
-        }
-        let bytes = js_sys::Uint8Array::new(
-            &JsFuture::from(blob.array_buffer())
-                .await
-                .map_err(js_error)?,
-        )
-        .to_vec();
-        status.set_text_content(Some("Checking your reply…"));
-        call(
-            "answer_host_by_voice",
-            json!({"id":id,"audio":bytes,"mime":mime}),
-        )
-        .await?;
-        Ok(())
+        Err("No complete voice answer was heard. Try again or use the buttons.".into())
     }
     .await;
-    for track in stream.get_tracks() {
-        track.unchecked_into::<web_sys::MediaStreamTrack>().stop();
-    }
+    let _ = call("cancel_capture", json!({"token":token})).await;
     result
 }
 
