@@ -140,7 +140,7 @@ All chats were archived. The fixture app was closed and was not running afterwar
 
 **VoiceOver.** The tester confirmed that the audible announcement was clear during the live approval retest. The native accessibility tree exposed the question and controls, with initial focus on **Don’t allow**.
 
-**Pending native check.** The system Accessibility setup prompt remains unverified.
+**Native setup check.** Clicking **Set up Computer Use…** opened the macOS **Device Control and Data Access** pane with notdot QA selected. The rebuilt ad-hoc QA app still reported **Setup needed** after the listed entry was toggled and the app restarted.
 
 ## Automated tests
 
@@ -173,8 +173,8 @@ All chats were archived. The fixture app was closed and was not running afterwar
 
 ## Limitations
 
-- **Desktop:** macOS only. `desktop_apps` gives the model the names and bundle IDs of running apps, so the companion can name the app to ask about. Reading or pressing still needs a per-app confirmation, and blocked apps are refused. Windows (UI Automation) and Linux (AT-SPI over D-Bus) report `unsupported`. The outline comes from the accessibility tree and requires Accessibility access. A separately approved single-window screenshot on macOS requires Screen Recording access. Live capture is pending verification.
-- **Browser:** needs an installed Chrome, Chromium, Edge or Brave, and runs on macOS and Linux only.
+- **Desktop:** macOS, Windows and Linux. `desktop_apps` gives the model the names and bundle IDs of running apps, so the companion can name the app to ask about. Reading or pressing still needs a per-app confirmation, and blocked apps are refused. Windows UI Automation passed the hosted native fixture test and Linux AT-SPI passed a live disposable GTK fixture test. The Mac outline requires Accessibility access. A separately approved single-window screenshot on macOS requires Screen Recording access. The capture driver passed the native counter window test.
+- **Browser:** needs an installed Chrome, Chromium, Edge or Brave, and runs on macOS, Windows and Linux.
   - The Windows candidate passes exactly two inherited pipe handles to the browser. The Windows CI smoke test exercises the private pipe with a local fixture.
   - Pages opened in new tabs or windows are not followed. Only the main frame's text and controls are read, and cross-origin iframes are not.
   - The companion's browser has no sign-ins by design, so sites that need an account cannot be used.
