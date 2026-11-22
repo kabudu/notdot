@@ -1318,6 +1318,7 @@ async fn answer_host_with_microphone(view: &Shared, id: &str) -> Result<(), Stri
     let token = format!("host-voice-{id}-{attempt}");
     let result = async {
         status.set_text_content(Some("Starting microphone…"));
+        let mut listening_announced = false;
         for _ in 0..150 {
             if !open() {
                 return Ok(());
@@ -1335,7 +1336,8 @@ async fn answer_host_with_microphone(view: &Shared, id: &str) -> Result<(), Stri
                     .await?;
                     return Ok(());
                 }
-                if capture["phase"] == "capturing" {
+                if capture["phase"] == "capturing" && !listening_announced {
+                    listening_announced = true;
                     status.set_text_content(Some(
                         "Listening for “Allow this action” or “Do not allow”.",
                     ));
