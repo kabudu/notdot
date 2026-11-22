@@ -744,6 +744,81 @@ async fn answer_host_confirmation(
     }
     result
 }
+async fn host_voice_question(state: &AppState, id: &str) -> Result<String, String> {
+    let snapshot = state.snapshot.lock().await;
+    if snapshot.settings.microphone_muted || state.speakers.needs_identification() {
+        return Err(
+            "Voice approval is unavailable with this microphone or profile setting.".into(),
+        );
+    }
+    snapshot
+        .host_confirmation
+        .as_ref()
+        .filter(|question| question.id == id)
+        .map(|question| question.message.clone())
+        .ok_or_else(|| "That question has already closed".into())
+}
+
+#[tauri::command]
+async fn speak_host_question(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+    let question = host_voice_question(&state, &id).await?;
+    system_speech::speak(&format!(
+        "{question} After I finish, say allow this action, or do not allow."
+    ))
+    .await?;
+    host_voice_question(&state, &id).await?;
+    Ok(())
+}
+
+fn host_voice_answer(text: &str) -> Option<bool> {
+    match text
+        .trim()
+        .trim_end_matches(['.', '!', '?'])
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "allow this action" => Some(true),
+        "do not allow" | "don't allow" => Some(false),
+        _ => None,
+    }
+}
+
+#[tauri::command]
+async fn answer_host_by_voice(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    audio: Vec<u8>,
+    mime: String,
+) -> Result<(), String> {
+    if !(1..=1_000_000).contains(&audio.len())
+        || !matches!(mime.as_str(), "audio/mp4" | "audio/webm")
+    {
+        return Err("Invalid approval recording".into());
+    }
+    host_voice_question(&state, &id).await?;
+    let transcript = transcribe_audio(&state, audio, mime).await?;
+    let allow = host_voice_answer(&transcript)
+        .ok_or("Say “Allow this action” or “Do not allow”, or use the buttons.")?;
+    host_voice_question(&state, &id).await?;
+    answer_host_confirmation(state, id, allow).await
+}
+
+#[cfg(test)]
+#[test]
+fn host_voice_approval_requires_the_complete_phrase() {
+    assert_eq!(host_voice_answer("Allow this action."), Some(true));
+    assert_eq!(host_voice_answer("Do not allow."), Some(false));
+    for ambiguous in [
+        "yes",
+        "not allow this action",
+        "please allow this action",
+        "allow this action, maybe",
+        "",
+    ] {
+        assert_eq!(host_voice_answer(ambiguous), None);
+    }
+}
+
 /// Re-check readiness, for example after the person changed an OS
 /// permission. A change takes effect when notdot reconnects.
 #[tauri::command]
@@ -2187,6 +2262,8 @@ fn main() {
             answer_session,
             cancel_session,
             answer_host_confirmation,
+            speak_host_question,
+            answer_host_by_voice,
             refresh_host_controls,
             set_up_computer_use,
             voice_settings::settings_question,

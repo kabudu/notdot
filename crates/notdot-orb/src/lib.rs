@@ -1275,6 +1275,7 @@ fn render_host_confirmation(
         Some(question) if answered(&question.id) => {}
         Some(question) if previous != Some(question) || !host.open() => {
             element("host-confirm-message").set_text_content(Some(&question.message));
+            element("host-confirm-voice-status").set_text_content(None);
             let seconds = (question.timeout_ms / 1000).max(1);
             element("host-confirm-timeout").set_text_content(Some(&format!(
                 "If you don't answer within {seconds} seconds, notdot won't do it."
@@ -1295,6 +1296,102 @@ fn render_host_confirmation(
         _ => {}
     }
 }
+/// A separate short recording leaves the waiting Codex turn running.
+async fn answer_host_with_microphone(view: &Shared, id: &str) -> Result<(), String> {
+    let open = || {
+        !view.borrow().snapshot.settings.microphone_muted
+            && dialog("host-confirm").get_attribute("data-id").as_deref() == Some(id)
+    };
+    let status = element("host-confirm-voice-status");
+    status.set_text_content(Some("Reading the question aloud…"));
+    call("speak_host_question", json!({"id":id})).await?;
+    speech_delay(400).await?;
+    if !open() {
+        return Ok(());
+    }
+    let constraints = web_sys::MediaStreamConstraints::new();
+    constraints.set_audio(&JsValue::TRUE);
+    let stream: web_sys::MediaStream = JsFuture::from(
+        window()
+            .navigator()
+            .media_devices()
+            .map_err(js_error)?
+            .get_user_media_with_constraints(&constraints)
+            .map_err(js_error)?,
+    )
+    .await
+    .map_err(js_error)?
+    .dyn_into()
+    .map_err(js_error)?;
+    let result = async {
+        if !open() {
+            return Ok(());
+        }
+        let options = web_sys::MediaRecorderOptions::new();
+        let mime = if web_sys::MediaRecorder::is_type_supported("audio/mp4") {
+            "audio/mp4"
+        } else {
+            "audio/webm"
+        };
+        options.set_mime_type(mime);
+        let recorder = web_sys::MediaRecorder::new_with_media_stream_and_media_recorder_options(
+            &stream, &options,
+        )
+        .map_err(js_error)?;
+        let pieces = js_sys::Array::new();
+        let collected = pieces.clone();
+        let data =
+            Closure::<dyn FnMut(web_sys::BlobEvent)>::new(move |event: web_sys::BlobEvent| {
+                if let Some(blob) = event.data() {
+                    collected.push(&blob);
+                }
+            });
+        recorder.set_ondataavailable(Some(data.as_ref().unchecked_ref()));
+        let stopped = js_sys::Promise::new(&mut |resolve, _| {
+            recorder.set_onstop(Some(&resolve));
+        });
+        recorder.start().map_err(js_error)?;
+        status.set_text_content(Some("Listening for “Allow this action” or “Do not allow”."));
+        for _ in 0..40 {
+            if !open() {
+                break;
+            }
+            speech_delay(100).await?;
+        }
+        recorder.stop().map_err(js_error)?;
+        // Close the microphone before sending the short answer for recognition.
+        for track in stream.get_tracks() {
+            track.unchecked_into::<web_sys::MediaStreamTrack>().stop();
+        }
+        JsFuture::from(stopped).await.map_err(js_error)?;
+        let blob = web_sys::Blob::new_with_blob_sequence(&pieces).map_err(js_error)?;
+        if !open() {
+            return Ok(());
+        }
+        if blob.size() > 1_000_000. || blob.size() == 0. {
+            return Err("Could not record a short voice answer.".into());
+        }
+        let bytes = js_sys::Uint8Array::new(
+            &JsFuture::from(blob.array_buffer())
+                .await
+                .map_err(js_error)?,
+        )
+        .to_vec();
+        status.set_text_content(Some("Checking your reply…"));
+        call(
+            "answer_host_by_voice",
+            json!({"id":id,"audio":bytes,"mime":mime}),
+        )
+        .await?;
+        Ok(())
+    }
+    .await;
+    for track in stream.get_tracks() {
+        track.unchecked_into::<web_sys::MediaStreamTrack>().stop();
+    }
+    result
+}
+
 fn answer_host_confirmation(allow: bool) {
     let host = dialog("host-confirm");
     let id = host.get_attribute("data-id");
@@ -2279,6 +2376,24 @@ pub fn start() -> Result<(), JsValue> {
                 target.borrow_mut().local_phase = None;
                 message(&e);
                 open_panel(&target);
+            }
+        });
+    });
+    let host_voice_view = view.clone();
+    on(element("host-confirm-voice").as_ref(), "click", move |_| {
+        let Some(id) = dialog("host-confirm").get_attribute("data-id") else {
+            return;
+        };
+        let button = element("host-confirm-voice").unchecked_into::<web_sys::HtmlButtonElement>();
+        button.set_disabled(true);
+        let view = host_voice_view.clone();
+        spawn_local(async move {
+            let result = answer_host_with_microphone(&view, &id).await;
+            button.set_disabled(false);
+            if dialog("host-confirm").get_attribute("data-id").as_deref() == Some(&id)
+                && let Err(error) = result
+            {
+                element("host-confirm-voice-status").set_text_content(Some(&error));
             }
         });
     });
