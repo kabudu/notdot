@@ -42,6 +42,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.notdot_mobile_core.MobileException
 import uniffi.notdot_mobile_core.PairResult
+import uniffi.notdot_mobile_core.LinkRoute
 import uniffi.notdot_mobile_core.PhoneLink
 import uniffi.notdot_mobile_core.SessionEvent
 
@@ -162,6 +163,7 @@ class MainActivity : ComponentActivity() {
 private fun Home(talk: () -> Unit, start: () -> Unit, permissions: () -> Unit, scenario: String?) {
     val effects by NotdotState.effects.collectAsState()
     val talking by TalkPath.state.collectAsState()
+    val paired by NotdotState.paired.collectAsState()
     val status by NotdotState.status.collectAsState()
     val orb by NotdotState.orb.collectAsState()
     var linking by remember { mutableStateOf(scenario != null) }
@@ -174,10 +176,10 @@ private fun Home(talk: () -> Unit, start: () -> Unit, permissions: () -> Unit, s
         if (!linking) Orb(orb, Modifier.weight(1f).fillMaxWidth())
         Text(status, color = Color.White, style = MaterialTheme.typography.titleMedium)
         val context = androidx.compose.ui.platform.LocalContext.current
-        Button(talk, Modifier.heightIn(min = 56.dp).fillMaxWidth()) {
+        if (!linking) Button({ if (paired) talk() else linking = true }, Modifier.heightIn(min = 56.dp).fillMaxWidth()) {
             Text(
                 when (talking) {
-                    TalkState.IDLE -> "Tap to talk"
+                    TalkState.IDLE -> if (paired) "Tap to talk" else "Link this phone"
                     TalkState.LISTENING -> "Listening · tap to stop"
                     TalkState.REPLYING -> "Stop"
                 },
@@ -198,13 +200,16 @@ private fun Home(talk: () -> Unit, start: () -> Unit, permissions: () -> Unit, s
         if (linking) {
             OutlinedButton(permissions, Modifier.heightIn(min = 48.dp)) { Text("App permissions") }
             Text("Choose While using the app for the microphone. Start hands-free to keep listening with a stoppable notification.", color = Color(0xFFB4C5D5), style = MaterialTheme.typography.bodyMedium)
-            Pairing(scenario)
+            Pairing(scenario) {
+                NotdotState.setStatus("Connected. Tap to talk.")
+                linking = false
+            }
         }
     }
 }
 
 @Composable
-private fun Pairing(scenario: String?) {
+private fun Pairing(scenario: String?, onConnected: () -> Unit) {
     val scope = rememberCoroutineScope()
     val context = androidx.compose.ui.platform.LocalContext.current
     // Identity and paired computer survive restarts (Keystore-sealed).
@@ -242,12 +247,14 @@ private fun Pairing(scenario: String?) {
                 // The identity is created (once) by this user action.
                 if (store.identity() == null) link = PhoneLink.restore(store.identityCreatingIfNeeded(), null)
                 val code = link.pair(invitation.trim(), "Android phone")
-                message = "Check the computer shows $code, then choose Allow there."
+                message = "Waiting for approval on your Mac. Compare this code: $code."
                 when (val result = link.awaitApproval()) {
                     is PairResult.Approved -> {
                         store.savePairedRecord(link.pairedRecord())
                         NotdotState.linked = true
-                        "Linked (${link.connect(false)})"
+                        val route = link.connect(false)
+                        if (route != LinkRoute.DISCONNECTED) onConnected()
+                        "Linked ($route)"
                     }
                     PairResult.Denied -> "The computer said no."
                     is PairResult.Rejected -> result.reason

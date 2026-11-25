@@ -79,7 +79,25 @@ fn button(
             let args = args.clone();
             let generation = notes_panel::generation();
             spawn_local(async move {
-                invoke(command, args, generation).await;
+                if command == "phones_decide" {
+                    match call(command, args.clone()).await {
+                        Ok(_) if generation == notes_panel::generation() => {
+                            clear_qr();
+                            pairing_status(if args["allow"] == true {
+                                "Phone approved. You can now tap to talk on your phone."
+                            } else {
+                                "Pairing declined."
+                            });
+                            refresh().await;
+                        }
+                        Err(error) if generation == notes_panel::generation() => {
+                            pairing_status(&error)
+                        }
+                        _ => {}
+                    }
+                } else {
+                    invoke(command, args, generation).await;
+                }
             });
         }
     });
@@ -237,6 +255,43 @@ fn clear_qr() {
 fn pairing_status(text: &str) {
     element("phones-pairing-status").set_text_content(Some(text));
 }
+fn watch_pairing(generation: u64, invitation: String, offer: String, expires: f64) {
+    let callback = wasm_bindgen::closure::Closure::once_into_js(move || {
+        spawn_local(async move {
+            let current = || {
+                generation == notes_panel::generation()
+                    && element("phones-code").text_content().as_deref() == Some(&invitation)
+            };
+            if !current() || js_sys::Date::now() >= expires {
+                return;
+            }
+            let result = call("phones_status", json!({})).await;
+            if !current() {
+                return;
+            }
+            if let Ok(value) = result
+                && let Ok(status) = serde_wasm_bindgen::from_value::<Value>(value)
+                && status["pending"].as_array().is_some_and(|requests| {
+                    requests
+                        .iter()
+                        .any(|request| request["offer"].as_str() == Some(&offer))
+                })
+            {
+                clear_qr();
+                pairing_status("Compare the code on your phone with the request below.");
+                if let Err(error) = render(&status) {
+                    pairing_status(&error);
+                }
+                return;
+            }
+            watch_pairing(generation, invitation, offer, expires);
+        });
+    });
+    if let Some(window) = web_sys::window() {
+        let _ = window
+            .set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 1000);
+    }
+}
 pub fn reset() {
     clear_qr();
     pairing_status("");
@@ -306,9 +361,10 @@ pub fn install() {
                 .and_then(|v| serde_wasm_bindgen::from_value::<Value>(v).map_err(|e| e.to_string()))
             {
                 Ok(v) => {
-                    if let (Some(image), Some(code), Some(expires)) = (
+                    if let (Some(image), Some(code), Some(offer), Some(expires)) = (
                         v["image"].as_str(),
                         v["code"].as_str(),
+                        v["offer"].as_str(),
                         v["expires_ms"].as_f64(),
                     ) && image.starts_with("data:image/svg+xml;base64,")
                         && element("phones-qr-image")
@@ -318,6 +374,7 @@ pub fn install() {
                         element("phones-code").set_text_content(Some(code));
                         let _ = element("phones-qr").remove_attribute("hidden");
                         pairing_status("Scan this QR code within two minutes.");
+                        watch_pairing(g, code.to_owned(), offer.to_owned(), expires);
                         let expiry_code = code.to_owned();
                         let delay = (expires - js_sys::Date::now()).clamp(0.0, 120_000.0) as i32;
                         let expiry = wasm_bindgen::closure::Closure::once_into_js(move || {

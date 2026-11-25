@@ -37,8 +37,11 @@ object NotdotState {
     var link: uniffi.notdot_mobile_core.PhoneLink? = null
 
     /** [link] has a paired computer (it can take voice turns). */
-    @Volatile
-    var linked = false
+    private val _paired = MutableStateFlow(false)
+    val paired: StateFlow<Boolean> = _paired
+    var linked: Boolean
+        get() = _paired.value
+        set(value) { _paired.value = value }
 
     private var session: VoiceSession? = null
     private val _effects = MutableStateFlow(

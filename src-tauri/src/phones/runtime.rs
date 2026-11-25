@@ -336,7 +336,9 @@ impl Phones {
             .min_dimensions(320, 320)
             .build();
         let image = format!("data:image/svg+xml;base64,{}", STANDARD.encode(svg));
-        Ok(json!({"code":code,"image":image,"expires_ms":qr.expires_ms}))
+        Ok(
+            json!({"code":code,"image":image,"offer":hex(&qr.offer_id()),"expires_ms":qr.expires_ms}),
+        )
     }
     pub async fn decide(&self, offer: &str, allow: bool) -> Result<(), String> {
         let offer = bytes::<16>(offer)?;
