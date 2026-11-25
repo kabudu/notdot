@@ -134,7 +134,10 @@ class VoiceSessionService : Service() {
             if (capturing && !microphoneSilenced) {
                 NotdotState.wakeHeard()
                 voiceTurns?.wake()
-            } else if (!capturing) stopSelf()
+            } else {
+                NotdotState.setStatus("Hands-free microphone is unavailable. Stop hands-free to use Tap to talk.")
+                if (!capturing) stopSelf()
+            }
             return START_NOT_STICKY
         }
         val permitted = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED

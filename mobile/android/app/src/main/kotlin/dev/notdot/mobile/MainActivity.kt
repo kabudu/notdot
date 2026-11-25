@@ -108,7 +108,7 @@ class MainActivity : ComponentActivity() {
             talkMicrophone.launch(Manifest.permission.RECORD_AUDIO)
             return
         }
-        if (NotdotState.effects.value.microphone) {
+        if (NotdotState.effects.value.surface) {
             VoiceSessionService.talk(this)
             return
         }

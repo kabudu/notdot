@@ -123,7 +123,7 @@ object NotdotState {
 
     /** What the status line says between turns. */
     fun idleText(): String = when {
-        effects.value.microphone -> "Listening hands-free · Say $wakePhrase"
+        effects.value.surface && effects.value.microphone -> "Listening hands-free · Say $wakePhrase"
         !linked -> "Link this phone to your computer to talk."
         else -> "Tap to talk"
     }
