@@ -22,6 +22,7 @@ tokio.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 base64 = "0.22"
+qrcode = { version = "0.14", default-features = false, features = ["svg"], optional = true }
 tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls", "system-proxy"] }
 tauri-plugin-autostart = "2"
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
@@ -44,7 +45,7 @@ rfd = { version = "=0.15.4", default-features = false, features = ["gtk3"] }
 
 [features]
 # Experimental phone link, opt-in while mobile builds are on the draft branch.
-phones = ["dep:notdot-link"]
+phones = ["dep:notdot-link", "dep:qrcode"]
 custom-protocol = ["tauri/custom-protocol"]
 
 [dev-dependencies]

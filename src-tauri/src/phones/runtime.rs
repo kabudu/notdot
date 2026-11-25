@@ -327,7 +327,16 @@ impl Phones {
                 notdot_link::pairing::OFFER_TTL_MS,
             )
             .map_err(|e| e.to_string())?;
-        Ok(json!({"code":qr.encode(),"expires_ms":qr.expires_ms}))
+        drop(inner);
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let code = qr.encode();
+        let svg = qrcode::QrCode::with_error_correction_level(code.as_bytes(), qrcode::EcLevel::M)
+            .map_err(|_| "Could not fit this pairing invitation into a QR code")?
+            .render::<qrcode::render::svg::Color>()
+            .min_dimensions(320, 320)
+            .build();
+        let image = format!("data:image/svg+xml;base64,{}", STANDARD.encode(svg));
+        Ok(json!({"code":code,"image":image,"expires_ms":qr.expires_ms}))
     }
     pub async fn decide(&self, offer: &str, allow: bool) -> Result<(), String> {
         let offer = bytes::<16>(offer)?;

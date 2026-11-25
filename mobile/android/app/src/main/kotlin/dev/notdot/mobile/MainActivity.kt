@@ -1,5 +1,9 @@
 package dev.notdot.mobile
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
+
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -227,37 +231,64 @@ private fun Pairing(scenario: String?) {
             message = detail
         }
     }
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(qr, { qr = it }, label = { Text("Pairing code from the computer") }, singleLine = true)
-        Button({
-            scope.launch {
-                message = try {
-                    // The identity is created (once) by this user action.
-                    if (store.identity() == null) link = PhoneLink.restore(store.identityCreatingIfNeeded(), null)
-                    val code = link.pair(qr.trim(), "Android phone")
-                    message = "Check the computer shows $code, then choose Allow there."
-                    when (val result = link.awaitApproval()) {
-                        is PairResult.Approved -> {
-                            store.savePairedRecord(link.pairedRecord())
-                            NotdotState.linked = true
-                            "Linked (${link.connect(false)})"
-                        }
-                        PairResult.Denied -> "The computer said no."
-                        is PairResult.Rejected -> result.reason
+    var pairing by remember { mutableStateOf(false) }
+    var showPaste by remember { mutableStateOf(false) }
+    fun pair(invitation: String) {
+        if (pairing) return
+        pairing = true
+        message = "Connecting to your computer…"
+        scope.launch {
+            message = try {
+                // The identity is created (once) by this user action.
+                if (store.identity() == null) link = PhoneLink.restore(store.identityCreatingIfNeeded(), null)
+                val code = link.pair(invitation.trim(), "Android phone")
+                message = "Check the computer shows $code, then choose Allow there."
+                when (val result = link.awaitApproval()) {
+                    is PairResult.Approved -> {
+                        store.savePairedRecord(link.pairedRecord())
+                        NotdotState.linked = true
+                        "Linked (${link.connect(false)})"
                     }
-                } catch (e: MobileException.Unpaired) {
-                    // Removed at the computer: forget everything on this phone.
-                    withContext(Dispatchers.IO) {
-                        store.clear()
-                        StepUpKeys.clear(context)
-                    }
-                    link = PhoneLink()
-                    e.detail
-                } catch (e: Exception) {
-                    e.message ?: "Could not link"
+                    PairResult.Denied -> "The computer said no."
+                    is PairResult.Rejected -> result.reason
                 }
+            } catch (e: MobileException.Unpaired) {
+                // Removed at the computer: forget everything on this phone.
+                withContext(Dispatchers.IO) {
+                    store.clear()
+                    StepUpKeys.clear(context)
+                }
+                link = PhoneLink()
+                e.detail
+            } catch (e: Exception) {
+                e.message ?: "Could not link"
+            } finally {
+                pairing = false
             }
-        }, Modifier.heightIn(min = 48.dp), enabled = qr.isNotBlank()) { Text("Link") }
+        }
+    }
+    val scanner = rememberLauncherForActivityResult(ScanContract()) { result ->
+        result.contents?.let { invitation ->
+            if (invitation.startsWith("notdot-pair:1:")) pair(invitation)
+            else message = "That is not a notdot pairing QR code."
+        }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button({
+            scanner.launch(ScanOptions().apply {
+                setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                setPrompt("Scan the QR code in notdot on your computer")
+                setBeepEnabled(false)
+            })
+        }, Modifier.heightIn(min = 48.dp), enabled = !pairing) { Text("Scan QR code") }
+        if (showPaste) {
+            OutlinedTextField(qr, { qr = it }, label = { Text("Paste pairing code") }, singleLine = true)
+            OutlinedButton({ pair(qr) }, Modifier.heightIn(min = 48.dp), enabled = !pairing && qr.isNotBlank()) {
+                Text("Link")
+            }
+        } else {
+            OutlinedButton({ showPaste = true }, Modifier.heightIn(min = 48.dp)) { Text("Pair without a camera") }
+        }
         Text(message, color = Color.White)
         OutlinedButton({ showSensitive = !showSensitive }, Modifier.heightIn(min = 48.dp)) { Text("Sensitive actions") }
         if (showSensitive) SensitiveActionsScreen(sensitive)

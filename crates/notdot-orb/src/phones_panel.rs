@@ -229,8 +229,18 @@ fn render(v: &Value) -> Result<(), String> {
     }
     Ok(())
 }
+fn clear_qr() {
+    let _ = element("phones-qr").set_attribute("hidden", "");
+    let _ = element("phones-qr-image").remove_attribute("src");
+    element("phones-code").set_text_content(None);
+}
+fn pairing_status(text: &str) {
+    element("phones-pairing-status").set_text_content(Some(text));
+}
 pub fn reset() {
-    for id in ["phones-pending", "phones-devices", "phones-code"] {
+    clear_qr();
+    pairing_status("");
+    for id in ["phones-pending", "phones-devices"] {
         element(id).set_text_content(None);
     }
     let _ = element("phones-section").remove_attribute("data-policy-loaded");
@@ -280,23 +290,55 @@ pub fn install() {
             .unwrap()
             .value();
         let g = notes_panel::generation();
+        if element("phones-offer").has_attribute("aria-busy") {
+            return;
+        }
+        let _ = element("phones-offer").set_attribute("aria-busy", "true");
+        clear_qr();
+        pairing_status("Creating a pairing QR code…");
         spawn_local(async move {
-            match call("phones_create_offer", json!({"profile":profile})).await {
-                Ok(value) => {
-                    if g == notes_panel::generation()
-                        && let Ok(v) = serde_wasm_bindgen::from_value::<Value>(value)
+            let result = call("phones_create_offer", json!({"profile":profile})).await;
+            let _ = element("phones-offer").remove_attribute("aria-busy");
+            if g != notes_panel::generation() {
+                return;
+            }
+            match result
+                .and_then(|v| serde_wasm_bindgen::from_value::<Value>(v).map_err(|e| e.to_string()))
+            {
+                Ok(v) => {
+                    if let (Some(image), Some(code), Some(expires)) = (
+                        v["image"].as_str(),
+                        v["code"].as_str(),
+                        v["expires_ms"].as_f64(),
+                    ) && image.starts_with("data:image/svg+xml;base64,")
+                        && element("phones-qr-image")
+                            .set_attribute("src", image)
+                            .is_ok()
                     {
-                        element("phones-code").set_text_content(v["code"].as_str());
-                        status(
-                            "Copy this pairing code to the phone. It expires after two minutes. Then refresh to compare the codes.",
-                        );
+                        element("phones-code").set_text_content(Some(code));
+                        let _ = element("phones-qr").remove_attribute("hidden");
+                        pairing_status("Scan this QR code within two minutes.");
+                        let expiry_code = code.to_owned();
+                        let delay = (expires - js_sys::Date::now()).clamp(0.0, 120_000.0) as i32;
+                        let expiry = wasm_bindgen::closure::Closure::once_into_js(move || {
+                            if element("phones-code").text_content().as_deref()
+                                == Some(&expiry_code)
+                            {
+                                clear_qr();
+                                pairing_status("This QR code expired. Show a new one to pair.");
+                            }
+                        });
+                        if let Some(window) = web_sys::window() {
+                            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                                expiry.unchecked_ref(),
+                                delay,
+                            );
+                        }
+                    } else {
+                        pairing_status("Could not display the QR code. Try again.");
                     }
                 }
-                Err(e) => {
-                    if g == notes_panel::generation() {
-                        status(&e);
-                    }
-                }
+                Err(e) => pairing_status(&e),
             }
         });
     });

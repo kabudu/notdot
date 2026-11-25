@@ -321,3 +321,13 @@ dialog { overflow-wrap: anywhere; }
 @media (forced-colors: active) {
   #backup-section input[aria-invalid=true] { border: 2px dashed CanvasText; box-shadow: none; }
 }
+
+.phone-pairing{display:grid;gap:10px;margin-block:14px;padding:14px;border:1px solid hsl(var(--hue) 24% 35% / .7);border-radius:12px}
+.phone-pairing>button,.phone-link-actions>button{min-height:44px}
+.phone-pairing>button{justify-self:start}
+.phone-pairing p{margin:0}
+#phones-pairing-status:empty{display:none}
+#phones-qr img{display:block;width:min(100%,320px);height:auto;margin:0 auto 12px;border-radius:8px;image-rendering:pixelated}
+#phones-qr details{margin-top:10px}
+#phones-code{display:block;overflow-wrap:anywhere;user-select:text}
+.phone-link-actions{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}

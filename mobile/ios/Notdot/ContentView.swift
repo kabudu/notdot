@@ -1,4 +1,7 @@
 import SwiftUI
+import VisionKit
+import AVFoundation
+import UniformTypeIdentifiers
 
 /// Voice-only home: the orb, one status line and Tap to talk (the default
 /// way to speak to the computer); hands-free wake is an opt-in experiment.
@@ -56,7 +59,9 @@ struct ContentView: View {
 struct PairingView: View {
     @ObservedObject var link: LinkModel
     @State private var path: [String] = ContentView.openSensitive ? ["sensitive"] : []
-    @State private var qr = ""
+    @State private var scanning = false
+    @State private var pairing = false
+    @State private var scannerMessage = ""
     @State private var name = "My phone"
     #if DEBUG
     @State private var noteID = newRequestId()
@@ -66,12 +71,15 @@ struct PairingView: View {
         NavigationStack(path: $path) {
             Form {
                 Section("Link to your computer") {
-                    TextField("Pairing code from the computer", text: $qr)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
                     TextField("This phone's name", text: $name)
-                    Button("Link") { Task { await link.pair(qr: qr, name: name) } }
-                        .disabled(qr.isEmpty)
+                    Button("Scan QR code") { Task { await openScanner() } }
+                        .disabled(pairing)
+                    PasteButton(payloadType: String.self) { values in
+                        if let invitation = values.first { acceptInvitation(invitation) }
+                    }
+                    .accessibilityLabel("Paste pairing code")
+                    .disabled(pairing)
+                    if !scannerMessage.isEmpty { Text(scannerMessage) }
                 }
                 if let code = link.code {
                     Section("Compare this code") {
@@ -99,6 +107,50 @@ struct PairingView: View {
                 SensitiveActionsView(model: link.sensitive)
             }
         }
+        .sheet(isPresented: $scanning) {
+            NavigationStack {
+                PairingScanner { invitation in
+                    scanning = false
+                    if let invitation { acceptInvitation(invitation) }
+                    else { scannerMessage = "Could not start the camera. Try again or paste the pairing code." }
+                }
+                .navigationTitle("Scan pairing QR code")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { scanning = false }
+                    }
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func openScanner() async {
+        guard DataScannerViewController.isSupported else {
+            scannerMessage = "Camera scanning is unavailable. Copy the pairing code from your computer, then paste it here."
+            return
+        }
+        guard await AVCaptureDevice.requestAccess(for: .video), DataScannerViewController.isAvailable else {
+            scannerMessage = "Allow camera access in Settings, or paste the pairing code."
+            return
+        }
+        scannerMessage = ""
+        scanning = true
+    }
+
+    private func acceptInvitation(_ invitation: String) {
+        guard !pairing else { return }
+        let code = invitation.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard code.hasPrefix("notdot-pair:1:") else {
+            scannerMessage = "That is not a notdot pairing QR code."
+            return
+        }
+        scannerMessage = ""
+        pairing = true
+        Task {
+            await link.pair(qr: code, name: name)
+            pairing = false
+        }
     }
 
     private var routeText: String {
@@ -107,6 +159,59 @@ struct PairingView: View {
         case .relay: "Over the internet (encrypted relay)"
         case .unknown: "Connecting"
         case .disconnected: "Not connected"
+        }
+    }
+}
+
+
+@MainActor
+private struct PairingScanner: UIViewControllerRepresentable {
+    var result: (String?) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(result: result) }
+
+    func makeUIViewController(context: Context) -> DataScannerViewController {
+        let scanner = DataScannerViewController(recognizedDataTypes: [.barcode(symbologies: [.qr])])
+        scanner.delegate = context.coordinator
+        do { try scanner.startScanning() }
+        catch {
+            let coordinator = context.coordinator
+            Task { coordinator.finish(nil) }
+        }
+        return scanner
+    }
+
+    func updateUIViewController(_ scanner: DataScannerViewController, context: Context) {}
+
+    static func dismantleUIViewController(_ scanner: DataScannerViewController, coordinator: Coordinator) {
+        scanner.stopScanning()
+    }
+
+    final class Coordinator: NSObject, DataScannerViewControllerDelegate {
+        private var result: ((String?) -> Void)?
+
+        init(result: @escaping (String?) -> Void) { self.result = result }
+
+        func finish(_ invitation: String?) {
+            let callback = result
+            result = nil
+            callback?(invitation)
+        }
+
+        func dataScanner(_ scanner: DataScannerViewController,
+                         didAdd addedItems: [RecognizedItem], allItems: [RecognizedItem]) {
+            for case .barcode(let barcode) in addedItems {
+                if let invitation = barcode.payloadStringValue {
+                    scanner.stopScanning()
+                    finish(invitation)
+                    return
+                }
+            }
+        }
+
+        func dataScanner(_ scanner: DataScannerViewController,
+                         becameUnavailableWithError error: DataScannerViewController.ScanningUnavailable) {
+            finish(nil)
         }
     }
 }

@@ -715,10 +715,18 @@
       <p class="hint">Mobile prototype. Connections stay on your network until a private relay is configured. Your voice-service keys stay on this computer.</p>
       <label class="switch-row"><span class="switch-copy">Allow paired phones to connect</span><input type="checkbox" role="switch" id="phones-enable"><span aria-hidden="true" class="switch-track"></span></label>
       <p id="phones-message" role="status" aria-live="polite"></p>
-      <label for="phones-profile">Whose phone is this?</label><select id="phones-profile"></select>
-      <div class="tool-actions"><button type="button" id="phones-offer">Create pairing code</button><button type="button" id="phones-refresh">Refresh phones</button><button type="button" id="phones-retry">Reconnect phones</button></div>
-      <p class="hint">Pair only with a phone you trust. Compare its six-digit code before allowing access.</p>
-      <code id="phones-code" style="display:block;overflow-wrap:anywhere;user-select:text"></code>
+      <div class="phone-pairing">
+       <label for="phones-profile">Whose phone is this?</label>
+       <select id="phones-profile"></select>
+       <button type="button" id="phones-offer">Show pairing QR code</button>
+       <p id="phones-pairing-status" class="hint" role="status"></p>
+       <div id="phones-qr" hidden>
+        <img id="phones-qr-image" alt="Pairing QR code for the selected person">
+        <p class="hint">Open Linked computer in notdot on your phone and choose Scan QR code. Compare the codes before approving.</p>
+        <details><summary>Pair without a camera</summary><code id="phones-code"></code></details>
+       </div>
+      </div>
+      <div class="phone-link-actions"><button type="button" id="phones-refresh">Refresh phones</button><button type="button" id="phones-retry">Reconnect phones</button></div>
       <div id="phones-pending" aria-label="Pairing requests"></div><div id="phones-devices" aria-label="Paired phones"></div>
       <details><summary>App verification settings</summary>
        <p class="hint">For prototype testing: list the exact app IDs and signing fingerprints you trust. An empty list refuses sensitive actions. Never copy a policy from someone you do not trust.</p>
