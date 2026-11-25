@@ -28,6 +28,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity android:name=".PairingCaptureActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@style/zxing_CaptureTheme" />
         <!-- Experimental personal wake-phrase lab; opened only from the app
              when built with -PnotdotPersonalWakeLab=true. -->
         <activity

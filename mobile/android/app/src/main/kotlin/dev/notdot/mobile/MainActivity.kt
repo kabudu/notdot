@@ -283,8 +283,10 @@ private fun Pairing(scenario: String?, onConnected: () -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Button({
             scanner.launch(ScanOptions().apply {
+                setCaptureActivity(PairingCaptureActivity::class.java)
+                setOrientationLocked(false)
                 setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                setPrompt("Scan the QR code in notdot on your computer")
+                setPrompt("Fit the code on your computer inside the square")
                 setBeepEnabled(false)
             })
         }, Modifier.heightIn(min = 48.dp), enabled = !pairing) { Text("Scan QR code") }

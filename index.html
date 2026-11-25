@@ -726,9 +726,10 @@
         <details><summary>Pair without a camera</summary><code id="phones-code"></code></details>
        </div>
       </div>
+      <div id="phones-pending" role="region" aria-label="Pairing requests"></div>
       <div class="phone-link-actions"><button type="button" id="phones-refresh">Refresh phones</button><button type="button" id="phones-retry">Reconnect phones</button></div>
-      <div id="phones-pending" aria-label="Pairing requests"></div><div id="phones-devices" aria-label="Paired phones"></div>
-      <details><summary>App verification settings</summary>
+      <div id="phones-devices" role="region" aria-label="Paired phones"></div>
+      <details class="phone-verification"><summary>App verification settings</summary>
        <p class="hint">For prototype testing: list the exact app IDs and signing fingerprints you trust. An empty list refuses sensitive actions. Never copy a policy from someone you do not trust.</p>
        <label for="phones-android-package">Android app ID</label><input id="phones-android-package" placeholder="dev.notdot.mobile.prototype" autocomplete="off">
        <label for="phones-android-signer">Android signing fingerprint (SHA-256)</label><input id="phones-android-signer" autocomplete="off" spellcheck="false">

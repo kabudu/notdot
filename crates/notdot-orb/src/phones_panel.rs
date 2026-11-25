@@ -181,25 +181,22 @@ fn render(v: &Value) -> Result<(), String> {
     pending.set_text_content(None);
     for p in v["pending"].as_array().into_iter().flatten() {
         let row = child(&pending, "div", "")?;
-        child(
-            &row,
-            "p",
-            &format!(
-                "{} · Compare code {} on your phone.",
-                p["name"].as_str().unwrap_or("Phone"),
-                p["code"].as_str().unwrap_or("")
-            ),
-        )?;
+        child(&row, "h4", p["name"].as_str().unwrap_or("Phone"))?;
+        let code = child(&row, "p", p["code"].as_str().unwrap_or(""))?;
+        code.set_class_name("phone-comparison-code");
+        child(&row, "p", "Does this code match the one on your phone?")?;
+        let actions = child(&row, "div", "")?;
+        actions.set_class_name("phone-card-actions");
         let offer = p["offer"].clone();
         button(
-            &row,
-            "Codes match: pair",
+            &actions,
+            "Pair phone",
             "phones_decide",
             json!({"offer":offer,"allow":true}),
             false,
         )?;
         button(
-            &row,
+            &actions,
             "Decline",
             "phones_decide",
             json!({"offer":offer,"allow":false}),
@@ -217,33 +214,35 @@ fn render(v: &Value) -> Result<(), String> {
             if d["step_up"].is_null() {
                 "Sensitive actions are not set up."
             } else {
-                "This phone has set up sensitive actions. Owner permission is still required."
+                "Sensitive actions are set up."
             },
         )?;
+        let actions = child(&row, "div", "")?;
+        actions.set_class_name("phone-card-actions");
         let id = d["id"].clone();
+        if d["owner"] == true && !d["step_up"].is_null() {
+            let granted = d["step_up"]["granted_until_ms"]
+                .as_f64()
+                .is_some_and(|until| until > js_sys::Date::now());
+            button(
+                &actions,
+                if granted {
+                    "End permission"
+                } else {
+                    "Allow sensitive actions for 15 minutes"
+                },
+                "phones_sensitive",
+                json!({"device":id,"allow":!granted}),
+                !granted,
+            )?;
+        }
         button(
-            &row,
+            &actions,
             "Remove phone",
             "phones_remove",
             json!({"device":id}),
             true,
         )?;
-        if d["owner"] == true {
-            button(
-                &row,
-                "Allow sensitive actions for 15 minutes",
-                "phones_sensitive",
-                json!({"device":id,"allow":true}),
-                true,
-            )?;
-            button(
-                &row,
-                "End permission",
-                "phones_sensitive",
-                json!({"device":id,"allow":false}),
-                false,
-            )?;
-        }
     }
     Ok(())
 }

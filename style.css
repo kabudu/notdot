@@ -331,3 +331,13 @@ dialog { overflow-wrap: anywhere; }
 #phones-qr details{margin-top:10px}
 #phones-code{display:block;overflow-wrap:anywhere;user-select:text}
 .phone-link-actions{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+#phones-pending:not(:empty),#phones-devices:not(:empty){display:grid;gap:10px;margin-block:12px}
+#phones-pending>div,#phones-devices>div{display:grid;gap:8px;padding:14px;border:1px solid hsl(var(--hue) 24% 35% / .7);border-radius:12px;background:hsl(var(--hue) 22% 15% / .55)}
+#phones-section :is(#phones-pending,#phones-devices) :is(h4,p){margin:0;line-height:1.4}
+#phones-section :is(#phones-pending,#phones-devices) p:not(.phone-comparison-code){color:#b1c4d7;font-size:.875rem}
+#phones-section .phone-comparison-code{font-size:1.6rem;font-weight:650;font-variant-numeric:tabular-nums;letter-spacing:.09em}
+.phone-card-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px}
+.phone-card-actions button{min-height:44px;text-align:start}
+#phones-pending .phone-card-actions button:first-child{border-color:hsl(var(--hue) 60% 65%)}
+.phone-verification{margin-top:12px;padding-top:10px;border-top:1px solid hsl(var(--hue) 24% 35% / .7)}
+.phone-verification>summary{min-height:44px;align-content:center;cursor:pointer}
