@@ -24,8 +24,9 @@ const POLL: Duration = Duration::from_millis(50);
 
 /// What a phone turn needs from the computer.
 pub trait DesktopVoice: Send + Sync {
-    /// Transcribe a 16 kHz mono WAV request.
-    fn transcribe(&self, wav: Vec<u8>) -> impl Future<Output = Result<String, String>> + Send;
+    /// Transcribe a mono PCM16 request.
+    fn transcribe(&self, audio: &VoiceAudio)
+    -> impl Future<Output = Result<String, String>> + Send;
     /// Start a turn for the phone's profile; returns the turn id.
     fn submit(&self, text: String) -> impl Future<Output = Result<String, String>> + Send;
     /// The turn's spoken reply so far: (text, done, failed), or `None` if
@@ -82,7 +83,7 @@ pub async fn run(
     mut cancelled: watch::Receiver<bool>,
 ) -> Result<Option<Value>, OpError> {
     let heard = tokio::select! {
-        heard = voice.transcribe(wav(&audio)) => heard.map_err(unavailable)?,
+        heard = voice.transcribe(&audio) => heard.map_err(unavailable)?,
         _ = until_cancelled(&mut cancelled) => return Ok(None),
     };
     let heard = heard.trim().to_owned();
@@ -158,8 +159,48 @@ pub struct AppVoice {
     pub request_id: String,
 }
 impl DesktopVoice for AppVoice {
-    async fn transcribe(&self, wav: Vec<u8>) -> Result<String, String> {
-        crate::transcribe_audio(&self.state, wav, "audio/wav".into()).await
+    async fn transcribe(&self, audio: &VoiceAudio) -> Result<String, String> {
+        let state = &self.state;
+        let identity = state
+            .speakers
+            .device_lock(&self.profile, &self.request_id)?;
+        let valid =
+            || state.speakers.validate(&identity).is_ok() && state.context().id == identity.profile;
+        if !valid() {
+            return Err("notdot on your computer is with someone else right now; try again when it's back with you".into());
+        }
+        let _permit = state
+            .voice_gate
+            .try_acquire()
+            .map_err(|_| "Voice service is busy")?;
+        let settings = state.snapshot.lock().await.settings.clone();
+        if settings.microphone_muted {
+            return Err("Microphone is muted".into());
+        }
+        let provider = settings.transcription_id();
+        state.wake.pause_all();
+        let generation = state.quota.generation();
+        let backend = crate::recognition_backend_for_settings(state, &settings).await?;
+        if !valid() {
+            return Err("Voice access changed before transcription".into());
+        }
+        let result = if provider == "deepgram" {
+            crate::transcription::recognise_buffered_pcm(
+                backend.as_ref(),
+                audio.rate,
+                &audio.samples,
+                &valid,
+            )
+            .await
+        } else {
+            backend
+                .transcribe(notdot_voice::AudioClip {
+                    bytes: wav(audio),
+                    mime: "audio/wav".into(),
+                })
+                .await
+        };
+        crate::quota::finish(state, provider, generation, "stt", result).await
     }
     async fn submit(&self, text: String) -> Result<String, String> {
         let identity = self
@@ -221,8 +262,8 @@ mod tests {
         }
     }
     impl DesktopVoice for Fake {
-        async fn transcribe(&self, wav: Vec<u8>) -> Result<String, String> {
-            assert_eq!(&wav[..4], b"RIFF");
+        async fn transcribe(&self, audio: &VoiceAudio) -> Result<String, String> {
+            assert_eq!(audio.rate, 16_000);
             Ok(self.transcript.clone())
         }
         async fn submit(&self, text: String) -> Result<String, String> {

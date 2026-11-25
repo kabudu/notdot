@@ -333,6 +333,47 @@ async fn run_stream_with_prelude(
     stream.close().await;
     Completion { result, stats }
 }
+/// Feed a completed phone capture to the same streaming recogniser as the desktop mic.
+#[cfg(feature = "phones")]
+pub(crate) async fn recognise_buffered_pcm(
+    backend: &dyn notdot_voice::VoiceBackend,
+    rate: u32,
+    samples: &[i16],
+    valid: &(dyn Fn() -> bool + Send + Sync),
+) -> Result<String, VoiceError> {
+    if !valid() {
+        return Err(VoiceError::new(
+            VoiceErrorKind::Refused,
+            "Voice access was revoked",
+        ));
+    }
+    let stream = backend.start_transcription(rate).await?;
+    let (_, input) = mpsc::channel(1);
+    run_stream_with_prelude(stream, rate, input, buffered_packets(rate, samples), valid)
+        .await
+        .result
+}
+#[cfg(feature = "phones")]
+fn buffered_packets(rate: u32, samples: &[i16]) -> std::collections::VecDeque<Input> {
+    let mut packets = std::collections::VecDeque::new();
+    for (sequence, chunk) in samples
+        .chunks((rate as usize * 80 / 1000).max(1))
+        .enumerate()
+    {
+        packets.push_back(Input::Audio {
+            sequence: sequence as u64,
+            pcm: chunk
+                .iter()
+                .flat_map(|sample| sample.to_le_bytes())
+                .collect(),
+        });
+    }
+    packets.push_back(Input::Finish {
+        sequence: packets.len() as u64,
+    });
+    packets
+}
+
 async fn process_stream(
     stream: &mut dyn notdot_voice::realtime::StreamingTranscriber,
     rate: u32,
@@ -634,6 +675,41 @@ mod tests {
             }
         }
     }
+    #[cfg(feature = "phones")]
+    #[tokio::test]
+    async fn buffered_phone_audio_is_uploaded_and_committed_once() {
+        let samples = [0x1234i16; 2590];
+        let packets = buffered_packets(16_000, &samples);
+        let lengths: Vec<_> = packets
+            .iter()
+            .filter_map(|input| match input {
+                Input::Audio { pcm, .. } => {
+                    assert!(pcm.chunks_exact(2).all(|pair| pair == [0x34, 0x12]));
+                    Some(pcm.len())
+                }
+                Input::Finish { .. } => None,
+            })
+            .collect();
+        assert_eq!(lengths, [2560, 2560, 60]);
+        let (_, input) = mpsc::channel(1);
+        let completion = run_stream_with_prelude(
+            Box::new(MockStream {
+                continuous: true,
+                commits: 0,
+                bytes: 0,
+            }),
+            16_000,
+            input,
+            packets,
+            &|| true,
+        )
+        .await;
+        assert_eq!(completion.result.unwrap(), "segment1");
+        let stats = completion.stats.unwrap();
+        assert_eq!(stats.audio_chunks, 5180);
+        assert_eq!(stats.committed_segments, 1);
+    }
+
     #[tokio::test]
     async fn missing_middle_or_final_audio_is_rejected_instead_of_submitted() {
         for (sent, end) in [(vec![0, 2], 3), (vec![0, 1], 3)] {

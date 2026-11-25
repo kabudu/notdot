@@ -1737,6 +1737,12 @@ async fn recognition_backend(
     state: &AppState,
 ) -> Result<Box<dyn notdot_voice::VoiceBackend>, String> {
     let settings = state.snapshot.lock().await.settings.clone();
+    recognition_backend_for_settings(state, &settings).await
+}
+async fn recognition_backend_for_settings(
+    state: &AppState,
+    settings: &Settings,
+) -> Result<Box<dyn notdot_voice::VoiceBackend>, String> {
     let key = state
         .credentials
         .read(settings.transcription_id(), false)
