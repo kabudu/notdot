@@ -2331,10 +2331,7 @@ fn main() {
                 interrupt: interrupt::Interrupt::new(models.clone()),
             });
             app.manage(state.clone());
-            let phone_state = state.clone();
-            tauri::async_runtime::spawn(async move {
-                phone_state.phones.start_if_enabled(&phone_state).await;
-            });
+            state.phones.spawn_recovery(&state);
             onboarding::spawn(state.clone());
             transcription::spawn(app.handle().clone(), state.clone(), capture_input);
             profile_access::spawn_revocation_watch(state.clone());

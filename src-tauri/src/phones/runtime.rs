@@ -117,12 +117,37 @@ impl Phones {
             }),
         })
     }
-    pub async fn start_if_enabled(&self, state: &Arc<AppState>) {
+    pub fn spawn_recovery(&self, state: &Arc<AppState>) {
+        let weak = Arc::downgrade(state);
+        tauri::async_runtime::spawn(async move {
+            let mut delay = std::time::Duration::from_secs(2);
+            loop {
+                let Some(state) = weak.upgrade() else { break };
+                let failed = state.phones.recover_if_enabled(&state).await;
+                drop(state);
+                tokio::time::sleep(delay).await;
+                let ceiling = std::time::Duration::from_secs(30);
+                delay = if failed {
+                    (delay * 2).min(ceiling)
+                } else {
+                    ceiling
+                };
+            }
+        });
+    }
+
+    /// Restore the existing identity silently after startup or a transient error.
+    async fn recover_if_enabled(&self, state: &Arc<AppState>) -> bool {
         let _transition = self.transitions.lock().await;
-        let enabled = self.inner.lock().await.settings.enabled;
-        if enabled && let Err(e) = self.start(state, None, false).await {
-            self.inner.lock().await.error = Some(e);
+        let needs_start = {
+            let inner = self.inner.lock().await;
+            inner.settings.enabled && inner.desktop.is_none()
+        };
+        if needs_start && let Err(error) = self.start(state, None, false).await {
+            self.inner.lock().await.error = Some(error);
+            return true;
         }
+        false
     }
     async fn start(
         &self,

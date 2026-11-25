@@ -149,7 +149,7 @@ impl Phones {
     pub fn open(_: &std::path::Path) -> Result<Self, String> {
         Ok(Self)
     }
-    pub async fn start_if_enabled(&self, _: &Arc<crate::AppState>) {}
+    pub fn spawn_recovery(&self, _: &Arc<crate::AppState>) {}
     pub async fn stop(&self) {}
 }
 

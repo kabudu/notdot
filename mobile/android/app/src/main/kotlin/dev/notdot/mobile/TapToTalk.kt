@@ -113,7 +113,7 @@ object TalkPath {
         val player = ReplyPlayer { self?.changed() }
         val turns = VoiceTurns(PhoneLinkClient { NotdotState.link }, player, scope) { ui ->
             when (ui) {
-                VoiceUi.Sending -> android.util.Log.i("notdot.turn", "captured request; checking connection")
+                VoiceUi.Connecting -> android.util.Log.i("notdot.turn", "captured request; checking connection")
                 is VoiceUi.NothingHeard -> android.util.Log.i("notdot.turn", "capture ended without speech")
                 else -> Unit
             }

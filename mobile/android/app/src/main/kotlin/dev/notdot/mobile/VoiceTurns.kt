@@ -3,6 +3,7 @@ package dev.notdot.mobile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import uniffi.notdot_mobile_core.CaptureState
 import uniffi.notdot_mobile_core.LinkRoute
 import uniffi.notdot_mobile_core.MobileException
@@ -32,12 +33,15 @@ class PhoneLinkClient(private val link: () -> PhoneLink?) : VoiceTurnClient {
         val link = current()
         if (link.pairedRecord() == null) throw MobileException.Offline("Link this phone to your computer first.")
         if (link.route() == LinkRoute.DISCONNECTED) {
-            try {
-                link.connect(false)
+            val result = try {
+                withTimeoutOrNull(8_000) { link.connect(false) }
             } catch (error: MobileException) {
                 android.util.Log.i("notdot.turn", "connection failed: ${error.javaClass.simpleName}")
                 if (error is MobileException.Unpaired) throw error
-                throw MobileException.Offline("Couldn't connect to your computer. On the Mac, open Settings → App → Phones and check the connection.")
+                null
+            }
+            if (result == null || result == LinkRoute.DISCONNECTED) {
+                throw MobileException.Offline("Couldn't connect. Check that notdot is running on your computer and you're on the same Wi-Fi.")
             }
         }
     }
@@ -88,6 +92,7 @@ class PhoneLinkClient(private val link: () -> PhoneLink?) : VoiceTurnClient {
 /** What the screen shows during a voice turn. */
 sealed interface VoiceUi {
     data object Listening : VoiceUi
+    data object Connecting : VoiceUi
     data object Sending : VoiceUi
     data class Heard(val text: String) : VoiceUi
     data class Replying(val text: String) : VoiceUi
@@ -149,7 +154,7 @@ class VoiceTurns(
     private fun send(pcm16: ByteArray) {
         val id = newRequestId()
         requestId = id
-        ui(VoiceUi.Sending)
+        ui(VoiceUi.Connecting)
         val listener = object : VoiceReplyListener {
             override fun heard(text: String) { if (requestId == id) ui(VoiceUi.Heard(text)) }
             override fun replyText(text: String) { if (requestId == id) ui(VoiceUi.Replying(text)) }
@@ -159,6 +164,8 @@ class VoiceTurns(
         job = scope.launch {
             val outcome = try {
                 client.ensureConnected()
+                if (requestId != id) return@launch
+                ui(VoiceUi.Sending)
                 VoiceUi.Finished(client.turn(id, pcm16, listener))
             } catch (e: MobileException) {
                 VoiceUi.Failed(e.plain())
