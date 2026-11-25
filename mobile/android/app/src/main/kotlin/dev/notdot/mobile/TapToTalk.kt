@@ -90,7 +90,7 @@ class TapToTalk(
         } finally {
             val mine = synchronized(lock) { (source === src).also { if (it) source = null } }
             src.close()
-            if (mine && failed && turns.listening) turns.stop()
+            if (mine && failed) turns.microphoneFailed()
             changed()
         }
     }
@@ -112,6 +112,11 @@ object TalkPath {
         var self: TapToTalk? = null
         val player = ReplyPlayer { self?.changed() }
         val turns = VoiceTurns(PhoneLinkClient { NotdotState.link }, player, scope) { ui ->
+            when (ui) {
+                VoiceUi.Sending -> android.util.Log.i("notdot.turn", "captured request; checking connection")
+                is VoiceUi.NothingHeard -> android.util.Log.i("notdot.turn", "capture ended without speech")
+                else -> Unit
+            }
             NotdotState.voice(ui)
             self?.changed()
         }

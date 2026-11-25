@@ -31,7 +31,15 @@ class PhoneLinkClient(private val link: () -> PhoneLink?) : VoiceTurnClient {
     override suspend fun ensureConnected() {
         val link = current()
         if (link.pairedRecord() == null) throw MobileException.Offline("Link this phone to your computer first.")
-        if (link.route() == LinkRoute.DISCONNECTED) link.connect(false)
+        if (link.route() == LinkRoute.DISCONNECTED) {
+            try {
+                link.connect(false)
+            } catch (error: MobileException) {
+                android.util.Log.i("notdot.turn", "connection failed: ${error.javaClass.simpleName}")
+                if (error is MobileException.Unpaired) throw error
+                throw MobileException.Offline("Couldn't connect to your computer. On the Mac, open Settings → App → Phones and check the connection.")
+            }
+        }
     }
     /**
      * Runs the turn and logs its route and timings to `notdot.turn` (never
@@ -131,7 +139,7 @@ class VoiceTurns(
                 }
                 CaptureState.NO_SPEECH -> {
                     capture = null
-                    ui(VoiceUi.NothingHeard("I didn't hear a request."))
+                    ui(VoiceUi.NothingHeard("I didn't hear a request. Tap and try speaking again."))
                 }
                 else -> {}
             }
@@ -160,6 +168,13 @@ class VoiceTurns(
                 ui(outcome)
             }
         }
+    }
+
+    @Synchronized
+    fun microphoneFailed() {
+        if (capture == null) return
+        cancelCurrent()
+        ui(VoiceUi.Failed("The microphone stopped before I could send your request. Tap to try again."))
     }
 
     /** Stop: drop the capture, stop playback, and cancel the turn there too. */
