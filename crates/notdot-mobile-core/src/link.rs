@@ -799,7 +799,7 @@ fn refused(frame: ServerFrame) -> MobileError {
             },
             OpError::Busy => link_error("Your computer is busy. Try again in a moment."),
             OpError::Interrupted => link_error(
-                "Your computer restarted while doing this, so it may or may not have happened. Check before trying again.",
+                "The request was interrupted. It may have gone through, so check on your computer before trying again.",
             ),
             OpError::NotAvailable { reason } => MobileError::Unavailable {
                 detail: format!("Your computer can't do that: {reason}."),

@@ -109,7 +109,9 @@ pub async fn run(
             return Ok(None);
         }
         let Some((text, done, failed)) = voice.progress(&turn).await else {
-            return Err(OpError::Interrupted);
+            return Err(unavailable(
+                "the desktop lost track of this reply. Check the conversation before trying again",
+            ));
         };
         if failed {
             return Err(unavailable("the reply was interrupted before it finished"));
@@ -221,7 +223,7 @@ impl DesktopVoice for AppVoice {
     }
     async fn progress(&self, turn: &str) -> Option<(String, bool, bool)> {
         let s = self.state.snapshot.lock().await;
-        (s.speech.turn == turn).then(|| (s.speech.text.clone(), s.speech.done, s.speech.failed))
+        reply_progress(&s.speech, s.active_turn.as_deref(), turn)
     }
     async fn synthesize(&self, text: String) -> Result<(String, Vec<u8>), String> {
         crate::synthesize(&self.state, &text)
@@ -233,11 +235,48 @@ impl DesktopVoice for AppVoice {
     }
 }
 
+fn reply_progress(
+    speech: &notdot_core::spoken_reply::SpokenReply,
+    active: Option<&str>,
+    turn: &str,
+) -> Option<(String, bool, bool)> {
+    if speech.turn == turn {
+        Some((speech.text.clone(), speech.done, speech.failed))
+    } else if active == Some(turn) {
+        // The submission reply and turn/started notification arrive independently.
+        Some((String::new(), false, false))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use notdot_link::protocol::{RequestId, ServerFrame};
     use std::sync::Mutex;
+
+    #[test]
+    fn accepted_turn_waits_for_its_first_event() {
+        use notdot_core::spoken_reply::SpokenReply;
+        let mut speech = SpokenReply::default();
+        assert_eq!(
+            reply_progress(&speech, Some("accepted"), "accepted"),
+            Some(("".into(), false, false))
+        );
+        assert_eq!(reply_progress(&speech, Some("other"), "accepted"), None);
+        speech.start("accepted");
+        speech.text = "first sentence".into();
+        assert_eq!(
+            reply_progress(&speech, Some("accepted"), "accepted"),
+            Some(("first sentence".into(), false, false))
+        );
+        speech.done = true;
+        assert_eq!(
+            reply_progress(&speech, None, "accepted"),
+            Some(("first sentence".into(), true, false))
+        );
+    }
 
     /// Fake providers: a transcript, a reply that streams in deltas, and
     /// "speech" that is the sentence's bytes. No network, no audio device.
