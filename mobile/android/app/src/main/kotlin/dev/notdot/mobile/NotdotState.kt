@@ -108,7 +108,7 @@ object NotdotState {
         handle(SessionEvent.Activity)
         val (mode, text) = when (ui) {
             VoiceUi.Listening -> OrbMode.LISTENING to "Listening…"
-            VoiceUi.Connecting -> OrbMode.THINKING to "Connecting to your computer…"
+            is VoiceUi.Connecting -> OrbMode.THINKING to "Connecting to your computer…"
             VoiceUi.Sending -> OrbMode.THINKING to "Sending to your computer…"
             is VoiceUi.Heard -> OrbMode.THINKING to "“${ui.text}”"
             is VoiceUi.Replying -> OrbMode.SPEAKING to ui.text

@@ -82,6 +82,7 @@ pub async fn run(
     sink: VoiceSink,
     mut cancelled: watch::Receiver<bool>,
 ) -> Result<Option<Value>, OpError> {
+    let transcription_started = Instant::now();
     let heard = tokio::select! {
         heard = voice.transcribe(&audio) => heard.map_err(unavailable)?,
         _ = until_cancelled(&mut cancelled) => return Ok(None),
@@ -98,7 +99,10 @@ pub async fn run(
     if *cancelled.borrow() {
         return Ok(None);
     }
+    let model_started = Instant::now();
+    let transcription_ms = transcription_started.elapsed().as_millis();
     let turn = voice.submit(heard.clone()).await.map_err(unavailable)?;
+    let model_ack_ms = model_started.elapsed().as_millis();
     let mut queue = speech_queue::SpeechQueue::default();
     let mut reply = String::new();
     let mut clip = 0u32;
@@ -128,6 +132,7 @@ pub async fn run(
                 reply.push(' ');
             }
             reply.push_str(&sentence);
+            let synthesis_started = Instant::now();
             let spoken = tokio::select! {
                 spoken = voice.synthesize(sentence) => spoken.map_err(unavailable)?,
                 _ = until_cancelled(&mut cancelled) => {
@@ -135,6 +140,13 @@ pub async fn run(
                     return Ok(None);
                 }
             };
+            if cfg!(debug_assertions) && clip == 0 {
+                let model_sentence_ms = synthesis_started.duration_since(model_started).as_millis();
+                let synthesis_ms = synthesis_started.elapsed().as_millis();
+                eprintln!(
+                    "notdot phone voice: transcription_ms={transcription_ms} model_ack_ms={model_ack_ms} model_sentence_ms={model_sentence_ms} synthesis_ms={synthesis_ms}"
+                );
+            }
             for event in audio_events(clip, &spoken.0, &spoken.1) {
                 sink.send(event)?;
             }

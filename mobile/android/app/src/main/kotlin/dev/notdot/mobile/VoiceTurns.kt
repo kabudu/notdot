@@ -92,7 +92,7 @@ class PhoneLinkClient(private val link: () -> PhoneLink?) : VoiceTurnClient {
 /** What the screen shows during a voice turn. */
 sealed interface VoiceUi {
     data object Listening : VoiceUi
-    data object Connecting : VoiceUi
+    data class Connecting(val trailingSilenceMs: UInt) : VoiceUi
     data object Sending : VoiceUi
     data class Heard(val text: String) : VoiceUi
     data class Replying(val text: String) : VoiceUi
@@ -140,7 +140,8 @@ class VoiceTurns(
             when (state) {
                 CaptureState.DONE, CaptureState.TOO_LONG -> {
                     capture = null
-                    send(current.takePcm16())
+                    val trailingSilenceMs = current.trailingSilenceMs()
+                    send(current.takePcm16(), trailingSilenceMs)
                 }
                 CaptureState.NO_SPEECH -> {
                     capture = null
@@ -151,10 +152,10 @@ class VoiceTurns(
         }
     }
 
-    private fun send(pcm16: ByteArray) {
+    private fun send(pcm16: ByteArray, trailingSilenceMs: UInt) {
         val id = newRequestId()
         requestId = id
-        ui(VoiceUi.Connecting)
+        ui(VoiceUi.Connecting(trailingSilenceMs))
         val listener = object : VoiceReplyListener {
             override fun heard(text: String) { if (requestId == id) ui(VoiceUi.Heard(text)) }
             override fun replyText(text: String) { if (requestId == id) ui(VoiceUi.Replying(text)) }

@@ -220,6 +220,12 @@ impl RequestCapture {
         self.push_pcm16(pcm)
     }
 
+    /// Duration since the last frame classified as speech in this capture.
+    pub fn trailing_silence_ms(&self) -> u32 {
+        let capture = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        Capture::ms(capture.silence)
+    }
+
     pub fn state(&self) -> CaptureState {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).state
     }
@@ -269,7 +275,9 @@ pub(crate) mod tests {
         assert_eq!(feed(&c, &quiet), CaptureState::Waiting);
         assert_eq!(feed(&c, &tone(1200, 6000.0)), CaptureState::Speaking);
         assert_eq!(feed(&c, &tone(1000, 20.0)), CaptureState::Done);
+        assert_eq!(c.trailing_silence_ms(), END_PAUSE_MS);
         let pcm = c.take_pcm16();
+        assert_eq!(c.trailing_silence_ms(), 0);
         let ms = pcm.len() as u32 / 2 * 1000 / REQUEST_RATE;
         // Lead-in + speech + a little of the pause, not the whole pause.
         assert!((1400..=1800).contains(&ms), "{ms} ms");

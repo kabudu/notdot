@@ -110,10 +110,25 @@ object TalkPath {
     @Synchronized
     fun get(): TapToTalk = tap ?: run {
         var self: TapToTalk? = null
-        val player = ReplyPlayer { self?.changed() }
+        val lastSpeechAt = java.util.concurrent.atomic.AtomicLong(0)
+        val player = ReplyPlayer(onPlaybackStarted = {
+            val endedAt = lastSpeechAt.getAndSet(0)
+            if (BuildConfig.DEBUG && endedAt != 0L) {
+                val elapsed = android.os.SystemClock.elapsedRealtime() - endedAt
+                android.util.Log.i("notdot.turn", "last_speech_to_playback_start_ms=$elapsed")
+            }
+        }) { self?.changed() }
         val turns = VoiceTurns(PhoneLinkClient { NotdotState.link }, player, scope) { ui ->
             when (ui) {
-                VoiceUi.Connecting -> android.util.Log.i("notdot.turn", "captured request; checking connection")
+                VoiceUi.Listening -> lastSpeechAt.set(0)
+                is VoiceUi.Connecting -> lastSpeechAt.set(android.os.SystemClock.elapsedRealtime() - ui.trailingSilenceMs.toLong())
+                is VoiceUi.Heard -> {
+                    val endedAt = lastSpeechAt.get()
+                    if (BuildConfig.DEBUG && endedAt != 0L) {
+                        val elapsed = android.os.SystemClock.elapsedRealtime() - endedAt
+                        android.util.Log.i("notdot.turn", "last_speech_to_final_transcript_ms=$elapsed")
+                    }
+                }
                 is VoiceUi.NothingHeard -> android.util.Log.i("notdot.turn", "capture ended without speech")
                 else -> Unit
             }

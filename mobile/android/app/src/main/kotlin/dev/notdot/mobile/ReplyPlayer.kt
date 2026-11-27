@@ -10,7 +10,10 @@ import android.media.MediaPlayer
  * [onPlaying] hears true when a reply starts sounding and false once the
  * queue has finished or been stopped (wake is suppressed in between).
  */
-class ReplyPlayer(private val onPlaying: (Boolean) -> Unit = {}) : ReplySink {
+class ReplyPlayer(
+    private val onPlaybackStarted: () -> Unit = {},
+    private val onPlaying: (Boolean) -> Unit = {},
+) : ReplySink {
     private var audible = false
 
     /** A reply is sounding (or queued to). */
@@ -62,6 +65,7 @@ class ReplyPlayer(private val onPlaying: (Boolean) -> Unit = {}) : ReplySink {
             p.setOnErrorListener { _, _, _ -> synchronized(this) { if (player === p) next() }; true }
             p.prepare()
             p.start()
+            onPlaybackStarted()
         } catch (_: Exception) {
             // A clip that can't play is skipped, not fatal to the reply.
             p.release()
